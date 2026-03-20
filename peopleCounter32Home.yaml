@@ -15,7 +15,7 @@ packages:
     vars:
       node_key: primary
       node_label: Primary
-      node_address: "0x2A"
+      node_address: "0x29"
       node_xshut_pin: GPIO16
       node_weight_base: "10"
 
