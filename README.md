@@ -1,8 +1,8 @@
 # RooDe
 
-[![GitHub release](https://img.shields.io/github/v/tag/Lyr3x/Roode?style=flat-square)](https://GitHub.com/Lyr3x/Roode/releases/)
-[![Build](https://img.shields.io/github/workflow/status/Lyr3x/Roode/CI?style=flat-square)](https://github.com/Lyr3x/Roode/blob/master/.github/workflows/ci.yml)
-[![Maintenance](https://img.shields.io/maintenance/yes/2023?style=flat-square)](https://GitHub.com/Lyr3x/Roode/graphs/commit-activity)
+[![GitHub release](https://img.shields.io/github/v/tag/Prosono/Roode2?style=flat-square)](https://GitHub.com/Prosono/Roode2/releases/)
+[![Build](https://img.shields.io/github/actions/workflow/status/Prosono/Roode2/ci.yml?style=flat-square)](https://github.com/Prosono/Roode2/blob/main/.github/workflows/ci.yml)
+[![Maintenance](https://img.shields.io/maintenance/yes/2026?style=flat-square)](https://GitHub.com/Prosono/Roode2/graphs/commit-activity)
 
 [![Roode community](https://img.shields.io/discord/879407995837087804.svg?label=Discord&logo=Discord&colorB=7289da&style=for-the-badge)](https://discord.gg/hU9SvSXMHs)
 
@@ -77,7 +77,7 @@ Other than base ESPHome configuration the only config that's needed for Roode is
 
 ```yaml
 external_components:
-  - source: github://Lyr3x/Roode@master
+  - source: github://Prosono/Roode2@main
     refresh: always
 vl53l1x:
 roode:
@@ -89,9 +89,9 @@ However, we offer a lot of flexibility. Here's the full configuration spelled ou
 
 ```yml
 external_components:
-  - source: github://Lyr3x/Roode
+  - source: github://Prosono/Roode2
     refresh: always
-    ref: master
+    ref: main
 
 # VL53L1X sensor configuration is separate from Roode people counting algorithm
 vl53l1x:

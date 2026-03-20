@@ -1,7 +1,7 @@
 substitutions:
   devicename: roode-home
   friendly_name: Roode Home
-  component_repo_url: https://github.com/Prosono/Roode.git
+  component_repo_url: https://github.com/Prosono/Roode2.git
   component_repo_ref: main
 
 external_components:
