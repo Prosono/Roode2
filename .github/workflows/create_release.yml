@@ -1,0 +1,48 @@
+name: Create release
+
+on:
+  push:
+    branches: [master]
+
+jobs:
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Setup git
+        run: |
+          git config user.email "ci@roode.de"
+          git config user.name "CI"
+
+      - name: Prepare description
+        run: |
+          csplit -s CHANGELOG.md "/##/" {1}
+          cat xx01 > CHANGELOG.tmp
+
+      - name: Prepare tag
+        run: |
+          export TAG=$(head -1 CHANGELOG.tmp | cut -d' ' -f2)
+          echo "TAG=$TAG" >> $GITHUB_ENV
+
+      - name: Create Release
+        uses: ncipollo/release-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ env.TAG }}
+          name: ${{ env.TAG }}
+          bodyFile: "CHANGELOG.tmp"
+          draft: false
+          prerelease: false
+          generateReleaseNotes: true
+          skipIfReleaseExists: true
+
+      - name: Discord notification
+        uses: Ilshidur/action-discord@master
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_RELEASE_WEBHOOK }}
+          TAG_NAME: ${{ env.TAG }}
+        with:
+          args: "A new release has been published! https://github.com/Lyr3x/Roode/releases/tag/{{TAG_NAME}}"
