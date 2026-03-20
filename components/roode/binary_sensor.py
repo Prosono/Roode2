@@ -1,18 +1,14 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import binary_sensor
-import esphome.final_validate as fv
-from esphome.const import (
-    CONF_ID,
-    CONF_DEVICE_CLASS,
-    DEVICE_CLASS_OCCUPANCY,
-)
+from esphome.const import CONF_ID
 from . import Roode, CONF_ROODE_ID
 
 DEPENDENCIES = ["roode"]
 
 CONF_PRESENCE = "presence_sensor"
-TYPES = [CONF_PRESENCE]
+CONF_MASKING = "masking_detected"
+TYPES = [CONF_PRESENCE, CONF_MASKING]
 
 # ESPHome: BINARY_SENSOR_SCHEMA removed -> use binary_sensor.binary_sensor_schema(...)
 BASE_SCHEMA = (
@@ -25,6 +21,11 @@ CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(CONF_ROODE_ID): cv.use_id(Roode),
         cv.Optional(CONF_PRESENCE): BASE_SCHEMA.extend(
+            {
+                cv.GenerateID(): cv.declare_id(binary_sensor.BinarySensor),
+            }
+        ),
+        cv.Optional(CONF_MASKING): BASE_SCHEMA.extend(
             {
                 cv.GenerateID(): cv.declare_id(binary_sensor.BinarySensor),
             }

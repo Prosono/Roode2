@@ -41,6 +41,7 @@ void Roode::setup() {
   if (version_sensor != nullptr) {
     version_sensor->publish_state(VERSION);
   }
+  this->publish_masking_state_(false);
   ESP_LOGI(SETUP, "Using sampling with sampling size: %d", samples);
 
   if (this->distanceSensor->is_failed()) {
@@ -65,6 +66,7 @@ void Roode::loop() {
   // unsigned long start = micros();
   this->current_zone->readDistance(distanceSensor);
   // uint16_t samplingDistance = sampling(this->current_zone);
+  update_masking_state_();
   path_tracking(this->current_zone);
   handle_sensor_status();
   this->current_zone = this->current_zone == this->entry ? this->exit : this->entry;
@@ -245,6 +247,53 @@ void Roode::updateCounter(int delta) {
   call.set_value(next);
   call.perform();
 }
+
+void Roode::publish_masking_state_(bool state) {
+  if (this->masking_sensor == nullptr) {
+    this->masking_detected_ = state;
+    return;
+  }
+  if (this->masking_detected_ == state) {
+    return;
+  }
+  this->masking_detected_ = state;
+  this->masking_sensor->publish_state(state);
+}
+
+void Roode::update_masking_state_() {
+  if (this->masking_sensor == nullptr) {
+    return;
+  }
+
+  if (this->distanceSensor->is_failed()) {
+    this->masking_candidate_since_ms_ = 0;
+    this->publish_masking_state_(false);
+    return;
+  }
+
+  uint16_t nearest_distance = UINT16_MAX;
+  if (this->entry->hasDistance()) {
+    nearest_distance = this->entry->getMinDistance();
+  }
+  if (this->exit->hasDistance() && this->exit->getMinDistance() < nearest_distance) {
+    nearest_distance = this->exit->getMinDistance();
+  }
+
+  if (nearest_distance == UINT16_MAX || nearest_distance > this->masking_distance_threshold_mm_) {
+    this->masking_candidate_since_ms_ = 0;
+    this->publish_masking_state_(false);
+    return;
+  }
+
+  if (this->masking_candidate_since_ms_ == 0) {
+    this->masking_candidate_since_ms_ = millis();
+  }
+
+  if ((millis() - this->masking_candidate_since_ms_) >= this->masking_hold_time_ms_) {
+    this->publish_masking_state_(true);
+  }
+}
+
 void Roode::recalibration() {
   if (this->distanceSensor->is_failed()) {
     ESP_LOGE(TAG, "Cannot recalibrate while VL53L1X sensor is failed");

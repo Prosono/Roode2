@@ -38,6 +38,7 @@ class Zone {
   const uint8_t id;
   uint16_t getDistance() const;
   uint16_t getMinDistance() const;
+  bool hasDistance() const;
   ROI *roi = new ROI();
   ROI *roi_override = new ROI();
   Threshold *threshold = new Threshold();

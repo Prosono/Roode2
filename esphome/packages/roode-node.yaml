@@ -11,6 +11,8 @@ substitutions:
   node_roi_height: "16"
   node_roi_width: "6"
   node_max_threshold: "85%"
+  node_mask_distance: "150mm"
+  node_mask_duration: "2s"
   node_weight_base: "10"
 
 vl53l1x:
@@ -34,6 +36,9 @@ roode:
       width: ${node_roi_width}
     detection_thresholds:
       max: ${node_max_threshold}
+    masking_detection:
+      distance: ${node_mask_distance}
+      duration: ${node_mask_duration}
     zones:
       invert: ${node_invert}
 
@@ -166,6 +171,12 @@ binary_sensor:
       web_server:
         sorting_group_id: web_group_live
         sorting_weight: ${node_weight_base}
+    masking_detected:
+      id: masking_${node_key}
+      name: ${friendly_name} ${node_label} Potential Masking Detected
+      web_server:
+        sorting_group_id: web_group_live
+        sorting_weight: ${node_weight_base}
 
 sensor:
   - platform: roode
@@ -278,10 +289,11 @@ text_sensor:
       snprintf(
         buffer,
         sizeof(buffer),
-        "Entry %.0f mm | Exit %.0f mm | Presence %s",
+        "Entry %.0f mm | Exit %.0f mm | Presence %s | Masking %s",
         id(distance_entry_${node_key}).state,
         id(distance_exit_${node_key}).state,
-        id(presence_${node_key}).state ? "yes" : "no"
+        id(presence_${node_key}).state ? "yes" : "no",
+        id(masking_${node_key}).state ? "yes" : "no"
       );
       return {buffer};
   - platform: roode

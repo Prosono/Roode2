@@ -79,6 +79,8 @@ class Roode : public PollingComponent {
   void set_roi_width(uint8_t width);
   uint8_t get_roi_height() const;
   void set_roi_height(uint8_t height);
+  void set_masking_distance_threshold(uint16_t distance_mm) { masking_distance_threshold_mm_ = distance_mm; }
+  void set_masking_hold_time_ms(uint32_t duration_ms) { masking_hold_time_ms_ = duration_ms; }
   void set_distance_entry(sensor::Sensor *distance_entry_) { distance_entry = distance_entry_; }
   void set_distance_exit(sensor::Sensor *distance_exit_) { distance_exit = distance_exit_; }
   void set_people_counter(number::Number *counter) { this->people_counter = counter; }
@@ -101,6 +103,9 @@ class Roode : public PollingComponent {
   void set_sensor_status_sensor(sensor::Sensor *status_sensor_) { status_sensor = status_sensor_; }
   void set_presence_sensor_binary_sensor(binary_sensor::BinarySensor *presence_sensor_) {
     presence_sensor = presence_sensor_;
+  }
+  void set_masking_detected_binary_sensor(binary_sensor::BinarySensor *masking_sensor_) {
+    masking_sensor = masking_sensor_;
   }
   void set_version_text_sensor(text_sensor::TextSensor *version_sensor_) { version_sensor = version_sensor_; }
   void set_entry_exit_event_text_sensor(text_sensor::TextSensor *entry_exit_event_sensor_) {
@@ -126,6 +131,7 @@ class Roode : public PollingComponent {
   sensor::Sensor *entry_roi_width_sensor;
   sensor::Sensor *status_sensor;
   binary_sensor::BinarySensor *presence_sensor;
+  binary_sensor::BinarySensor *masking_sensor{nullptr};
   text_sensor::TextSensor *version_sensor;
   text_sensor::TextSensor *entry_exit_event_sensor;
 
@@ -138,9 +144,15 @@ class Roode : public PollingComponent {
   const RangingMode *determine_raning_mode(uint16_t average_entry_zone_distance, uint16_t average_exit_zone_distance);
   void publish_sensor_configuration(Zone *entry, Zone *exit, bool isMax);
   void updateCounter(int delta);
+  void update_masking_state_();
+  void publish_masking_state_(bool state);
   Orientation orientation_{Parallel};
   uint8_t samples{2};
   bool invert_direction_{false};
+  uint16_t masking_distance_threshold_mm_{150};
+  uint32_t masking_hold_time_ms_{2000};
+  uint32_t masking_candidate_since_ms_{0};
+  bool masking_detected_{false};
   int number_attempts = 20;  // TO DO: make this configurable
   int short_distance_threshold = 1300;
   int medium_distance_threshold = 2000;
