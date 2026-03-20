@@ -1,0 +1,33 @@
+substitutions:
+  devicename: roode-home-triple
+  friendly_name: Roode Home Triple
+  sensor_profile: triple
+  sensor_count: "3"
+
+external_components:
+  refresh: always
+  source: components
+
+packages:
+  base: !include esphome/packages/home-base.yaml
+  top: !include
+    file: esphome/packages/roode-node.yaml
+    vars:
+      node_key: top
+      node_label: Top
+      node_address: "0x2A"
+      node_xshut_pin: GPIO16
+  middle: !include
+    file: esphome/packages/roode-node.yaml
+    vars:
+      node_key: middle
+      node_label: Middle
+      node_address: "0x2B"
+      node_xshut_pin: GPIO17
+  bottom: !include
+    file: esphome/packages/roode-node.yaml
+    vars:
+      node_key: bottom
+      node_label: Bottom
+      node_address: "0x2C"
+      node_xshut_pin: GPIO18

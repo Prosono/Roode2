@@ -3,6 +3,19 @@
 namespace esphome {
 namespace vl53l1x {
 
+bool VL53L1X::xshut_prepared_ = false;
+bool VL53L1X::wire_initialized_ = false;
+uint8_t VL53L1X::wire_sda_pin_ = 255;
+uint8_t VL53L1X::wire_scl_pin_ = 255;
+uint32_t VL53L1X::wire_i2c_frequency_ = 0;
+
+std::vector<VL53L1X *> &VL53L1X::instances_() {
+  static std::vector<VL53L1X *> instances;
+  return instances;
+}
+
+VL53L1X::VL53L1X() { instances_().push_back(this); }
+
 void VL53L1X::dump_config() {
   ESP_LOGCONFIG(TAG, "VL53L1X:");
   ESP_LOGCONFIG(TAG, "  Address: 0x%02X", this->address_);
@@ -26,13 +39,76 @@ void VL53L1X::dump_config() {
   }
 }
 
-void VL53L1X::setup() {
-  ESP_LOGD(TAG, "Beginning setup");
+bool VL53L1X::validate_multi_sensor_config_() {
+  auto &instances = instances_();
+  if (instances.size() <= 1) {
+    return true;
+  }
 
-  if (this->sda_pin_ == 255 || this->scl_pin_ == 255) {
-    ESP_LOGE(TAG, "I2C pins were not configured for Arduino Wire");
-    this->mark_failed();
+  for (auto *instance : instances) {
+    if (!instance->xshut_pin.has_value()) {
+      ESP_LOGE(TAG, "Multiple VL53L1X sensors require an xshut pin on every sensor");
+      instance->mark_failed();
+      return false;
+    }
+    if (instance->address_ == 0x29) {
+      ESP_LOGE(TAG, "Multiple VL53L1X sensors require a unique non-default I2C address on every sensor");
+      instance->mark_failed();
+      return false;
+    }
+    if (instance->sda_pin_ != this->sda_pin_ || instance->scl_pin_ != this->scl_pin_) {
+      ESP_LOGE(TAG, "Multiple VL53L1X sensors must share the same SDA/SCL pins");
+      instance->mark_failed();
+      return false;
+    }
+    if (instance->i2c_frequency_ != this->i2c_frequency_) {
+      ESP_LOGE(TAG, "Multiple VL53L1X sensors must share the same I2C frequency");
+      instance->mark_failed();
+      return false;
+    }
+  }
+
+  for (size_t i = 0; i < instances.size(); i++) {
+    for (size_t j = i + 1; j < instances.size(); j++) {
+      if (instances[i]->address_ == instances[j]->address_) {
+        ESP_LOGE(TAG, "Duplicate VL53L1X I2C address 0x%02X configured", instances[i]->address_);
+        instances[i]->mark_failed();
+        instances[j]->mark_failed();
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
+void VL53L1X::prepare_xshut_pins_() {
+  if (xshut_prepared_) {
     return;
+  }
+
+  for (auto *instance : instances_()) {
+    if (!instance->xshut_pin.has_value()) {
+      continue;
+    }
+    auto *pin = instance->xshut_pin.value();
+    pin->setup();
+    pin->pin_mode(gpio::FLAG_OUTPUT);
+    pin->digital_write(false);
+  }
+
+  delay(10);
+  xshut_prepared_ = true;
+}
+
+bool VL53L1X::initialize_wire_() {
+  if (wire_initialized_) {
+    if (wire_sda_pin_ != this->sda_pin_ || wire_scl_pin_ != this->scl_pin_ || wire_i2c_frequency_ != this->i2c_frequency_) {
+      ESP_LOGE(TAG, "Wire bus already initialized with different SDA/SCL/frequency settings");
+      this->mark_failed();
+      return false;
+    }
+    return true;
   }
 
   // ESPHome's ESP32 build initializes an IDF I2C bus first. On this hybrid
@@ -43,12 +119,49 @@ void VL53L1X::setup() {
   if (!Wire.begin(this->sda_pin_, this->scl_pin_, this->i2c_frequency_)) {
     ESP_LOGE(TAG, "Failed to initialize Arduino Wire on SDA=%u SCL=%u", this->sda_pin_, this->scl_pin_);
     this->mark_failed();
-    return;
+    return false;
   }
+
+  wire_sda_pin_ = this->sda_pin_;
+  wire_scl_pin_ = this->scl_pin_;
+  wire_i2c_frequency_ = this->i2c_frequency_;
+  wire_initialized_ = true;
   ESP_LOGI(TAG, "Initialized Arduino Wire on SDA=%u SCL=%u @ %u Hz", this->sda_pin_, this->scl_pin_,
            this->i2c_frequency_);
+  return true;
+}
 
-  // TODO use xshut_pin, if given, to change address
+void VL53L1X::enable_sensor_() {
+  if (!this->xshut_pin.has_value()) {
+    return;
+  }
+
+  auto *pin = this->xshut_pin.value();
+  pin->setup();
+  pin->pin_mode(gpio::FLAG_OUTPUT);
+  pin->digital_write(true);
+  delay(10);
+}
+
+void VL53L1X::setup() {
+  ESP_LOGD(TAG, "Beginning setup");
+
+  if (this->sda_pin_ == 255 || this->scl_pin_ == 255) {
+    ESP_LOGE(TAG, "I2C pins were not configured for Arduino Wire");
+    this->mark_failed();
+    return;
+  }
+
+  if (!this->validate_multi_sensor_config_()) {
+    return;
+  }
+
+  this->prepare_xshut_pins_();
+  if (!this->initialize_wire_()) {
+    return;
+  }
+  this->enable_sensor_();
+
   auto status = this->init();
   if (status != VL53L1_ERROR_NONE) {
     this->mark_failed();

@@ -1,0 +1,26 @@
+substitutions:
+  devicename: roode-home-dual
+  friendly_name: Roode Home Dual
+  sensor_profile: dual
+  sensor_count: "2"
+
+external_components:
+  refresh: always
+  source: components
+
+packages:
+  base: !include esphome/packages/home-base.yaml
+  top: !include
+    file: esphome/packages/roode-node.yaml
+    vars:
+      node_key: top
+      node_label: Top
+      node_address: "0x2A"
+      node_xshut_pin: GPIO16
+  bottom: !include
+    file: esphome/packages/roode-node.yaml
+    vars:
+      node_key: bottom
+      node_label: Bottom
+      node_address: "0x2C"
+      node_xshut_pin: GPIO18

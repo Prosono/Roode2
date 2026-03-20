@@ -1,0 +1,98 @@
+substitutions:
+  node_key: primary
+  node_label: Primary
+  node_address: "0x2A"
+  node_xshut_pin: GPIO16
+  node_sda_pin: "21"
+  node_scl_pin: "22"
+  node_sampling: "2"
+  node_orientation: parallel
+  node_invert: "true"
+  node_roi_height: "16"
+  node_roi_width: "6"
+  node_max_threshold: "85%"
+
+vl53l1x:
+  - id: vl53l1x_${node_key}
+    address: ${node_address}
+    sda_pin: ${node_sda_pin}
+    scl_pin: ${node_scl_pin}
+    frequency: 100kHz
+    pins:
+      xshut: ${node_xshut_pin}
+    calibration:
+      ranging: auto
+
+roode:
+  - id: roode_${node_key}
+    sensor: vl53l1x_${node_key}
+    sampling: ${node_sampling}
+    orientation: ${node_orientation}
+    roi:
+      height: ${node_roi_height}
+      width: ${node_roi_width}
+    detection_thresholds:
+      max: ${node_max_threshold}
+    zones:
+      invert: ${node_invert}
+
+button:
+  - platform: template
+    name: ${friendly_name} ${node_label} Recalibrate
+    entity_category: config
+    on_press:
+      - lambda: id(roode_${node_key})->recalibration();
+
+number:
+  - platform: roode
+    roode_id: roode_${node_key}
+    people_counter:
+      id: people_counter_${node_key}
+      name: ${friendly_name} ${node_label} People Counter
+
+binary_sensor:
+  - platform: roode
+    roode_id: roode_${node_key}
+    presence_sensor:
+      name: ${friendly_name} ${node_label} Presence
+
+sensor:
+  - platform: roode
+    id: roode_sensors_${node_key}
+    roode_id: roode_${node_key}
+    distance_entry:
+      name: ${friendly_name} ${node_label} Distance Zone 0
+      filters:
+        - delta: 100
+    distance_exit:
+      name: ${friendly_name} ${node_label} Distance Zone 1
+      filters:
+        - delta: 100
+    max_threshold_entry:
+      name: ${friendly_name} ${node_label} Max Zone 0
+    max_threshold_exit:
+      name: ${friendly_name} ${node_label} Max Zone 1
+    min_threshold_entry:
+      name: ${friendly_name} ${node_label} Min Zone 0
+    min_threshold_exit:
+      name: ${friendly_name} ${node_label} Min Zone 1
+    roi_height_entry:
+      name: ${friendly_name} ${node_label} ROI Height Zone 0
+    roi_width_entry:
+      name: ${friendly_name} ${node_label} ROI Width Zone 0
+    roi_height_exit:
+      name: ${friendly_name} ${node_label} ROI Height Zone 1
+    roi_width_exit:
+      name: ${friendly_name} ${node_label} ROI Width Zone 1
+    sensor_status:
+      name: ${friendly_name} ${node_label} Sensor Status
+
+text_sensor:
+  - platform: roode
+    roode_id: roode_${node_key}
+    version:
+      name: ${friendly_name} ${node_label} Version
+  - platform: roode
+    roode_id: roode_${node_key}
+    entry_exit_event:
+      name: ${friendly_name} ${node_label} Last Direction

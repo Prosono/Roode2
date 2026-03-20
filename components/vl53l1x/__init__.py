@@ -15,7 +15,7 @@ import esphome.pins as pins
 
 _LOGGER = logging.getLogger(__name__)
 
-MULTI_CONF = False  # TODO enable when we support multiple addresses
+MULTI_CONF = True
 
 vl53l1x_ns = cg.esphome_ns.namespace("vl53l1x")
 VL53L1X = vl53l1x_ns.class_("VL53L1X", cg.Component)

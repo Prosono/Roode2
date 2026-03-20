@@ -73,6 +73,26 @@ Ps=0 (when connected to GND): In the IIC mode, the user can operate the chip by 
 
 Roode is provided as an external_component which means it is easy to setup in any ESPHome sensor configuration file.
 
+### Variant Profiles
+
+For day-to-day ESPHome work in this repo, use the dedicated profile files:
+
+- `peopleCounter32Home.yaml` for a single VL53L1X sensor
+- `peopleCounter32HomeDual.yaml` for two VL53L1X sensors
+- `peopleCounter32HomeTriple.yaml` for three VL53L1X sensors
+
+These profiles are designed so you can choose the variant directly when flashing in ESPHome.
+They use the local `components/` directory in this repo, which means changes you make here are the ones that get tested and flashed.
+
+Current wiring assumptions for multi-sensor profiles:
+
+- Shared I2C bus on `GPIO21` (SDA) and `GPIO22` (SCL)
+- Dedicated `XSHUT` pins on `GPIO16`, `GPIO17`, and `GPIO18`
+- Fixed sensor addresses `0x2A`, `0x2B`, and `0x2C`
+
+The dual and triple profiles currently run one independent `roode` instance per physical sensor.
+That makes them good for deployment, tuning, and side-by-side testing now; a fused 2-of-3 counter can be added on top of this next.
+
 Other than base ESPHome configuration the only config that's needed for Roode is
 
 ```yaml

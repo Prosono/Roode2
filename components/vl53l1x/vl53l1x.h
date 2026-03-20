@@ -1,5 +1,6 @@
 #pragma once
 #include <math.h>
+#include <vector>
 
 #include <Wire.h>
 #include "VL53L1X_ULD.h"
@@ -20,6 +21,7 @@ static const char *const TAG = "VL53L1X";
  */
 class VL53L1X : public Component {
  public:
+  VL53L1X();
   void setup() override;
   void dump_config() override;
   /** This connects directly to a sensor */
@@ -55,6 +57,18 @@ class VL53L1X : public Component {
   uint8_t scl_pin_{255};
   uint32_t i2c_frequency_{400000};
   ROI *last_roi{};
+
+  static std::vector<VL53L1X *> &instances_();
+  static bool xshut_prepared_;
+  static bool wire_initialized_;
+  static uint8_t wire_sda_pin_;
+  static uint8_t wire_scl_pin_;
+  static uint32_t wire_i2c_frequency_;
+
+  bool validate_multi_sensor_config_();
+  bool initialize_wire_();
+  void prepare_xshut_pins_();
+  void enable_sensor_();
 
   VL53L1_Error init();
   VL53L1_Error wait_for_boot();

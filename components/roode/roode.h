@@ -137,6 +137,10 @@ class Roode : public PollingComponent {
   int medium_distance_threshold = 2000;
   int medium_long_distance_threshold = 2700;
   int long_distance_threshold = 3400;
+  int path_track_[4] = {0, 0, 0, 0};
+  int path_track_filling_size_{1};
+  int left_previous_status_{NOBODY};
+  int right_previous_status_{NOBODY};
 };
 
 }  // namespace roode

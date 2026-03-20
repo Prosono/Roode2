@@ -1,0 +1,70 @@
+substitutions:
+  devicename: roode-home
+  friendly_name: Roode Home
+  sensor_profile: single
+  sensor_count: "1"
+
+esphome:
+  name: ${devicename}
+  friendly_name: ${friendly_name}
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+logger:
+  level: DEBUG
+
+api:
+  reboot_timeout: 60min
+
+ota:
+  - platform: esphome
+    password: !secret roode_ota_password
+
+wifi:
+  ssid: !secret roode_wifi_ssid
+  password: !secret roode_wifi_password
+  use_address: ${devicename}
+  domain: .local
+  power_save_mode: none
+  ap:
+    ssid: "${friendly_name} Fallback"
+    password: !secret roode_fallback_ap_password
+
+captive_portal:
+
+web_server:
+  port: 80
+  auth:
+    username: !secret roode_web_username
+    password: !secret roode_web_password
+
+button:
+  - platform: restart
+    name: ${friendly_name} Restart
+    entity_category: config
+
+binary_sensor:
+  - platform: status
+    name: ${friendly_name} Device Status
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: ${friendly_name} IP Address
+    ssid:
+      name: ${friendly_name} WiFi SSID
+  - platform: template
+    name: ${friendly_name} Sensor Profile
+    entity_category: diagnostic
+    update_interval: never
+    lambda: |-
+      return {"${sensor_profile}"};
+  - platform: template
+    name: ${friendly_name} Sensor Count
+    entity_category: diagnostic
+    update_interval: never
+    lambda: |-
+      return {"${sensor_count}"};
