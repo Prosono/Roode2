@@ -195,28 +195,25 @@ void VL53L1X::setup() {
 VL53L1_Error VL53L1X::init() {
   ESP_LOGD(TAG, "Trying to initialize");
 
-  VL53L1_Error status;
+  // Use the ULD wrapper's boot-and-init sequence first. This matches the
+  // standalone examples in this repo and has proven more reliable on recent
+  // ESPHome/ESP32 builds than manually polling boot state here.
+  auto status = sensor.Begin();
+  if (status != VL53L1_ERROR_NONE) {
+    ESP_LOGE(TAG, "Could not initialize device, error code: %d", status);
+    return status;
+  }
 
-  // If address is non-default, set and try again.
-  if (address_ != (sensor.GetI2CAddress() >> 1)) {
+  // Multi-sensor setups still need each sensor moved away from the default
+  // address after it has booted and initialized on its own.
+  if (address_ != 0x29) {
     ESP_LOGD(TAG, "Setting different address");
     status = sensor.SetI2CAddress(address_ << 1);
     if (status != VL53L1_ERROR_NONE) {
       ESP_LOGE(TAG, "Failed to change address. Error: %d", status);
       return status;
     }
-  }
-
-  status = wait_for_boot();
-  if (status != VL53L1_ERROR_NONE) {
-    return status;
-  }
-
-  ESP_LOGD(TAG, "Found device, initializing...");
-  status = sensor.Init();
-  if (status != VL53L1_ERROR_NONE) {
-    ESP_LOGE(TAG, "Could not initialize device, error code: %d", status);
-    return status;
+    delay(5);
   }
 
   return status;

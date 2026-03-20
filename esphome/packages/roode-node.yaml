@@ -11,6 +11,7 @@ substitutions:
   node_roi_height: "16"
   node_roi_width: "6"
   node_max_threshold: "85%"
+  node_weight_base: "10"
 
 vl53l1x:
   - id: vl53l1x_${node_key}
@@ -40,8 +41,22 @@ button:
   - platform: template
     name: ${friendly_name} ${node_label} Recalibrate
     entity_category: config
+    web_server:
+      sorting_group_id: web_group_controls
+      sorting_weight: ${node_weight_base}
     on_press:
       - lambda: id(roode_${node_key})->recalibration();
+  - platform: template
+    name: ${friendly_name} ${node_label} Reset Counter
+    entity_category: config
+    web_server:
+      sorting_group_id: web_group_controls
+      sorting_weight: ${node_weight_base}
+    on_press:
+      - lambda: |-
+          auto call = id(people_counter_${node_key}).make_call();
+          call.set_value(0);
+          call.perform();
 
 number:
   - platform: roode
@@ -49,50 +64,239 @@ number:
     people_counter:
       id: people_counter_${node_key}
       name: ${friendly_name} ${node_label} People Counter
+      web_server:
+        sorting_group_id: web_group_tuning
+        sorting_weight: ${node_weight_base}
+  - platform: template
+    id: sampling_setting_${node_key}
+    name: ${friendly_name} ${node_label} Sampling
+    entity_category: config
+    mode: box
+    min_value: 1
+    max_value: 8
+    step: 1
+    update_interval: 5s
+    web_server:
+      sorting_group_id: web_group_tuning
+      sorting_weight: ${node_weight_base}
+    lambda: |-
+      return (float) id(roode_${node_key})->get_sampling_size();
+    set_action:
+      - lambda: |-
+          id(roode_${node_key})->set_sampling_size((uint8_t) x);
+  - platform: template
+    id: min_threshold_setting_${node_key}
+    name: ${friendly_name} ${node_label} Min Threshold %
+    entity_category: config
+    mode: box
+    min_value: 0
+    max_value: 40
+    step: 1
+    update_interval: 5s
+    web_server:
+      sorting_group_id: web_group_tuning
+      sorting_weight: ${node_weight_base}
+    lambda: |-
+      return (float) id(roode_${node_key})->get_min_threshold_percentage();
+    set_action:
+      - lambda: |-
+          id(roode_${node_key})->set_min_threshold_percentage((uint8_t) x);
+          id(roode_${node_key})->recalibration();
+  - platform: template
+    id: max_threshold_setting_${node_key}
+    name: ${friendly_name} ${node_label} Max Threshold %
+    entity_category: config
+    mode: box
+    min_value: 40
+    max_value: 95
+    step: 1
+    update_interval: 5s
+    web_server:
+      sorting_group_id: web_group_tuning
+      sorting_weight: ${node_weight_base}
+    lambda: |-
+      return (float) id(roode_${node_key})->get_max_threshold_percentage();
+    set_action:
+      - lambda: |-
+          id(roode_${node_key})->set_max_threshold_percentage((uint8_t) x);
+          id(roode_${node_key})->recalibration();
+  - platform: template
+    id: roi_width_setting_${node_key}
+    name: ${friendly_name} ${node_label} ROI Width
+    entity_category: config
+    mode: box
+    min_value: 4
+    max_value: 16
+    step: 1
+    update_interval: 5s
+    web_server:
+      sorting_group_id: web_group_tuning
+      sorting_weight: ${node_weight_base}
+    lambda: |-
+      return (float) id(roode_${node_key})->get_roi_width();
+    set_action:
+      - lambda: |-
+          id(roode_${node_key})->set_roi_width((uint8_t) x);
+          id(roode_${node_key})->recalibration();
+  - platform: template
+    id: roi_height_setting_${node_key}
+    name: ${friendly_name} ${node_label} ROI Height
+    entity_category: config
+    mode: box
+    min_value: 4
+    max_value: 16
+    step: 1
+    update_interval: 5s
+    web_server:
+      sorting_group_id: web_group_tuning
+      sorting_weight: ${node_weight_base}
+    lambda: |-
+      return (float) id(roode_${node_key})->get_roi_height();
+    set_action:
+      - lambda: |-
+          id(roode_${node_key})->set_roi_height((uint8_t) x);
+          id(roode_${node_key})->recalibration();
 
 binary_sensor:
   - platform: roode
     roode_id: roode_${node_key}
     presence_sensor:
+      id: presence_${node_key}
       name: ${friendly_name} ${node_label} Presence
+      web_server:
+        sorting_group_id: web_group_live
+        sorting_weight: ${node_weight_base}
 
 sensor:
   - platform: roode
     id: roode_sensors_${node_key}
     roode_id: roode_${node_key}
     distance_entry:
+      id: distance_entry_${node_key}
       name: ${friendly_name} ${node_label} Distance Zone 0
       filters:
         - delta: 100
+      web_server:
+        sorting_group_id: web_group_live
+        sorting_weight: ${node_weight_base}
     distance_exit:
+      id: distance_exit_${node_key}
       name: ${friendly_name} ${node_label} Distance Zone 1
       filters:
         - delta: 100
+      web_server:
+        sorting_group_id: web_group_live
+        sorting_weight: ${node_weight_base}
     max_threshold_entry:
+      id: max_threshold_entry_${node_key}
       name: ${friendly_name} ${node_label} Max Zone 0
+      web_server:
+        sorting_group_id: web_group_tuning
+        sorting_weight: ${node_weight_base}
     max_threshold_exit:
+      id: max_threshold_exit_${node_key}
       name: ${friendly_name} ${node_label} Max Zone 1
+      web_server:
+        sorting_group_id: web_group_tuning
+        sorting_weight: ${node_weight_base}
     min_threshold_entry:
+      id: min_threshold_entry_${node_key}
       name: ${friendly_name} ${node_label} Min Zone 0
+      web_server:
+        sorting_group_id: web_group_tuning
+        sorting_weight: ${node_weight_base}
     min_threshold_exit:
+      id: min_threshold_exit_${node_key}
       name: ${friendly_name} ${node_label} Min Zone 1
+      web_server:
+        sorting_group_id: web_group_tuning
+        sorting_weight: ${node_weight_base}
     roi_height_entry:
+      id: roi_height_entry_${node_key}
       name: ${friendly_name} ${node_label} ROI Height Zone 0
+      web_server:
+        sorting_group_id: web_group_tuning
+        sorting_weight: ${node_weight_base}
     roi_width_entry:
+      id: roi_width_entry_${node_key}
       name: ${friendly_name} ${node_label} ROI Width Zone 0
+      web_server:
+        sorting_group_id: web_group_tuning
+        sorting_weight: ${node_weight_base}
     roi_height_exit:
+      id: roi_height_exit_${node_key}
       name: ${friendly_name} ${node_label} ROI Height Zone 1
+      web_server:
+        sorting_group_id: web_group_tuning
+        sorting_weight: ${node_weight_base}
     roi_width_exit:
+      id: roi_width_exit_${node_key}
       name: ${friendly_name} ${node_label} ROI Width Zone 1
+      web_server:
+        sorting_group_id: web_group_tuning
+        sorting_weight: ${node_weight_base}
     sensor_status:
+      id: sensor_status_${node_key}
       name: ${friendly_name} ${node_label} Sensor Status
+      web_server:
+        sorting_group_id: web_group_live
+        sorting_weight: ${node_weight_base}
 
 text_sensor:
+  - platform: template
+    id: node_health_${node_key}
+    name: ${friendly_name} ${node_label} Health
+    entity_category: diagnostic
+    update_interval: 5s
+    web_server:
+      sorting_group_id: web_group_live
+      sorting_weight: ${node_weight_base}
+    lambda: |-
+      if (isnan(id(sensor_status_${node_key}).state)) {
+        return {"Waiting for sensor"};
+      }
+      int status = (int) id(sensor_status_${node_key}).state;
+      if (status == 0) {
+        return {"OK"};
+      }
+      char buffer[24];
+      snprintf(buffer, sizeof(buffer), "Error %d", status);
+      return {buffer};
+  - platform: template
+    id: node_snapshot_${node_key}
+    name: ${friendly_name} ${node_label} Snapshot
+    entity_category: diagnostic
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_live
+      sorting_weight: ${node_weight_base}
+    lambda: |-
+      if (isnan(id(distance_entry_${node_key}).state) || isnan(id(distance_exit_${node_key}).state)) {
+        return {"Waiting for distances"};
+      }
+      char buffer[96];
+      snprintf(
+        buffer,
+        sizeof(buffer),
+        "Entry %.0f mm | Exit %.0f mm | Presence %s",
+        id(distance_entry_${node_key}).state,
+        id(distance_exit_${node_key}).state,
+        id(presence_${node_key}).state ? "yes" : "no"
+      );
+      return {buffer};
   - platform: roode
     roode_id: roode_${node_key}
     version:
+      id: version_${node_key}
       name: ${friendly_name} ${node_label} Version
+      web_server:
+        sorting_group_id: web_group_live
+        sorting_weight: ${node_weight_base}
   - platform: roode
     roode_id: roode_${node_key}
     entry_exit_event:
+      id: last_direction_${node_key}
       name: ${friendly_name} ${node_label} Last Direction
+      web_server:
+        sorting_group_id: web_group_live
+        sorting_weight: ${node_weight_base}

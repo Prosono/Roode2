@@ -17,6 +17,7 @@ packages:
       node_label: Top
       node_address: "0x2A"
       node_xshut_pin: GPIO16
+      node_weight_base: "10"
   middle: !include
     file: esphome/packages/roode-node.yaml
     vars:
@@ -24,6 +25,7 @@ packages:
       node_label: Middle
       node_address: "0x2B"
       node_xshut_pin: GPIO17
+      node_weight_base: "20"
   bottom: !include
     file: esphome/packages/roode-node.yaml
     vars:
@@ -31,3 +33,57 @@ packages:
       node_label: Bottom
       node_address: "0x2C"
       node_xshut_pin: GPIO18
+      node_weight_base: "30"
+
+button:
+  - platform: template
+    name: ${friendly_name} Recalibrate All
+    entity_category: config
+    web_server:
+      sorting_group_id: web_group_controls
+      sorting_weight: 10
+    on_press:
+      - lambda: |-
+          id(roode_top)->recalibration();
+          id(roode_middle)->recalibration();
+          id(roode_bottom)->recalibration();
+  - platform: template
+    name: ${friendly_name} Reset All Counters
+    entity_category: config
+    web_server:
+      sorting_group_id: web_group_controls
+      sorting_weight: 20
+    on_press:
+      - lambda: |-
+          auto top_call = id(people_counter_top).make_call();
+          top_call.set_value(0);
+          top_call.perform();
+          auto middle_call = id(people_counter_middle).make_call();
+          middle_call.set_value(0);
+          middle_call.perform();
+          auto bottom_call = id(people_counter_bottom).make_call();
+          bottom_call.set_value(0);
+          bottom_call.perform();
+
+text_sensor:
+  - platform: template
+    name: ${friendly_name} Health Summary
+    entity_category: diagnostic
+    update_interval: 5s
+    web_server:
+      sorting_group_id: web_group_overview
+      sorting_weight: 60
+    lambda: |-
+      int ready = 0;
+      if (!isnan(id(sensor_status_top).state) && (int) id(sensor_status_top).state == 0) {
+        ready++;
+      }
+      if (!isnan(id(sensor_status_middle).state) && (int) id(sensor_status_middle).state == 0) {
+        ready++;
+      }
+      if (!isnan(id(sensor_status_bottom).state) && (int) id(sensor_status_bottom).state == 0) {
+        ready++;
+      }
+      char buffer[32];
+      snprintf(buffer, sizeof(buffer), "%d/3 sensors ready", ready);
+      return {buffer};

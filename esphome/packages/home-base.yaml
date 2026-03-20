@@ -37,34 +37,67 @@ captive_portal:
 
 web_server:
   port: 80
+  version: 3
   auth:
     username: !secret roode_web_username
     password: !secret roode_web_password
+  sorting_groups:
+    - id: web_group_overview
+      name: Overview
+      sorting_weight: 10
+    - id: web_group_controls
+      name: Controls
+      sorting_weight: 20
+    - id: web_group_live
+      name: Live Data
+      sorting_weight: 30
+    - id: web_group_tuning
+      name: Tuning
+      sorting_weight: 40
 
 button:
   - platform: restart
     name: ${friendly_name} Restart
     entity_category: config
+    web_server:
+      sorting_group_id: web_group_controls
+      sorting_weight: 100
 
 binary_sensor:
   - platform: status
     name: ${friendly_name} Device Status
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_overview
+      sorting_weight: 10
 
 text_sensor:
   - platform: wifi_info
     ip_address:
       name: ${friendly_name} IP Address
+      web_server:
+        sorting_group_id: web_group_overview
+        sorting_weight: 20
     ssid:
       name: ${friendly_name} WiFi SSID
+      web_server:
+        sorting_group_id: web_group_overview
+        sorting_weight: 30
   - platform: template
     name: ${friendly_name} Sensor Profile
     entity_category: diagnostic
     update_interval: never
+    web_server:
+      sorting_group_id: web_group_overview
+      sorting_weight: 40
     lambda: |-
       return {"${sensor_profile}"};
   - platform: template
     name: ${friendly_name} Sensor Count
     entity_category: diagnostic
     update_interval: never
+    web_server:
+      sorting_group_id: web_group_overview
+      sorting_weight: 50
     lambda: |-
       return {"${sensor_count}"};

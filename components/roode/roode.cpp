@@ -2,6 +2,32 @@
 
 namespace esphome {
 namespace roode {
+namespace {
+uint8_t current_threshold_percentage(const Threshold *threshold, bool is_max, uint8_t fallback) {
+  auto configured = is_max ? threshold->max_percentage : threshold->min_percentage;
+  if (configured.has_value()) {
+    return configured.value();
+  }
+
+  uint16_t idle = threshold->idle;
+  uint16_t value = is_max ? threshold->max : threshold->min;
+  if (idle == 0) {
+    return fallback;
+  }
+  return (value * 100U) / idle;
+}
+
+uint8_t current_roi_value(uint8_t override_value, uint8_t active_value, uint8_t fallback) {
+  if (override_value != 0) {
+    return override_value;
+  }
+  if (active_value != 0) {
+    return active_value;
+  }
+  return fallback;
+}
+}  // namespace
+
 void Roode::dump_config() {
   ESP_LOGCONFIG(TAG, "Roode:");
   ESP_LOGCONFIG(TAG, "  Sample size: %d", samples);
@@ -172,6 +198,43 @@ void Roode::path_tracking(Zone *zone) {
     }
   }
 }
+
+uint8_t Roode::get_min_threshold_percentage() const {
+  return current_threshold_percentage(this->entry->threshold, false, 0);
+}
+
+void Roode::set_min_threshold_percentage(uint8_t percentage) {
+  this->entry->threshold->set_min_percentage(percentage);
+  this->exit->threshold->set_min_percentage(percentage);
+}
+
+uint8_t Roode::get_max_threshold_percentage() const {
+  return current_threshold_percentage(this->entry->threshold, true, 85);
+}
+
+void Roode::set_max_threshold_percentage(uint8_t percentage) {
+  this->entry->threshold->set_max_percentage(percentage);
+  this->exit->threshold->set_max_percentage(percentage);
+}
+
+uint8_t Roode::get_roi_width() const {
+  return current_roi_value(this->entry->roi_override->width, this->entry->roi->width, 6);
+}
+
+void Roode::set_roi_width(uint8_t width) {
+  this->entry->roi_override->width = width;
+  this->exit->roi_override->width = width;
+}
+
+uint8_t Roode::get_roi_height() const {
+  return current_roi_value(this->entry->roi_override->height, this->entry->roi->height, 16);
+}
+
+void Roode::set_roi_height(uint8_t height) {
+  this->entry->roi_override->height = height;
+  this->exit->roi_override->height = height;
+}
+
 void Roode::updateCounter(int delta) {
   if (this->people_counter == nullptr) {
     return;
@@ -182,7 +245,13 @@ void Roode::updateCounter(int delta) {
   call.set_value(next);
   call.perform();
 }
-void Roode::recalibration() { calibrate_zones(); }
+void Roode::recalibration() {
+  if (this->distanceSensor->is_failed()) {
+    ESP_LOGE(TAG, "Cannot recalibrate while VL53L1X sensor is failed");
+    return;
+  }
+  calibrate_zones();
+}
 
 const RangingMode *Roode::determine_raning_mode(uint16_t average_entry_zone_distance,
                                                 uint16_t average_exit_zone_distance) {
@@ -206,6 +275,11 @@ const RangingMode *Roode::determine_raning_mode(uint16_t average_entry_zone_dist
 }
 
 void Roode::calibrate_zones() {
+  if (this->distanceSensor->is_failed()) {
+    ESP_LOGE(TAG, "Skipping calibration because VL53L1X sensor is failed");
+    return;
+  }
+
   ESP_LOGI(SETUP, "Calibrating sensor zones");
 
   entry->reset_roi(orientation_ == Parallel ? 167 : 195);

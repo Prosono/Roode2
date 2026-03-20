@@ -93,6 +93,15 @@ Current wiring assumptions for multi-sensor profiles:
 The dual and triple profiles currently run one independent `roode` instance per physical sensor.
 That makes them good for deployment, tuning, and side-by-side testing now; a fused 2-of-3 counter can be added on top of this next.
 
+When you open the ESP's IP address in a browser, the built-in ESPHome web UI now exposes:
+
+- an `Overview` section with profile, sensor count, IP, WiFi, and health summary
+- a `Controls` section with restart, per-sensor recalibration, and `Recalibrate All`
+- a `Live Data` section with presence, distances, status codes, health text, and snapshots
+- a `Tuning` section with people counter, sampling, threshold percentages, and ROI size controls
+
+This makes it possible to debug and tune the active profile directly on the device without editing YAML for every small change.
+
 Other than base ESPHome configuration the only config that's needed for Roode is
 
 ```yaml

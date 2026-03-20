@@ -17,3 +17,42 @@ packages:
       node_label: Primary
       node_address: "0x2A"
       node_xshut_pin: GPIO16
+      node_weight_base: "10"
+
+button:
+  - platform: template
+    name: ${friendly_name} Recalibrate All
+    entity_category: config
+    web_server:
+      sorting_group_id: web_group_controls
+      sorting_weight: 10
+    on_press:
+      - lambda: id(roode_primary)->recalibration();
+  - platform: template
+    name: ${friendly_name} Reset All Counters
+    entity_category: config
+    web_server:
+      sorting_group_id: web_group_controls
+      sorting_weight: 20
+    on_press:
+      - lambda: |-
+          auto call = id(people_counter_primary).make_call();
+          call.set_value(0);
+          call.perform();
+
+text_sensor:
+  - platform: template
+    name: ${friendly_name} Health Summary
+    entity_category: diagnostic
+    update_interval: 5s
+    web_server:
+      sorting_group_id: web_group_overview
+      sorting_weight: 60
+    lambda: |-
+      if (isnan(id(sensor_status_primary).state)) {
+        return {"Waiting for sensor"};
+      }
+      if ((int) id(sensor_status_primary).state == 0) {
+        return {"1/1 sensor ready"};
+      }
+      return {"0/1 sensors ready"};
