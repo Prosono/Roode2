@@ -11,12 +11,23 @@ float default_value_for_traits(const number::NumberTraits &traits) {
   }
   return traits.get_min_value();
 }
+
+float clamp_value_for_traits(const number::NumberTraits &traits, float value) {
+  if (value < traits.get_min_value()) {
+    return traits.get_min_value();
+  }
+  if (value > traits.get_max_value()) {
+    return traits.get_max_value();
+  }
+  return value;
+}
 }  // namespace
 
 auto PersistedNumber::control(float newValue) -> void {
-  this->publish_state(newValue);
+  float value = clamp_value_for_traits(this->traits, newValue);
+  this->publish_state(value);
   if (this->restore_value_) {
-    this->pref_.save(&newValue);
+    this->pref_.save(&value);
   }
 }
 
@@ -33,7 +44,11 @@ auto PersistedNumber::setup() -> void {
       value = default_value_for_traits(this->traits);
     }
   }
+  value = clamp_value_for_traits(this->traits, value);
   this->publish_state(value);
+  if (this->restore_value_) {
+    this->pref_.save(&value);
+  }
 }
 
 }  // namespace number

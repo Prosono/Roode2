@@ -20,6 +20,7 @@ roode_ns = cg.esphome_ns.namespace("roode")
 Roode = roode_ns.class_("Roode", cg.PollingComponent)
 
 CONF_AUTO = "auto"
+CONF_AUTO_RECALIBRATION_INTERVAL = "auto_recalibration_interval"
 CONF_ORIENTATION = "orientation"
 CONF_DETECTION_THRESHOLDS = "detection_thresholds"
 CONF_ENTRY_ZONE = "entry"
@@ -76,12 +77,18 @@ MASKING_DETECTION_SCHEMA = NullableSchema(
     }
 )
 
+AUTO_RECALIBRATION_SCHEMA = cv.Any(
+    cv.one_of("off", lower=True),
+    cv.positive_time_period_milliseconds,
+)
+
 CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(): cv.declare_id(Roode),
         cv.GenerateID(CONF_SENSOR): cv.use_id(VL53L1X),
         cv.Optional(CONF_ORIENTATION, default="parallel"): cv.enum(ORIENTATION_VALUES),
         cv.Optional(CONF_SAMPLING, default=2): cv.All(cv.uint8_t, cv.Range(min=1)),
+        cv.Optional(CONF_AUTO_RECALIBRATION_INTERVAL, default="off"): AUTO_RECALIBRATION_SCHEMA,
         cv.Optional(CONF_ROI, default={}): ROI_SCHEMA,
         cv.Optional(CONF_DETECTION_THRESHOLDS, default={}): THRESHOLDS_SCHEMA,
         cv.Optional(CONF_MASKING_DETECTION, default={}): MASKING_DETECTION_SCHEMA,
@@ -106,6 +113,11 @@ async def to_code(config: Dict):
     cg.add(roode.set_orientation(config[CONF_ORIENTATION]))
     cg.add(roode.set_sampling_size(config[CONF_SAMPLING]))
     cg.add(roode.set_invert_direction(config[CONF_ZONES][CONF_INVERT]))
+    auto_recalibration = config[CONF_AUTO_RECALIBRATION_INTERVAL]
+    if auto_recalibration == "off":
+        cg.add(roode.set_auto_recalibration_interval_ms(0))
+    else:
+        cg.add(roode.set_auto_recalibration_interval_ms(auto_recalibration))
     cg.add(roode.set_masking_distance_threshold(config[CONF_MASKING_DETECTION][CONF_DISTANCE]))
     cg.add(roode.set_masking_hold_time_ms(config[CONF_MASKING_DETECTION][CONF_DURATION]))
     setup_zone(CONF_ENTRY_ZONE, config, roode)

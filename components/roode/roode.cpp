@@ -3,6 +3,10 @@
 namespace esphome {
 namespace roode {
 namespace {
+constexpr float PEOPLE_COUNTER_MIN = 0.0f;
+constexpr float PEOPLE_COUNTER_MAX = 50.0f;
+constexpr uint32_t MILLIS_PER_MINUTE = 60000UL;
+
 uint8_t current_threshold_percentage(const Threshold *threshold, bool is_max, uint8_t fallback) {
   auto configured = is_max ? threshold->max_percentage : threshold->min_percentage;
   if (configured.has_value()) {
@@ -26,11 +30,22 @@ uint8_t current_roi_value(uint8_t override_value, uint8_t active_value, uint8_t 
   }
   return fallback;
 }
+
+float clamp_people_counter(float value) {
+  if (value < PEOPLE_COUNTER_MIN) {
+    return PEOPLE_COUNTER_MIN;
+  }
+  if (value > PEOPLE_COUNTER_MAX) {
+    return PEOPLE_COUNTER_MAX;
+  }
+  return value;
+}
 }  // namespace
 
 void Roode::dump_config() {
   ESP_LOGCONFIG(TAG, "Roode:");
   ESP_LOGCONFIG(TAG, "  Sample size: %d", samples);
+  ESP_LOGCONFIG(TAG, "  Auto recalibration: %u min", this->get_auto_recalibration_interval_minutes());
   LOG_UPDATE_INTERVAL(this);
   entry->dump_config();
   exit->dump_config();
@@ -69,6 +84,7 @@ void Roode::loop() {
   update_masking_state_();
   path_tracking(this->current_zone);
   handle_sensor_status();
+  handle_auto_recalibration_();
   this->current_zone = this->current_zone == this->entry ? this->exit : this->entry;
   // ESP_LOGI("Experimental", "Entry zone: %d, exit zone: %d",
   // entry->getDistance(Roode::distanceSensor, Roode::sensor_status),
@@ -201,6 +217,40 @@ void Roode::path_tracking(Zone *zone) {
   }
 }
 
+uint16_t Roode::get_auto_recalibration_interval_minutes() const {
+  return this->auto_recalibration_interval_ms_ == 0 ? 0 : this->auto_recalibration_interval_ms_ / MILLIS_PER_MINUTE;
+}
+
+uint32_t Roode::get_minutes_since_last_recalibration() const {
+  if (this->last_recalibration_ms_ == 0) {
+    return 0;
+  }
+  return (millis() - this->last_recalibration_ms_) / MILLIS_PER_MINUTE;
+}
+
+uint32_t Roode::get_minutes_until_next_recalibration() const {
+  if (this->auto_recalibration_interval_ms_ == 0 || this->last_recalibration_ms_ == 0) {
+    return 0;
+  }
+
+  uint32_t elapsed = millis() - this->last_recalibration_ms_;
+  if (elapsed >= this->auto_recalibration_interval_ms_) {
+    return 0;
+  }
+
+  return (this->auto_recalibration_interval_ms_ - elapsed) / MILLIS_PER_MINUTE;
+}
+
+bool Roode::is_ready_for_recalibration() const {
+  if (this->distanceSensor == nullptr || this->distanceSensor->is_failed()) {
+    return false;
+  }
+  if (this->masking_detected_) {
+    return false;
+  }
+  return this->left_previous_status_ == NOBODY && this->right_previous_status_ == NOBODY;
+}
+
 uint8_t Roode::get_min_threshold_percentage() const {
   return current_threshold_percentage(this->entry->threshold, false, 0);
 }
@@ -241,7 +291,8 @@ void Roode::updateCounter(int delta) {
   if (this->people_counter == nullptr) {
     return;
   }
-  auto next = this->people_counter->state + (float) delta;
+  float current = isnan(this->people_counter->state) ? 0.0f : this->people_counter->state;
+  float next = clamp_people_counter(current + (float) delta);
   ESP_LOGI(TAG, "Updating people count: %d", (int) next);
   auto call = this->people_counter->make_call();
   call.set_value(next);
@@ -302,6 +353,29 @@ void Roode::recalibration() {
   calibrate_zones();
 }
 
+void Roode::handle_auto_recalibration_() {
+  if (this->auto_recalibration_interval_ms_ == 0 || this->distanceSensor == nullptr ||
+      this->distanceSensor->is_failed()) {
+    return;
+  }
+
+  if (this->last_recalibration_ms_ == 0) {
+    this->last_recalibration_ms_ = millis();
+    return;
+  }
+
+  if ((millis() - this->last_recalibration_ms_) < this->auto_recalibration_interval_ms_) {
+    return;
+  }
+
+  if (!this->is_ready_for_recalibration()) {
+    return;
+  }
+
+  ESP_LOGI(TAG, "Running automatic recalibration");
+  this->recalibration();
+}
+
 const RangingMode *Roode::determine_raning_mode(uint16_t average_entry_zone_distance,
                                                 uint16_t average_exit_zone_distance) {
   uint16_t min = average_entry_zone_distance < average_exit_zone_distance ? average_entry_zone_distance
@@ -344,6 +418,7 @@ void Roode::calibrate_zones() {
   publish_sensor_configuration(entry, exit, true);
   App.feed_wdt();
   publish_sensor_configuration(entry, exit, false);
+  this->last_recalibration_ms_ = millis();
   ESP_LOGI(SETUP, "Finished calibrating sensor zones");
 }
 

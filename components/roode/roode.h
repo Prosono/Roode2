@@ -1,5 +1,6 @@
 #pragma once
 #include <math.h>
+#include <stdint.h>
 
 #include "esphome/components/binary_sensor/binary_sensor.h"
 #include "esphome/components/sensor/sensor.h"
@@ -18,7 +19,7 @@ namespace esphome {
 namespace roode {
 #define NOBODY 0
 #define SOMEONE 1
-#define VERSION "1.5.1"
+#define VERSION "1.5.2"
 static const char *const TAG = "Roode";
 static const char *const SETUP = "Setup";
 static const char *const CALIBRATION = "Sensor Calibration";
@@ -71,6 +72,14 @@ class Roode : public PollingComponent {
     entry->set_max_samples(size);
     exit->set_max_samples(size);
   }
+  uint16_t get_auto_recalibration_interval_minutes() const;
+  void set_auto_recalibration_interval_ms(uint32_t duration_ms) { auto_recalibration_interval_ms_ = duration_ms; }
+  void set_auto_recalibration_interval_minutes(uint16_t minutes) {
+    auto_recalibration_interval_ms_ = minutes * 60000UL;
+  }
+  uint32_t get_minutes_since_last_recalibration() const;
+  uint32_t get_minutes_until_next_recalibration() const;
+  bool is_ready_for_recalibration() const;
   uint8_t get_min_threshold_percentage() const;
   void set_min_threshold_percentage(uint8_t percentage);
   uint8_t get_max_threshold_percentage() const;
@@ -146,9 +155,12 @@ class Roode : public PollingComponent {
   void updateCounter(int delta);
   void update_masking_state_();
   void publish_masking_state_(bool state);
+  void handle_auto_recalibration_();
   Orientation orientation_{Parallel};
   uint8_t samples{2};
   bool invert_direction_{false};
+  uint32_t auto_recalibration_interval_ms_{0};
+  uint32_t last_recalibration_ms_{0};
   uint16_t masking_distance_threshold_mm_{150};
   uint32_t masking_hold_time_ms_{2000};
   uint32_t masking_candidate_since_ms_{0};

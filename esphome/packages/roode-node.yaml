@@ -13,6 +13,7 @@ substitutions:
   node_max_threshold: "85%"
   node_mask_distance: "150mm"
   node_mask_duration: "2s"
+  node_auto_recalibration: "off"
   node_weight_base: "10"
 
 vl53l1x:
@@ -36,6 +37,7 @@ roode:
       width: ${node_roi_width}
     detection_thresholds:
       max: ${node_max_threshold}
+    auto_recalibration_interval: ${node_auto_recalibration}
     masking_detection:
       distance: ${node_mask_distance}
       duration: ${node_mask_duration}
@@ -69,9 +71,28 @@ number:
     people_counter:
       id: people_counter_${node_key}
       name: ${friendly_name} ${node_label} People Counter
+      min_value: 0
+      max_value: 50
       web_server:
         sorting_group_id: web_group_tuning
         sorting_weight: ${node_weight_base}
+  - platform: template
+    id: auto_recalibration_setting_${node_key}
+    name: ${friendly_name} ${node_label} Auto Recalibration (min)
+    entity_category: config
+    mode: box
+    min_value: 0
+    max_value: 720
+    step: 5
+    update_interval: 15s
+    web_server:
+      sorting_group_id: web_group_calibration
+      sorting_weight: ${node_weight_base}
+    lambda: |-
+      return (float) id(roode_${node_key})->get_auto_recalibration_interval_minutes();
+    set_action:
+      - lambda: |-
+          id(roode_${node_key})->set_auto_recalibration_interval_minutes((uint16_t) x);
   - platform: template
     id: sampling_setting_${node_key}
     name: ${friendly_name} ${node_label} Sampling
@@ -179,6 +200,33 @@ binary_sensor:
         sorting_weight: ${node_weight_base}
 
 sensor:
+  - platform: template
+    id: calibration_age_${node_key}
+    name: ${friendly_name} ${node_label} Minutes Since Calibration
+    entity_category: diagnostic
+    unit_of_measurement: min
+    accuracy_decimals: 0
+    update_interval: 30s
+    web_server:
+      sorting_group_id: web_group_calibration
+      sorting_weight: ${node_weight_base}
+    lambda: |-
+      return (float) id(roode_${node_key})->get_minutes_since_last_recalibration();
+  - platform: template
+    id: recalibration_due_${node_key}
+    name: ${friendly_name} ${node_label} Minutes Until Auto Recalibration
+    entity_category: diagnostic
+    unit_of_measurement: min
+    accuracy_decimals: 0
+    update_interval: 30s
+    web_server:
+      sorting_group_id: web_group_calibration
+      sorting_weight: ${node_weight_base}
+    lambda: |-
+      if (id(roode_${node_key})->get_auto_recalibration_interval_minutes() == 0) {
+        return NAN;
+      }
+      return (float) id(roode_${node_key})->get_minutes_until_next_recalibration();
   - platform: roode
     id: roode_sensors_${node_key}
     roode_id: roode_${node_key}
@@ -255,6 +303,41 @@ sensor:
 
 text_sensor:
   - platform: template
+    id: calibration_guide_${node_key}
+    name: ${friendly_name} ${node_label} Calibration Guide
+    entity_category: diagnostic
+    update_interval: never
+    web_server:
+      sorting_group_id: web_group_calibration
+      sorting_weight: ${node_weight_base}
+    lambda: |-
+      return {"Leave the doorway empty, check the live distances, then press Recalibrate."};
+  - platform: template
+    id: calibration_status_${node_key}
+    name: ${friendly_name} ${node_label} Calibration Status
+    entity_category: diagnostic
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_calibration
+      sorting_weight: ${node_weight_base}
+    lambda: |-
+      if (isnan(id(sensor_status_${node_key}).state)) {
+        return {"Waiting for sensor"};
+      }
+      int status = (int) id(sensor_status_${node_key}).state;
+      if (status != 0) {
+        char buffer[24];
+        snprintf(buffer, sizeof(buffer), "Sensor error %d", status);
+        return {buffer};
+      }
+      if (id(masking_${node_key}).state) {
+        return {"Blocked - move away from sensor"};
+      }
+      if (id(presence_${node_key}).state) {
+        return {"Doorway occupied - wait"};
+      }
+      return {"Ready - clear and stable"};
+  - platform: template
     id: node_health_${node_key}
     name: ${friendly_name} ${node_label} Health
     entity_category: diagnostic
@@ -279,20 +362,21 @@ text_sensor:
     entity_category: diagnostic
     update_interval: 2s
     web_server:
-      sorting_group_id: web_group_live
+      sorting_group_id: web_group_calibration
       sorting_weight: ${node_weight_base}
     lambda: |-
       if (isnan(id(distance_entry_${node_key}).state) || isnan(id(distance_exit_${node_key}).state)) {
         return {"Waiting for distances"};
       }
-      char buffer[96];
+      char buffer[128];
       snprintf(
         buffer,
         sizeof(buffer),
-        "Entry %.0f mm | Exit %.0f mm | Presence %s | Masking %s",
+        "Entry %.0f mm | Exit %.0f mm | Max %.0f/%.0f | Masking %s",
         id(distance_entry_${node_key}).state,
         id(distance_exit_${node_key}).state,
-        id(presence_${node_key}).state ? "yes" : "no",
+        id(max_threshold_entry_${node_key}).state,
+        id(max_threshold_exit_${node_key}).state,
         id(masking_${node_key}).state ? "yes" : "no"
       );
       return {buffer};

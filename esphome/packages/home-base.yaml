@@ -51,6 +51,9 @@ web_server:
     - id: web_group_live
       name: Live Data
       sorting_weight: 30
+    - id: web_group_calibration
+      name: Calibration
+      sorting_weight: 35
     - id: web_group_tuning
       name: Tuning
       sorting_weight: 40

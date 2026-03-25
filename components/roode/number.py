@@ -19,8 +19,8 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_PEOPLE_COUNTER): PERSISTED_NUMBER_SCHEMA.extend(
             {
                 cv.Optional(CONF_ICON, default="mdi:counter"): cv.icon,  # new default
-                cv.Optional(CONF_MIN_VALUE, default=-128): cv.int_range(-128, 128),
-                cv.Optional(CONF_MAX_VALUE, 10): cv.int_range(-128, 128),
+                cv.Optional(CONF_MIN_VALUE, default=0): cv.int_range(0, 50),
+                cv.Optional(CONF_MAX_VALUE, default=50): cv.int_range(0, 50),
             }
         ),
     }
