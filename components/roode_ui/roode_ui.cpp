@@ -883,6 +883,9 @@ const char ROODE_UI_HTML[] = R"html(
             expandedNodes.add(key);
           } else {
             expandedNodes.delete(key);
+            if (expandedNodes.size === 0 && !busy) {
+              refresh(true);
+            }
           }
         });
       });
@@ -1189,13 +1192,13 @@ const char ROODE_UI_HTML[] = R"html(
       return response.json();
     }
 
-    async function refresh() {
+    async function refresh(force = false) {
       try {
         const payload = await fetchState();
         connectionPill.textContent = payload.connection_text || 'Connected to device';
         connectionCopy.textContent = 'Online';
         lastSync.textContent = new Date().toLocaleTimeString();
-        if (!activeEditor() && !busy) {
+        if (force || (!activeEditor() && expandedNodes.size === 0 && !busy)) {
           renderNodes(payload);
         }
       } catch (error) {
@@ -1239,7 +1242,7 @@ const char ROODE_UI_HTML[] = R"html(
         const result = await postAction(payload);
         delete draftValues[nodeKey(nodeIndex)];
         showToast(result.message || 'Updated');
-        await refresh();
+        await refresh(true);
       } catch (error) {
         showToast('Unable to apply change', true);
       } finally {
