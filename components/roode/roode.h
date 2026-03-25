@@ -1,5 +1,6 @@
 #pragma once
 #include <math.h>
+#include <string>
 #include <stdint.h>
 
 #include "esphome/components/binary_sensor/binary_sensor.h"
@@ -65,6 +66,7 @@ class Roode : public PollingComponent {
   TofSensor *get_tof_sensor() { return this->distanceSensor; }
   void set_tof_sensor(TofSensor *sensor) { this->distanceSensor = sensor; }
   void set_invert_direction(bool dir) { invert_direction_ = dir; }
+  bool get_invert_direction() const { return invert_direction_; }
   void set_orientation(Orientation val) { orientation_ = val; }
   uint8_t get_sampling_size() const { return samples; }
   void set_sampling_size(uint8_t size) {
@@ -80,6 +82,19 @@ class Roode : public PollingComponent {
   uint32_t get_minutes_since_last_recalibration() const;
   uint32_t get_minutes_until_next_recalibration() const;
   bool is_ready_for_recalibration() const;
+  bool is_presence_detected() const { return presence_detected_; }
+  bool is_masking_detected() const { return masking_detected_; }
+  int get_sensor_status_code() const;
+  uint16_t get_entry_distance() const;
+  uint16_t get_exit_distance() const;
+  uint16_t get_entry_max_threshold() const { return this->entry->threshold->max; }
+  uint16_t get_exit_max_threshold() const { return this->exit->threshold->max; }
+  uint16_t get_entry_min_threshold() const { return this->entry->threshold->min; }
+  uint16_t get_exit_min_threshold() const { return this->exit->threshold->min; }
+  float get_people_counter_value() const;
+  void set_people_counter_value(float value);
+  void reset_people_counter() { this->set_people_counter_value(0.0f); }
+  const std::string &get_last_direction() const { return last_direction_; }
   uint8_t get_min_threshold_percentage() const;
   void set_min_threshold_percentage(uint8_t percentage);
   uint8_t get_max_threshold_percentage() const;
@@ -155,16 +170,19 @@ class Roode : public PollingComponent {
   void updateCounter(int delta);
   void update_masking_state_();
   void publish_masking_state_(bool state);
+  void publish_presence_state_(bool state);
   void handle_auto_recalibration_();
   Orientation orientation_{Parallel};
   uint8_t samples{2};
   bool invert_direction_{false};
   uint32_t auto_recalibration_interval_ms_{0};
   uint32_t last_recalibration_ms_{0};
+  bool presence_detected_{false};
   uint16_t masking_distance_threshold_mm_{150};
   uint32_t masking_hold_time_ms_{2000};
   uint32_t masking_candidate_since_ms_{0};
   bool masking_detected_{false};
+  std::string last_direction_{"Waiting"};
   int number_attempts = 20;  // TO DO: make this configurable
   int short_distance_threshold = 1300;
   int medium_distance_threshold = 2000;

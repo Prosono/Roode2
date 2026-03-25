@@ -40,6 +40,7 @@ captive_portal:
 
 web_server:
   port: 80
+  version: 3
   auth:
     username: ${web_username}
     password: ${web_password}
@@ -47,7 +48,7 @@ web_server:
 vl53l1x:
   sda_pin: 21
   scl_pin: 22
-  frequency: 100kHz
+  frequency: 400kHz
   calibration:
     ranging: auto
 
@@ -59,6 +60,12 @@ roode:
     max: 85%
   zones:
     invert: true
+
+roode_ui:
+  title: ${friendly_name}
+  nodes:
+    - label: Primary
+      roode_id: roode_platform
 
 button:
   - platform: restart

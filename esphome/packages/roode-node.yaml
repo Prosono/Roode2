@@ -21,7 +21,7 @@ vl53l1x:
     address: ${node_address}
     sda_pin: ${node_sda_pin}
     scl_pin: ${node_scl_pin}
-    frequency: 100kHz
+    frequency: 400kHz
     pins:
       xshut: ${node_xshut_pin}
     calibration:

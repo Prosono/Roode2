@@ -56,6 +56,7 @@ void Roode::setup() {
   if (version_sensor != nullptr) {
     version_sensor->publish_state(VERSION);
   }
+  this->publish_presence_state_(false);
   this->publish_masking_state_(false);
   ESP_LOGI(SETUP, "Using sampling with sampling size: %d", samples);
 
@@ -121,9 +122,7 @@ void Roode::path_tracking(Zone *zone) {
   if (zone->getMinDistance() < zone->threshold->max && zone->getMinDistance() > zone->threshold->min) {
     // Someone is in the sensing area
     CurrentZoneStatus = SOMEONE;
-    if (presence_sensor != nullptr) {
-      presence_sensor->publish_state(true);
-    }
+    this->publish_presence_state_(true);
   }
 
   // left zone
@@ -183,6 +182,7 @@ void Roode::path_tracking(Zone *zone) {
           ESP_LOGI("Roode pathTracking", "Exit detected.");
 
           this->updateCounter(-1);
+          this->last_direction_ = "Exit";
           if (entry_exit_event_sensor != nullptr) {
             entry_exit_event_sensor->publish_state("Exit");
           }
@@ -190,6 +190,7 @@ void Roode::path_tracking(Zone *zone) {
           // This an entry
           ESP_LOGI("Roode pathTracking", "Entry detected.");
           this->updateCounter(1);
+          this->last_direction_ = "Entry";
           if (entry_exit_event_sensor != nullptr) {
             entry_exit_event_sensor->publish_state("Entry");
           }
@@ -209,11 +210,9 @@ void Roode::path_tracking(Zone *zone) {
       this->path_track_[this->path_track_filling_size_ - 1] = AllZonesCurrentStatus;
     }
   }
-  if (presence_sensor != nullptr) {
-    if (CurrentZoneStatus == NOBODY && this->left_previous_status_ == NOBODY && this->right_previous_status_ == NOBODY) {
-      // nobody is in the sensing area
-      presence_sensor->publish_state(false);
-    }
+  if (CurrentZoneStatus == NOBODY && this->left_previous_status_ == NOBODY && this->right_previous_status_ == NOBODY) {
+    // nobody is in the sensing area
+    this->publish_presence_state_(false);
   }
 }
 
@@ -249,6 +248,28 @@ bool Roode::is_ready_for_recalibration() const {
     return false;
   }
   return this->left_previous_status_ == NOBODY && this->right_previous_status_ == NOBODY;
+}
+
+int Roode::get_sensor_status_code() const {
+  if (this->distanceSensor != nullptr && this->distanceSensor->is_failed() && this->last_sensor_status == VL53L1_ERROR_NONE) {
+    return -1;
+  }
+  return this->last_sensor_status;
+}
+
+uint16_t Roode::get_entry_distance() const {
+  return this->entry->hasDistance() ? this->entry->getDistance() : 0;
+}
+
+uint16_t Roode::get_exit_distance() const {
+  return this->exit->hasDistance() ? this->exit->getDistance() : 0;
+}
+
+float Roode::get_people_counter_value() const {
+  if (this->people_counter == nullptr || isnan(this->people_counter->state)) {
+    return 0.0f;
+  }
+  return this->people_counter->state;
 }
 
 uint8_t Roode::get_min_threshold_percentage() const {
@@ -297,6 +318,25 @@ void Roode::updateCounter(int delta) {
   auto call = this->people_counter->make_call();
   call.set_value(next);
   call.perform();
+}
+
+void Roode::set_people_counter_value(float value) {
+  if (this->people_counter == nullptr) {
+    return;
+  }
+  auto call = this->people_counter->make_call();
+  call.set_value(clamp_people_counter(value));
+  call.perform();
+}
+
+void Roode::publish_presence_state_(bool state) {
+  if (this->presence_detected_ == state) {
+    return;
+  }
+  this->presence_detected_ = state;
+  if (this->presence_sensor != nullptr) {
+    this->presence_sensor->publish_state(state);
+  }
 }
 
 void Roode::publish_masking_state_(bool state) {

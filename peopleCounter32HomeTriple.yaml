@@ -35,6 +35,16 @@ packages:
       node_xshut_pin: GPIO18
       node_weight_base: "30"
 
+roode_ui:
+  title: ${friendly_name}
+  nodes:
+    - label: Top
+      roode_id: roode_top
+    - label: Middle
+      roode_id: roode_middle
+    - label: Bottom
+      roode_id: roode_bottom
+
 button:
   - platform: template
     name: ${friendly_name} Recalibrate All

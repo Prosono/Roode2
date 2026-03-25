@@ -19,6 +19,12 @@ packages:
       node_xshut_pin: GPIO16
       node_weight_base: "10"
 
+roode_ui:
+  title: ${friendly_name}
+  nodes:
+    - label: Primary
+      roode_id: roode_primary
+
 button:
   - platform: template
     name: ${friendly_name} Recalibrate All
