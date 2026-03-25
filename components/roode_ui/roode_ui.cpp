@@ -813,6 +813,8 @@ const char ROODE_UI_HTML[] = R"html(
     const themeToggle = document.getElementById('theme-toggle');
 
     let busy = false;
+    const expandedNodes = new Set();
+    const draftValues = {};
 
     const rememberedTheme = localStorage.getItem('roode-theme');
     if (rememberedTheme) {
@@ -839,6 +841,51 @@ const char ROODE_UI_HTML[] = R"html(
       toast.classList.add('show');
       clearTimeout(showToast._timer);
       showToast._timer = setTimeout(() => toast.classList.remove('show'), 2400);
+    }
+
+    function nodeKey(value) {
+      return String(value);
+    }
+
+    function rememberDraft(nodeIndex, field, value) {
+      const key = nodeKey(nodeIndex);
+      if (!draftValues[key]) {
+        draftValues[key] = {};
+      }
+      draftValues[key][field] = String(value);
+    }
+
+    function draftValue(nodeIndex, field, fallback) {
+      const key = nodeKey(nodeIndex);
+      if (draftValues[key] && draftValues[key][field] !== undefined) {
+        return draftValues[key][field];
+      }
+      return fallback;
+    }
+
+    function activeEditor() {
+      const active = document.activeElement;
+      if (!active || !active.matches('[data-field]')) {
+        return null;
+      }
+      return {
+        node: nodeKey(active.dataset.node),
+        field: active.dataset.field,
+        value: active.value,
+      };
+    }
+
+    function attachDetailsTracking() {
+      nodeList.querySelectorAll('details[data-node]').forEach((details) => {
+        details.addEventListener('toggle', () => {
+          const key = nodeKey(details.dataset.node);
+          if (details.open) {
+            expandedNodes.add(key);
+          } else {
+            expandedNodes.delete(key);
+          }
+        });
+      });
     }
 
     function escapeHtml(value) {
@@ -925,6 +972,11 @@ const char ROODE_UI_HTML[] = R"html(
     }
 
     function renderNodes(payload) {
+      const editor = activeEditor();
+      if (editor) {
+        rememberDraft(editor.node, editor.field, editor.value);
+      }
+
       pageTitle.textContent = payload.title || 'Roode Service';
       pageSubtitle.textContent = payload.subtitle || 'Check sensor health, recalibrate safely, and adjust field settings directly on the device.';
 
@@ -935,6 +987,15 @@ const char ROODE_UI_HTML[] = R"html(
 
       nodeList.innerHTML = payload.nodes.map((node) => {
         const readiness = readinessFor(node);
+        const nodeId = nodeKey(node.index);
+        const peopleCounter = draftValue(nodeId, 'people_counter', node.people_counter);
+        const autoRecalibration = draftValue(nodeId, 'auto_recalibration', node.auto_recalibration_minutes);
+        const sampling = draftValue(nodeId, 'sampling', node.sampling);
+        const minThreshold = draftValue(nodeId, 'min_threshold', node.min_threshold_percent);
+        const maxThreshold = draftValue(nodeId, 'max_threshold', node.max_threshold_percent);
+        const roiWidth = draftValue(nodeId, 'roi_width', node.roi_width);
+        const roiHeight = draftValue(nodeId, 'roi_height', node.roi_height);
+        const invertDirection = draftValue(nodeId, 'invert_direction', node.invert_direction ? 'true' : 'false');
         return `
           <section class="panel node-card" data-node="${node.index}">
             <div class="node-head">
@@ -1024,7 +1085,7 @@ const char ROODE_UI_HTML[] = R"html(
               <div class="counter-grid">
                 <label>
                   People currently counted
-                  <input type="number" min="0" max="50" step="1" value="${node.people_counter}" data-field="people_counter" data-node="${node.index}">
+                  <input type="number" min="0" max="50" step="1" value="${peopleCounter}" data-field="people_counter" data-node="${node.index}">
                 </label>
                 <div class="mini-card">
                   <span>Last direction</span>
@@ -1036,7 +1097,7 @@ const char ROODE_UI_HTML[] = R"html(
               </div>
             </section>
 
-            <details>
+            <details data-node="${node.index}" ${expandedNodes.has(nodeId) ? 'open' : ''}>
               <summary>
                 <span>Advanced tuning for installers</span>
                 <span>${node.auto_recalibration_minutes > 0 ? `Auto every ${node.auto_recalibration_minutes} min` : 'Manual recalibration only'}</span>
@@ -1047,40 +1108,40 @@ const char ROODE_UI_HTML[] = R"html(
                 <label>
                   Auto recalibration (minutes)
                   <span class="field-copy">Set to 0 to recalibrate only when a person presses the button.</span>
-                  <input type="number" min="0" max="720" step="5" value="${node.auto_recalibration_minutes}" data-field="auto_recalibration" data-node="${node.index}">
+                  <input type="number" min="0" max="720" step="5" value="${autoRecalibration}" data-field="auto_recalibration" data-node="${node.index}">
                 </label>
                 <label>
                   Sampling
                   <span class="field-copy">Higher sampling smooths noise but can make the sensor react a little slower.</span>
-                  <input type="number" min="1" max="8" step="1" value="${node.sampling}" data-field="sampling" data-node="${node.index}">
+                  <input type="number" min="1" max="8" step="1" value="${sampling}" data-field="sampling" data-node="${node.index}">
                 </label>
                 <label>
                   Direction mode
                   <span class="field-copy">Use Reversed only if entry and exit are being counted the wrong way around.</span>
                   <select data-field="invert_direction" data-node="${node.index}">
-                    <option value="false" ${node.invert_direction ? '' : 'selected'}>Normal</option>
-                    <option value="true" ${node.invert_direction ? 'selected' : ''}>Reversed</option>
+                    <option value="false" ${invertDirection === 'false' ? 'selected' : ''}>Normal</option>
+                    <option value="true" ${invertDirection === 'true' ? 'selected' : ''}>Reversed</option>
                   </select>
                 </label>
                 <label>
                   Minimum threshold (%)
                   <span class="field-copy">Lower values keep close objects from being ignored.</span>
-                  <input type="number" min="0" max="40" step="1" value="${node.min_threshold_percent}" data-field="min_threshold" data-node="${node.index}">
+                  <input type="number" min="0" max="40" step="1" value="${minThreshold}" data-field="min_threshold" data-node="${node.index}">
                 </label>
                 <label>
                   Maximum threshold (%)
                   <span class="field-copy">Higher values make the zone react further away from the sensor.</span>
-                  <input type="number" min="40" max="95" step="1" value="${node.max_threshold_percent}" data-field="max_threshold" data-node="${node.index}">
+                  <input type="number" min="40" max="95" step="1" value="${maxThreshold}" data-field="max_threshold" data-node="${node.index}">
                 </label>
                 <label>
                   ROI width
                   <span class="field-copy">Adjusts how wide each watch area is across the doorway.</span>
-                  <input type="number" min="4" max="16" step="1" value="${node.roi_width}" data-field="roi_width" data-node="${node.index}">
+                  <input type="number" min="4" max="16" step="1" value="${roiWidth}" data-field="roi_width" data-node="${node.index}">
                 </label>
                 <label>
                   ROI height
                   <span class="field-copy">Adjusts how tall each watch area is inside the sensor image.</span>
-                  <input type="number" min="4" max="16" step="1" value="${node.roi_height}" data-field="roi_height" data-node="${node.index}">
+                  <input type="number" min="4" max="16" step="1" value="${roiHeight}" data-field="roi_height" data-node="${node.index}">
                 </label>
                 <label>
                   Minutes since calibration
@@ -1108,6 +1169,8 @@ const char ROODE_UI_HTML[] = R"html(
           </section>
         `;
       }).join('');
+
+      attachDetailsTracking();
     }
 
     async function fetchState() {
@@ -1129,16 +1192,30 @@ const char ROODE_UI_HTML[] = R"html(
     async function refresh() {
       try {
         const payload = await fetchState();
-        renderNodes(payload);
         connectionPill.textContent = payload.connection_text || 'Connected to device';
         connectionCopy.textContent = 'Online';
         lastSync.textContent = new Date().toLocaleTimeString();
+        if (!activeEditor() && !busy) {
+          renderNodes(payload);
+        }
       } catch (error) {
         connectionPill.textContent = 'Connection lost. Retrying.';
         connectionCopy.textContent = 'Offline';
         showToast('Could not refresh device state', true);
       }
     }
+
+    document.addEventListener('input', (event) => {
+      const field = event.target.closest('[data-field]');
+      if (!field) return;
+      rememberDraft(field.dataset.node, field.dataset.field, field.value);
+    });
+
+    document.addEventListener('change', (event) => {
+      const field = event.target.closest('[data-field]');
+      if (!field) return;
+      rememberDraft(field.dataset.node, field.dataset.field, field.value);
+    });
 
     document.addEventListener('click', async (event) => {
       const button = event.target.closest('button[data-command]');
@@ -1160,6 +1237,7 @@ const char ROODE_UI_HTML[] = R"html(
       button.disabled = true;
       try {
         const result = await postAction(payload);
+        delete draftValues[nodeKey(nodeIndex)];
         showToast(result.message || 'Updated');
         await refresh();
       } catch (error) {
