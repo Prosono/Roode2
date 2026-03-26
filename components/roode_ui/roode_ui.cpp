@@ -788,8 +788,8 @@ const char ROODE_UI_HTML[] = R"html(
         <p>Lower distance means something is closer to the sensor. A zone becomes active when the live distance drops below its threshold.</p>
       </article>
       <article>
-        <strong>When to avoid calibration</strong>
-        <p>Do not recalibrate while someone is in the doorway or while the sensor face is covered, dusty, or blocked by a hand or object.</p>
+        <strong>If the count feels unstable</strong>
+        <p>First try moving the sensor higher, then recalibrate with an empty doorway. If needed, lower Max threshold a little or raise Sampling to make detection less jumpy.</p>
       </article>
     </section>
 
@@ -1105,7 +1105,7 @@ const char ROODE_UI_HTML[] = R"html(
                 <span>Advanced tuning for installers</span>
                 <span>${node.auto_recalibration_minutes > 0 ? `Auto every ${node.auto_recalibration_minutes} min` : 'Manual recalibration only'}</span>
               </summary>
-              <p class="advanced-copy">These settings are mainly for installation and troubleshooting. After changing them, use Apply tuning to save the values and run a new recalibration.</p>
+              <p class="advanced-copy">These settings are mainly for installation and troubleshooting. If the count feels too jumpy, start with Sampling 3 and a slightly lower Max threshold. After changing settings, use Apply tuning to save the values and run a new recalibration.</p>
 
               <div class="tuning-grid">
                 <label>
@@ -1408,27 +1408,46 @@ class RoodeUi::Handler : public AsyncWebHandler {
     std::string message = "Updated";
 
     if (action == "recalibrate") {
+      ESP_LOGI(TAG, "UI action: recalibrate node=%u", static_cast<unsigned int>(index));
       node->recalibration();
       message = "Recalibration started";
     } else if (action == "reset_counter") {
+      ESP_LOGI(TAG, "UI action: reset_counter node=%u", static_cast<unsigned int>(index));
       node->reset_people_counter();
       message = "Counter reset";
     } else if (action == "set_counter") {
-      node->set_people_counter_value(parse_u32_arg(request->arg("value"), 0));
+      auto counter_value = parse_u32_arg(request->arg("value"), 0);
+      ESP_LOGI(TAG, "UI action: set_counter node=%u value=%u", static_cast<unsigned int>(index),
+               static_cast<unsigned int>(counter_value));
+      node->set_people_counter_value(counter_value);
       message = "Counter saved";
     } else if (action == "apply_tuning") {
-      node->set_auto_recalibration_interval_minutes(
+      auto auto_recalibration =
           static_cast<uint16_t>(parse_u32_arg(request->arg("auto_recalibration"),
-                                              node->get_auto_recalibration_interval_minutes())));
-      node->set_sampling_size(
-          static_cast<uint8_t>(parse_u32_arg(request->arg("sampling"), node->get_sampling_size())));
-      node->set_invert_direction(parse_bool_arg(request->arg("invert_direction")));
-      node->set_min_threshold_percentage(
-          static_cast<uint8_t>(parse_u32_arg(request->arg("min_threshold"), node->get_min_threshold_percentage())));
-      node->set_max_threshold_percentage(
-          static_cast<uint8_t>(parse_u32_arg(request->arg("max_threshold"), node->get_max_threshold_percentage())));
-      node->set_roi_width(static_cast<uint8_t>(parse_u32_arg(request->arg("roi_width"), node->get_roi_width())));
-      node->set_roi_height(static_cast<uint8_t>(parse_u32_arg(request->arg("roi_height"), node->get_roi_height())));
+                                              node->get_auto_recalibration_interval_minutes()));
+      auto sampling = static_cast<uint8_t>(parse_u32_arg(request->arg("sampling"), node->get_sampling_size()));
+      auto invert_direction = parse_bool_arg(request->arg("invert_direction"));
+      auto min_threshold =
+          static_cast<uint8_t>(parse_u32_arg(request->arg("min_threshold"), node->get_min_threshold_percentage()));
+      auto max_threshold =
+          static_cast<uint8_t>(parse_u32_arg(request->arg("max_threshold"), node->get_max_threshold_percentage()));
+      auto roi_width = static_cast<uint8_t>(parse_u32_arg(request->arg("roi_width"), node->get_roi_width()));
+      auto roi_height = static_cast<uint8_t>(parse_u32_arg(request->arg("roi_height"), node->get_roi_height()));
+
+      ESP_LOGI(TAG,
+               "UI action: apply_tuning node=%u auto=%u sampling=%u invert=%s min=%u max=%u roi=%ux%u",
+               static_cast<unsigned int>(index), static_cast<unsigned int>(auto_recalibration),
+               static_cast<unsigned int>(sampling), invert_direction ? "true" : "false",
+               static_cast<unsigned int>(min_threshold), static_cast<unsigned int>(max_threshold),
+               static_cast<unsigned int>(roi_width), static_cast<unsigned int>(roi_height));
+
+      node->set_auto_recalibration_interval_minutes(auto_recalibration);
+      node->set_sampling_size(sampling);
+      node->set_invert_direction(invert_direction);
+      node->set_min_threshold_percentage(min_threshold);
+      node->set_max_threshold_percentage(max_threshold);
+      node->set_roi_width(roi_width);
+      node->set_roi_height(roi_height);
       node->recalibration();
       message = "Tuning applied and recalibration started";
     } else {

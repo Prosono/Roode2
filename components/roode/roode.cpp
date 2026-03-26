@@ -66,6 +66,10 @@ void Roode::setup() {
     return;
   }
 
+  if (this->status_sensor != nullptr) {
+    this->status_sensor->publish_state(VL53L1_ERROR_NONE);
+  }
+
   calibrate_zones();
 }
 
