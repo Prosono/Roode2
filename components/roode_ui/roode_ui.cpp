@@ -1107,7 +1107,7 @@ const char ROODE_UI_HTML[] = R"html(
                 <span>Advanced tuning for installers</span>
                 <span>${node.auto_recalibration_minutes > 0 ? `Auto every ${node.auto_recalibration_minutes} min` : 'Manual recalibration only'}</span>
               </summary>
-              <p class="advanced-copy">These settings are mainly for installation and troubleshooting. If the count feels too jumpy, start with Sampling 3 and a slightly lower Max threshold. After changing settings, use Apply tuning to save the values and run a new recalibration.</p>
+              <p class="advanced-copy">These settings are mainly for installation and troubleshooting. If the count feels too jumpy, start with Sampling 3 and a slightly lower Max threshold. Save tuning after changes. A new recalibration only runs automatically when a detection setting actually changed.</p>
 
               <div class="tuning-grid">
                 <label>
@@ -1162,7 +1162,7 @@ const char ROODE_UI_HTML[] = R"html(
 
               <div class="apply-row">
                 <button class="primary" data-command="apply_tuning" data-node="${node.index}">
-                  Apply tuning and recalibrate
+                  Save tuning
                 </button>
               </div>
             </details>
@@ -1461,17 +1461,29 @@ class RoodeUi::Handler : public AsyncWebHandler {
       node->set_people_counter_value(counter_value);
       message = "Counter saved";
     } else if (action == "apply_tuning") {
+      auto current_auto_recalibration = node->get_auto_recalibration_interval_minutes();
+      auto current_sampling = node->get_sampling_size();
+      auto current_invert_direction = node->get_invert_direction();
+      auto current_min_threshold = node->get_min_threshold_percentage();
+      auto current_max_threshold = node->get_max_threshold_percentage();
+      auto current_roi_width = node->get_roi_width();
+      auto current_roi_height = node->get_roi_height();
+
       auto auto_recalibration =
           static_cast<uint16_t>(parse_u32_arg(request->arg("auto_recalibration"),
                                               node->get_auto_recalibration_interval_minutes()));
-      auto sampling = static_cast<uint8_t>(parse_u32_arg(request->arg("sampling"), node->get_sampling_size()));
+      auto sampling = static_cast<uint8_t>(parse_u32_arg(request->arg("sampling"), current_sampling));
       auto invert_direction = parse_bool_arg(request->arg("invert_direction"));
       auto min_threshold =
-          static_cast<uint8_t>(parse_u32_arg(request->arg("min_threshold"), node->get_min_threshold_percentage()));
+          static_cast<uint8_t>(parse_u32_arg(request->arg("min_threshold"), current_min_threshold));
       auto max_threshold =
-          static_cast<uint8_t>(parse_u32_arg(request->arg("max_threshold"), node->get_max_threshold_percentage()));
-      auto roi_width = static_cast<uint8_t>(parse_u32_arg(request->arg("roi_width"), node->get_roi_width()));
-      auto roi_height = static_cast<uint8_t>(parse_u32_arg(request->arg("roi_height"), node->get_roi_height()));
+          static_cast<uint8_t>(parse_u32_arg(request->arg("max_threshold"), current_max_threshold));
+      auto roi_width = static_cast<uint8_t>(parse_u32_arg(request->arg("roi_width"), current_roi_width));
+      auto roi_height = static_cast<uint8_t>(parse_u32_arg(request->arg("roi_height"), current_roi_height));
+
+      bool needs_recalibration = sampling != current_sampling || invert_direction != current_invert_direction ||
+                                 min_threshold != current_min_threshold || max_threshold != current_max_threshold ||
+                                 roi_width != current_roi_width || roi_height != current_roi_height;
 
       ESP_LOGI(TAG,
                "UI action: apply_tuning node=%u auto=%u sampling=%u invert=%s min=%u max=%u roi=%ux%u",
@@ -1487,8 +1499,13 @@ class RoodeUi::Handler : public AsyncWebHandler {
       node->set_max_threshold_percentage(max_threshold);
       node->set_roi_width(roi_width);
       node->set_roi_height(roi_height);
-      node->recalibration();
-      message = "Tuning applied and recalibration started";
+      node->persist_runtime_settings();
+      if (needs_recalibration) {
+        node->recalibration();
+        message = "Tuning saved and recalibration started";
+      } else {
+        message = "Tuning saved";
+      }
     } else {
       request->send(400, "application/json", "{\"ok\":false,\"message\":\"Unsupported action\"}");
       return;

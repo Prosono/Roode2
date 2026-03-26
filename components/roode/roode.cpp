@@ -6,6 +6,7 @@ namespace {
 constexpr float PEOPLE_COUNTER_MIN = 0.0f;
 constexpr float PEOPLE_COUNTER_MAX = 50.0f;
 constexpr uint32_t MILLIS_PER_MINUTE = 60000UL;
+constexpr uint8_t PERSISTED_TUNING_VERSION = 1;
 
 uint8_t current_threshold_percentage(const Threshold *threshold, bool is_max, uint8_t fallback) {
   auto configured = is_max ? threshold->max_percentage : threshold->min_percentage;
@@ -65,6 +66,9 @@ void Roode::setup() {
     ESP_LOGE(TAG, "Roode cannot be setup without a valid VL53L1X sensor");
     return;
   }
+
+  this->init_tuning_preferences_();
+  this->load_persisted_tuning_();
 
   if (this->status_sensor != nullptr) {
     this->status_sensor->publish_state(VL53L1_ERROR_NONE);
@@ -222,6 +226,73 @@ void Roode::path_tracking(Zone *zone) {
 
 uint16_t Roode::get_auto_recalibration_interval_minutes() const {
   return this->auto_recalibration_interval_ms_ == 0 ? 0 : this->auto_recalibration_interval_ms_ / MILLIS_PER_MINUTE;
+}
+
+uint32_t Roode::tuning_preference_key_() const {
+  uint32_t address = this->distanceSensor != nullptr ? this->distanceSensor->get_address() : 0x29;
+  return 0x524F4F44UL ^ address;
+}
+
+void Roode::init_tuning_preferences_() {
+  if (this->tuning_pref_ready_ || global_preferences == nullptr) {
+    return;
+  }
+  this->tuning_pref_ = global_preferences->make_preference<PersistedTuningState>(this->tuning_preference_key_(), true);
+  this->tuning_pref_ready_ = true;
+}
+
+void Roode::load_persisted_tuning_() {
+  if (!this->tuning_pref_ready_) {
+    return;
+  }
+
+  PersistedTuningState state{};
+  if (!this->tuning_pref_.load(&state) || state.version != PERSISTED_TUNING_VERSION) {
+    return;
+  }
+
+  ESP_LOGI(TAG,
+           "Loaded saved tuning auto=%u sampling=%u invert=%s min=%u max=%u roi=%ux%u",
+           static_cast<unsigned int>(state.auto_recalibration_minutes), static_cast<unsigned int>(state.sampling),
+           state.invert_direction ? "true" : "false", static_cast<unsigned int>(state.min_threshold_percentage),
+           static_cast<unsigned int>(state.max_threshold_percentage), static_cast<unsigned int>(state.roi_width),
+           static_cast<unsigned int>(state.roi_height));
+
+  this->set_auto_recalibration_interval_minutes(state.auto_recalibration_minutes);
+  this->set_sampling_size(state.sampling);
+  this->set_invert_direction(state.invert_direction);
+  this->set_min_threshold_percentage(state.min_threshold_percentage);
+  this->set_max_threshold_percentage(state.max_threshold_percentage);
+  this->set_roi_width(state.roi_width);
+  this->set_roi_height(state.roi_height);
+}
+
+void Roode::persist_runtime_settings() {
+  if (!this->tuning_pref_ready_) {
+    return;
+  }
+
+  PersistedTuningState state{};
+  state.version = PERSISTED_TUNING_VERSION;
+  state.auto_recalibration_minutes = this->get_auto_recalibration_interval_minutes();
+  state.sampling = this->get_sampling_size();
+  state.invert_direction = this->get_invert_direction();
+  state.min_threshold_percentage = this->get_min_threshold_percentage();
+  state.max_threshold_percentage = this->get_max_threshold_percentage();
+  state.roi_width = this->get_roi_width();
+  state.roi_height = this->get_roi_height();
+
+  ESP_LOGI(TAG,
+           "Saving tuning auto=%u sampling=%u invert=%s min=%u max=%u roi=%ux%u",
+           static_cast<unsigned int>(state.auto_recalibration_minutes), static_cast<unsigned int>(state.sampling),
+           state.invert_direction ? "true" : "false", static_cast<unsigned int>(state.min_threshold_percentage),
+           static_cast<unsigned int>(state.max_threshold_percentage), static_cast<unsigned int>(state.roi_width),
+           static_cast<unsigned int>(state.roi_height));
+
+  this->tuning_pref_.save(&state);
+  if (global_preferences != nullptr) {
+    global_preferences->sync();
+  }
 }
 
 uint32_t Roode::get_minutes_since_last_recalibration() const {

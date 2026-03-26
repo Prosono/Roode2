@@ -30,6 +30,7 @@ class VL53L1X : public Component {
   optional<uint16_t> read_distance(ROI *roi, VL53L1_Error &error);
   void set_ranging_mode(const RangingMode *mode);
   void set_address(uint8_t address) { this->address_ = address; }
+  uint8_t get_address() const { return this->address_; }
 
   void set_xshut_pin(GPIOPin *pin) { this->xshut_pin = pin; }
   void set_interrupt_pin(InternalGPIOPin *pin) { this->interrupt_pin = pin; }

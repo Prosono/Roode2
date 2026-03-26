@@ -9,6 +9,7 @@
 #include "esphome/core/application.h"
 #include "esphome/core/component.h"
 #include "esphome/core/log.h"
+#include "esphome/core/preferences.h"
 #include "../vl53l1x/vl53l1x.h"
 #include "orientation.h"
 #include "zone.h"
@@ -56,6 +57,17 @@ static int time_budget_in_ms_max = 200;  // max range: 4m
 
 class Roode : public PollingComponent {
  public:
+  struct PersistedTuningState {
+    uint8_t version{1};
+    uint8_t sampling{2};
+    uint8_t min_threshold_percentage{0};
+    uint8_t max_threshold_percentage{85};
+    uint8_t roi_width{6};
+    uint8_t roi_height{16};
+    uint16_t auto_recalibration_minutes{0};
+    bool invert_direction{false};
+  };
+
   void setup() override;
   void update() override;
   void loop() override;
@@ -103,6 +115,7 @@ class Roode : public PollingComponent {
   void set_roi_width(uint8_t width);
   uint8_t get_roi_height() const;
   void set_roi_height(uint8_t height);
+  void persist_runtime_settings();
   void set_masking_distance_threshold(uint16_t distance_mm) { masking_distance_threshold_mm_ = distance_mm; }
   void set_masking_hold_time_ms(uint32_t duration_ms) { masking_hold_time_ms_ = duration_ms; }
   void set_distance_entry(sensor::Sensor *distance_entry_) { distance_entry = distance_entry_; }
@@ -172,6 +185,9 @@ class Roode : public PollingComponent {
   void publish_masking_state_(bool state);
   void publish_presence_state_(bool state);
   void handle_auto_recalibration_();
+  void init_tuning_preferences_();
+  void load_persisted_tuning_();
+  uint32_t tuning_preference_key_() const;
   Orientation orientation_{Parallel};
   uint8_t samples{2};
   bool invert_direction_{false};
@@ -192,6 +208,8 @@ class Roode : public PollingComponent {
   int path_track_filling_size_{1};
   int left_previous_status_{NOBODY};
   int right_previous_status_{NOBODY};
+  ESPPreferenceObject tuning_pref_;
+  bool tuning_pref_ready_{false};
 };
 
 }  // namespace roode
