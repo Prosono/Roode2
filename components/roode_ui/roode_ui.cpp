@@ -1185,13 +1185,17 @@ const char ROODE_UI_HTML[] = R"html(
     }
 
     async function postAction(form) {
-      const response = await fetch(actionUrl, {
+      const params = new URLSearchParams(form);
+      const response = await fetch(`${actionUrl}?${params.toString()}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
-        body: new URLSearchParams(form),
+        body: params,
       });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      return response.json();
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.message || `HTTP ${response.status}`);
+      }
+      return payload;
     }
 
     async function refresh(force = false) {
@@ -1264,7 +1268,7 @@ const char ROODE_UI_HTML[] = R"html(
         showToast(result.message || 'Updated');
         await refresh(true);
       } catch (error) {
-        showToast('Unable to apply change', true);
+        showToast(error.message || 'Unable to apply change', true);
       } finally {
         busy = false;
         button.disabled = false;
@@ -1287,8 +1291,12 @@ bool parse_bool_arg(const std::string &value) {
   if (value.empty()) {
     return false;
   }
-  char first = static_cast<char>(std::tolower(value[0]));
-  return first == '1' || first == 't' || first == 'y' || first == 'o';
+  std::string normalized;
+  normalized.reserve(value.size());
+  for (char ch : value) {
+    normalized.push_back(static_cast<char>(std::tolower(ch)));
+  }
+  return normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on";
 }
 
 uint32_t parse_u32_arg(const std::string &value, uint32_t fallback) {
@@ -1430,6 +1438,12 @@ class RoodeUi::Handler : public AsyncWebHandler {
 
     auto *node = this->parent_->nodes_[index].node;
     auto action = request->arg("action");
+    ESP_LOGI(TAG,
+             "UI request args node=%s action=%s auto=%s sampling=%s invert=%s min=%s max=%s roi_w=%s roi_h=%s value=%s",
+             request->arg("node").c_str(), action.c_str(), request->arg("auto_recalibration").c_str(),
+             request->arg("sampling").c_str(), request->arg("invert_direction").c_str(),
+             request->arg("min_threshold").c_str(), request->arg("max_threshold").c_str(),
+             request->arg("roi_width").c_str(), request->arg("roi_height").c_str(), request->arg("value").c_str());
     std::string message = "Updated";
 
     if (action == "recalibrate") {
@@ -1480,9 +1494,19 @@ class RoodeUi::Handler : public AsyncWebHandler {
       return;
     }
 
-    auto response = json::build_json([&message](JsonObject root) {
+    auto response = json::build_json([&message, &action, node](JsonObject root) {
       root["ok"] = true;
       root["message"] = message;
+      if (action == "apply_tuning") {
+        auto applied = root["applied"].to<JsonObject>();
+        applied["auto_recalibration_minutes"] = node->get_auto_recalibration_interval_minutes();
+        applied["sampling"] = node->get_sampling_size();
+        applied["invert_direction"] = node->get_invert_direction();
+        applied["min_threshold_percent"] = node->get_min_threshold_percentage();
+        applied["max_threshold_percent"] = node->get_max_threshold_percentage();
+        applied["roi_width"] = node->get_roi_width();
+        applied["roi_height"] = node->get_roi_height();
+      }
     });
     request->send(200, "application/json", response.c_str());
   }
