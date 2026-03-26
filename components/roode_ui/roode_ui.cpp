@@ -813,6 +813,8 @@ const char ROODE_UI_HTML[] = R"html(
     const themeToggle = document.getElementById('theme-toggle');
 
     let busy = false;
+    let refreshTimer = null;
+    let lastOnlineState = true;
     const expandedNodes = new Set();
     const draftValues = {};
 
@@ -1198,14 +1200,32 @@ const char ROODE_UI_HTML[] = R"html(
         connectionPill.textContent = payload.connection_text || 'Connected to device';
         connectionCopy.textContent = 'Online';
         lastSync.textContent = new Date().toLocaleTimeString();
+        lastOnlineState = true;
         if (force || (!activeEditor() && expandedNodes.size === 0 && !busy)) {
           renderNodes(payload);
         }
       } catch (error) {
         connectionPill.textContent = 'Connection lost. Retrying.';
         connectionCopy.textContent = 'Offline';
-        showToast('Could not refresh device state', true);
+        if (lastOnlineState) {
+          showToast('Could not refresh device state', true);
+        }
+        lastOnlineState = false;
+      } finally {
+        scheduleRefresh();
       }
+    }
+
+    function refreshDelay() {
+      if (document.hidden) return 8000;
+      if (busy) return 4000;
+      if (activeEditor() || expandedNodes.size > 0) return 3500;
+      return 2500;
+    }
+
+    function scheduleRefresh() {
+      clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => refresh(), refreshDelay());
     }
 
     document.addEventListener('input', (event) => {
@@ -1251,8 +1271,13 @@ const char ROODE_UI_HTML[] = R"html(
       }
     });
 
-    refresh();
-    setInterval(refresh, 1500);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) {
+        refresh(true);
+      }
+    });
+
+    refresh(true);
   </script>
 </body>
 </html>
