@@ -93,6 +93,7 @@ number:
     set_action:
       - lambda: |-
           id(roode_${node_key})->set_auto_recalibration_interval_minutes((uint16_t) x);
+          id(roode_${node_key})->persist_runtime_settings();
   - platform: template
     id: sampling_setting_${node_key}
     name: ${friendly_name} ${node_label} Sampling
@@ -110,6 +111,7 @@ number:
     set_action:
       - lambda: |-
           id(roode_${node_key})->set_sampling_size((uint8_t) x);
+          id(roode_${node_key})->persist_runtime_settings();
   - platform: template
     id: min_threshold_setting_${node_key}
     name: ${friendly_name} ${node_label} Min Threshold %
@@ -127,6 +129,7 @@ number:
     set_action:
       - lambda: |-
           id(roode_${node_key})->set_min_threshold_percentage((uint8_t) x);
+          id(roode_${node_key})->persist_runtime_settings();
           id(roode_${node_key})->recalibration();
   - platform: template
     id: max_threshold_setting_${node_key}
@@ -145,6 +148,7 @@ number:
     set_action:
       - lambda: |-
           id(roode_${node_key})->set_max_threshold_percentage((uint8_t) x);
+          id(roode_${node_key})->persist_runtime_settings();
           id(roode_${node_key})->recalibration();
   - platform: template
     id: roi_width_setting_${node_key}
@@ -163,6 +167,7 @@ number:
     set_action:
       - lambda: |-
           id(roode_${node_key})->set_roi_width((uint8_t) x);
+          id(roode_${node_key})->persist_runtime_settings();
           id(roode_${node_key})->recalibration();
   - platform: template
     id: roi_height_setting_${node_key}
@@ -181,6 +186,7 @@ number:
     set_action:
       - lambda: |-
           id(roode_${node_key})->set_roi_height((uint8_t) x);
+          id(roode_${node_key})->persist_runtime_settings();
           id(roode_${node_key})->recalibration();
 
 binary_sensor:
