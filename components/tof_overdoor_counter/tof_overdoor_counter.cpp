@@ -89,6 +89,7 @@ uint8_t clamp_quality(float value) {
 }  // namespace
 
 void TofOverdoorCounter::setup() {
+  this->apply_calibration_defaults_();
   this->prepare_xshut_pins_();
   if (!this->initialize_wire_()) {
     this->mark_failed();
@@ -435,6 +436,7 @@ void TofOverdoorCounter::load_persisted_state_() {
 
   PersistedState state{};
   if (!this->persisted_state_pref_.load(&state) || state.version != PERSISTED_STATE_VERSION) {
+    this->apply_calibration_defaults_();
     return;
   }
 
@@ -461,6 +463,7 @@ void TofOverdoorCounter::load_persisted_state_() {
   if (this->clear_threshold_mm_ >= this->trigger_threshold_mm_) {
     this->clear_threshold_mm_ = std::max<uint16_t>(20, this->trigger_threshold_mm_ / 2);
   }
+  this->apply_calibration_defaults_();
 
   for (size_t index = 0; index < this->channels_.size() && index < SENSOR_COUNT; index++) {
     this->restore_persisted_calibration_(this->channels_[index], index, state.calibrations[index]);
@@ -472,6 +475,25 @@ void TofOverdoorCounter::load_persisted_state_() {
            static_cast<unsigned>(this->confirmed_out_count_), static_cast<unsigned>(this->unsure_in_count_),
            static_cast<unsigned>(this->unsure_out_count_), static_cast<unsigned>(this->trigger_threshold_mm_),
            static_cast<unsigned>(this->clear_threshold_mm_), static_cast<unsigned>(this->min_valid_sensors_));
+}
+
+void TofOverdoorCounter::apply_calibration_defaults_() {
+  this->trigger_threshold_mm_ = sanitize_persisted<uint16_t>(this->trigger_threshold_mm_, 40, 3000, 320);
+  this->clear_threshold_mm_ = sanitize_persisted<uint16_t>(this->clear_threshold_mm_, 20, 2500, 180);
+  this->baseline_tolerance_mm_ = sanitize_persisted<uint16_t>(this->baseline_tolerance_mm_, 10, 500, 80);
+  this->minimum_clear_distance_mm_ = sanitize_persisted<uint16_t>(this->minimum_clear_distance_mm_, 100, 4000, 600);
+  this->debounce_ms_ = sanitize_persisted<uint32_t>(this->debounce_ms_, 5, 5000, 45);
+  this->detection_timeout_ms_ = sanitize_persisted<uint32_t>(this->detection_timeout_ms_, 200, 20000, 1600);
+  this->cooldown_ms_ = sanitize_persisted<uint32_t>(this->cooldown_ms_, 0, 20000, 500);
+  this->blocked_timeout_ms_ = sanitize_persisted<uint32_t>(this->blocked_timeout_ms_, 200, 60000, 1800);
+  this->standing_timeout_ms_ = sanitize_persisted<uint32_t>(this->standing_timeout_ms_, 200, 60000, 2200);
+  this->calibration_samples_ = sanitize_persisted<uint16_t>(this->calibration_samples_, 4, 128, 24);
+  this->max_people_inside_ = sanitize_persisted<uint16_t>(this->max_people_inside_, 1, 5000, 50);
+  this->min_valid_sensors_ = sanitize_persisted<uint8_t>(this->min_valid_sensors_, 2, SENSOR_COUNT, 3);
+
+  if (this->clear_threshold_mm_ >= this->trigger_threshold_mm_) {
+    this->clear_threshold_mm_ = std::max<uint16_t>(20, this->trigger_threshold_mm_ / 2);
+  }
 }
 
 void TofOverdoorCounter::persist_runtime_state() {
