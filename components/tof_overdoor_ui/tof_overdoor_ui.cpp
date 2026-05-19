@@ -741,27 +741,27 @@ const char OVERDOOR_UI_HTML[] = R"html(
 
           <div class="summary-grid">
             <article class="summary-card">
-              <span>Ready state</span>
+              <span id="card-1-label">Ready state</span>
               <strong id="ready-value">-</strong>
               <p id="ready-copy">Waiting for device state.</p>
             </article>
             <article class="summary-card">
-              <span>People count</span>
-              <strong id="people-count">0</strong>
-              <p>Net number of people currently believed to be inside.</p>
+              <span id="card-2-label">People count</span>
+              <strong id="card-2-value">0</strong>
+              <p id="card-2-copy">Net number of people currently believed to be inside.</p>
             </article>
             <article class="summary-card">
-              <span>Entries</span>
-              <strong id="entry-count">0</strong>
-              <p>Total confirmed entry events since the last reset.</p>
+              <span id="card-3-label">Entries</span>
+              <strong id="card-3-value">0</strong>
+              <p id="card-3-copy">Total confirmed entry events since the last reset.</p>
             </article>
             <article class="summary-card">
-              <span>Exits</span>
-              <strong id="exit-count">0</strong>
-              <p>Total confirmed exit events since the last reset.</p>
+              <span id="card-4-label">Exits</span>
+              <strong id="card-4-value">0</strong>
+              <p id="card-4-copy">Total confirmed exit events since the last reset.</p>
             </article>
             <article class="summary-card">
-              <span>Last direction</span>
+              <span id="card-5-label">Last direction</span>
               <strong id="last-direction">Waiting</strong>
               <p id="direction-copy">No event confirmed yet.</p>
             </article>
@@ -774,13 +774,13 @@ const char OVERDOOR_UI_HTML[] = R"html(
           </div>
 
           <div class="actions">
-            <button class="primary" data-command="recalibrate">Recalibrate floor reference</button>
-            <button class="secondary" data-command="rediscover">Rediscover sensors</button>
-            <button class="secondary" data-command="reset_counts">Reset counts</button>
+            <button class="primary" id="recalibrate-button" data-command="recalibrate">Recalibrate floor reference</button>
+            <button class="secondary" id="rediscover-button" data-command="rediscover">Rediscover sensors</button>
+            <button class="secondary" id="reset-button" data-command="reset_counts">Reset counts</button>
           </div>
         </section>
 
-        <section class="panel section doorway">
+        <section class="panel section doorway" id="doorway-section">
           <div class="door-title">
             <div>
             <p class="eyebrow">Live doorway view</p>
@@ -887,6 +887,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
     const pageTitle = document.getElementById('page-title');
     const pageSubtitle = document.getElementById('page-subtitle');
     const counterLabel = document.getElementById('counter-label');
+    const doorwaySection = document.getElementById('doorway-section');
     const connectionPill = document.getElementById('connection-pill');
     const connectionCopy = document.getElementById('connection-copy');
     const lastSync = document.getElementById('last-sync');
@@ -936,6 +937,12 @@ const char OVERDOOR_UI_HTML[] = R"html(
       const num = Number(value);
       if (!Number.isFinite(num)) return 'N/A';
       return `${Math.round(num)} mm`;
+    }
+
+    function formatCount(value) {
+      const num = Number(value);
+      if (!Number.isFinite(num)) return '0';
+      return `${Math.round(num)}`;
     }
 
     function barWidth(distance) {
@@ -1005,23 +1012,59 @@ const char OVERDOOR_UI_HTML[] = R"html(
     }
 
     function renderState(state) {
+      const monitorMode = String(state.mode || '').toLowerCase() === 'monitor';
       pageTitle.textContent = state.title || 'Roode Overdoor';
       pageSubtitle.textContent = state.subtitle || 'Visual verification for the four working doorway sensors and the two sensor pairs.';
-      counterLabel.textContent = state.label || 'Doorway Counter';
+      counterLabel.textContent = monitorMode ? 'Four sensor monitor' : (state.label || 'Doorway Counter');
+
+      document.getElementById('card-1-label').textContent = monitorMode ? 'Sensor state' : 'Ready state';
+      document.getElementById('card-2-label').textContent = monitorMode ? 'Sensors online' : 'People count';
+      document.getElementById('card-3-label').textContent = monitorMode ? 'Nearest distance' : 'Entries';
+      document.getElementById('card-4-label').textContent = monitorMode ? 'Average distance' : 'Exits';
+      document.getElementById('card-5-label').textContent = monitorMode ? 'Distance spread' : 'Last direction';
 
       document.getElementById('ready-value').textContent = state.ready ? 'Ready' : 'Calibrating';
-      document.getElementById('ready-copy').textContent = readyCopy(state);
-      document.getElementById('people-count').textContent = String(state.people_count ?? 0);
-      document.getElementById('entry-count').textContent = String(state.entry_count ?? 0);
-      document.getElementById('exit-count').textContent = String(state.exit_count ?? 0);
-      document.getElementById('last-direction').textContent = state.last_direction || 'Waiting';
-      document.getElementById('direction-copy').textContent = directionCopy(state.last_direction);
+      document.getElementById('ready-copy').textContent = monitorMode
+        ? (state.ready ? 'All discovered sensors are reporting live distances.' : 'Waiting for first live readings from all discovered sensors.')
+        : readyCopy(state);
+      document.getElementById('card-2-value').textContent = monitorMode
+        ? `${formatCount(state.reporting_sensors)}/${formatCount(state.discovered_sensors)}`
+        : String(state.people_count ?? 0);
+      document.getElementById('card-2-copy').textContent = monitorMode
+        ? 'How many of the discovered sensors are currently delivering live readings.'
+        : 'Net number of people currently believed to be inside.';
+      document.getElementById('card-3-value').textContent = monitorMode
+        ? formatMm(state.nearest_distance)
+        : String(state.entry_count ?? 0);
+      document.getElementById('card-3-copy').textContent = monitorMode
+        ? 'Closest live reading across all four working sensors.'
+        : 'Total confirmed entry events since the last reset.';
+      document.getElementById('card-4-value').textContent = monitorMode
+        ? formatMm(state.average_distance)
+        : String(state.exit_count ?? 0);
+      document.getElementById('card-4-copy').textContent = monitorMode
+        ? 'Average live distance across the four working sensors.'
+        : 'Total confirmed exit events since the last reset.';
+      document.getElementById('last-direction').textContent = monitorMode
+        ? formatMm(state.distance_span)
+        : (state.last_direction || 'Waiting');
+      document.getElementById('direction-copy').textContent = monitorMode
+        ? 'Difference between the farthest and nearest live reading. Lower spread usually means the sensors agree more closely.'
+        : directionCopy(state.last_direction);
 
       const phasePill = document.getElementById('phase-pill');
       phasePill.className = `state-pill ${phaseStyle(state.phase)}`;
-      phasePill.textContent = state.phase || 'Monitoring';
-      document.getElementById('phase-title').textContent = state.summary || 'Monitoring doorway';
-      document.getElementById('phase-copy').textContent = phaseDescription(state);
+      phasePill.textContent = monitorMode ? 'Monitoring only' : (state.phase || 'Monitoring');
+      document.getElementById('phase-title').textContent = monitorMode
+        ? (state.summary || 'Watching live distances from four sensors')
+        : (state.summary || 'Monitoring doorway');
+      document.getElementById('phase-copy').textContent = monitorMode
+        ? 'Counting logic is paused in this mode. Use it to verify that all four sensors respond, agree with each other, and stay stable when the doorway is empty.'
+        : phaseDescription(state);
+
+      doorwaySection.style.display = monitorMode ? 'none' : '';
+      document.getElementById('recalibrate-button').style.display = monitorMode ? 'none' : '';
+      document.getElementById('reset-button').style.display = monitorMode ? 'none' : '';
 
       const rowABadge = document.getElementById('row-a-badge');
       rowABadge.className = `row-badge ${state.row_a_active ? 'active' : ''}`;
@@ -1041,7 +1084,10 @@ const char OVERDOOR_UI_HTML[] = R"html(
 
       document.getElementById('discovery-map').textContent = state.discovery_map || 'No discovery data';
       document.getElementById('timing-copy').textContent =
-        `${state.discovered_sensors} sensors active, cycle ${Math.round(Number(state.cycle_duration_ms || 0))} ms, skew ${Math.round(Number(state.update_skew_ms || 0))} ms.`;
+        `${state.reporting_sensors || state.discovered_sensors} sensors reporting, cycle ${Math.round(Number(state.cycle_duration_ms || 0))} ms, skew ${Math.round(Number(state.update_skew_ms || 0))} ms.`;
+      document.getElementById('test-copy').textContent = monitorMode
+        ? 'Move a hand under one sensor at a time and verify that the nearest distance changes quickly, then compare whether all four sensors settle back to a similar empty-doorway value.'
+        : 'Walk one clear path through the doorway so one sensor pair becomes active before the other. Covering all four sensors at once only proves detection, not direction.';
 
       sensorGrid.innerHTML = (state.sensors || []).map((sensor) => `
         <article class="sensor-card ${sensor.active ? 'active' : ''}">
@@ -1202,11 +1248,15 @@ class TofOverdoorUi::Handler : public AsyncWebHandler {
     auto *counter = this->parent_->counter_;
     auto json = json::build_json([this, counter](JsonObject root) {
       root["title"] = this->parent_->title_.empty() ? App.get_friendly_name() : this->parent_->title_;
-      root["subtitle"] = "A clearer live view of the four working doorway sensors, the two sensor pairs, and the counting state machine.";
+      root["subtitle"] = counter->is_monitor_mode()
+                              ? "A clearer live view of the four working doorway sensors as one combined monitor."
+                              : "A clearer live view of the four working doorway sensors, the two sensor pairs, and the counting state machine.";
       root["label"] = this->parent_->label_.empty() ? "Doorway Counter" : this->parent_->label_;
       root["connection_text"] = "Connected to device";
+      root["mode"] = counter->get_mode_text();
       root["ready"] = counter->get_ready_state() > 0.5f;
       root["presence"] = counter->get_presence_state() > 0.5f;
+      root["reporting_sensors"] = static_cast<int>(counter->get_reporting_sensor_count());
       root["people_count"] = static_cast<int>(counter->get_people_count());
       root["entry_count"] = static_cast<int>(counter->get_entry_count());
       root["exit_count"] = static_cast<int>(counter->get_exit_count());
@@ -1217,6 +1267,9 @@ class TofOverdoorUi::Handler : public AsyncWebHandler {
       root["discovered_sensors"] = static_cast<int>(counter->get_discovered_sensor_count());
       root["cycle_duration_ms"] = counter->get_cycle_duration_ms();
       root["update_skew_ms"] = counter->get_update_skew_ms();
+      root["nearest_distance"] = counter->get_nearest_distance_mm();
+      root["average_distance"] = counter->get_average_distance_mm();
+      root["distance_span"] = counter->get_distance_span_mm();
       root["row_a_active"] = counter->get_row_active_state(0) > 0.5f;
       root["row_b_active"] = counter->get_row_active_state(1) > 0.5f;
       root["row_a_distance"] = counter->get_row_distance_mm(0);

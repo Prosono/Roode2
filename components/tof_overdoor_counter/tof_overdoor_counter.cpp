@@ -10,6 +10,21 @@ static const char *const TAG = "tof_overdoor_counter";
 
 static const char *pair_name(uint8_t row_index) { return row_index == 1 ? "U3/U4 pair" : "U7/U8 pair"; }
 
+static const char *sensor_name_for_pin(uint8_t pin_number) {
+  switch (pin_number) {
+    case 16:
+      return "U3";
+    case 17:
+      return "U4";
+    case 23:
+      return "U7";
+    case 25:
+      return "U8";
+    default:
+      return "Unknown";
+  }
+}
+
 void TofOverdoorCounter::setup() {
   this->prepare_xshut_pins_();
   if (!this->initialize_wire_()) {
@@ -42,9 +57,20 @@ void TofOverdoorCounter::update() {
     this->recover_wire_();
   }
 
-  this->update_occupancy_states_();
-  this->update_baselines_();
-  this->update_state_machine_();
+  if (this->mode_ == OperatingMode::COUNT) {
+    this->update_occupancy_states_();
+    this->update_baselines_();
+    this->update_state_machine_();
+  } else {
+    for (auto &channel : this->channels_) {
+      channel.occupied = false;
+    }
+    this->waiting_for_clear_ = false;
+    this->cooldown_until_ms_ = 0;
+    this->reset_sequence_();
+    this->phase_text_ = this->all_reporting_() ? "Monitoring distances only" : "Waiting for first live readings";
+    this->last_direction_ = "Not counting";
+  }
 }
 
 void TofOverdoorCounter::dump_config() {
@@ -57,6 +83,7 @@ void TofOverdoorCounter::dump_config() {
   ESP_LOGCONFIG(TAG, "  Release Delta: %u mm", this->release_delta_mm_);
   ESP_LOGCONFIG(TAG, "  Sequence Timeout: %u ms", this->sequence_timeout_ms_);
   ESP_LOGCONFIG(TAG, "  Cooldown: %u ms", this->cooldown_ms_);
+  ESP_LOGCONFIG(TAG, "  Mode: %s", this->mode_ == OperatingMode::COUNT ? "count" : "monitor");
   ESP_LOGCONFIG(TAG, "  Invert Direction: %s", this->invert_direction_ ? "YES" : "NO");
   for (size_t i = 0; i < this->channels_.size(); i++) {
     const auto &channel = this->channels_[i];
@@ -288,7 +315,9 @@ void TofOverdoorCounter::rediscover() {
   for (size_t index = 0; index < this->xshut_pins_.size(); index++) {
     auto &channel = this->channels_[index];
     channel.pin_number = this->xshut_pin_numbers_[index];
-    channel.source_label = "GPIO" + std::to_string(this->xshut_pin_numbers_[index]);
+    channel.source_label =
+        std::string(sensor_name_for_pin(this->xshut_pin_numbers_[index])) + " / GPIO" +
+        std::to_string(this->xshut_pin_numbers_[index]);
     channel.address = next_address;
 
     this->set_xshut_(index, true);
@@ -510,6 +539,9 @@ void TofOverdoorCounter::reset_sequence_() {
 }
 
 bool TofOverdoorCounter::all_calibrated_() const {
+  if (this->mode_ != OperatingMode::COUNT) {
+    return this->all_reporting_();
+  }
   bool has_any = false;
   for (const auto &channel : this->channels_) {
     if (!channel.initialized) {
@@ -517,6 +549,20 @@ bool TofOverdoorCounter::all_calibrated_() const {
     }
     has_any = true;
     if (std::isnan(channel.baseline)) {
+      return false;
+    }
+  }
+  return has_any;
+}
+
+bool TofOverdoorCounter::all_reporting_() const {
+  bool has_any = false;
+  for (const auto &channel : this->channels_) {
+    if (!channel.initialized) {
+      continue;
+    }
+    has_any = true;
+    if (!channel.has_reading) {
       return false;
     }
   }
@@ -594,6 +640,16 @@ float TofOverdoorCounter::get_discovered_sensor_count() const {
   return static_cast<float>(count);
 }
 
+float TofOverdoorCounter::get_reporting_sensor_count() const {
+  uint32_t count = 0;
+  for (const auto &channel : this->channels_) {
+    if (channel.initialized && channel.has_reading) {
+      count++;
+    }
+  }
+  return static_cast<float>(count);
+}
+
 float TofOverdoorCounter::get_cycle_duration_ms() const { return static_cast<float>(this->cycle_duration_ms_); }
 
 float TofOverdoorCounter::get_update_skew_ms() const {
@@ -609,6 +665,53 @@ float TofOverdoorCounter::get_update_skew_ms() const {
     seen = true;
   }
   return seen ? static_cast<float>(max_ts - min_ts) : NAN;
+}
+
+float TofOverdoorCounter::get_nearest_distance_mm() const {
+  uint16_t min_distance = UINT16_MAX;
+  bool seen = false;
+  for (const auto &channel : this->channels_) {
+    if (!channel.initialized || !channel.has_reading) {
+      continue;
+    }
+    min_distance = std::min(min_distance, channel.last_distance);
+    seen = true;
+  }
+  return seen ? static_cast<float>(min_distance) : NAN;
+}
+
+float TofOverdoorCounter::get_average_distance_mm() const {
+  uint32_t total = 0;
+  uint32_t count = 0;
+  for (const auto &channel : this->channels_) {
+    if (!channel.initialized || !channel.has_reading) {
+      continue;
+    }
+    total += channel.last_distance;
+    count++;
+  }
+  if (count == 0) {
+    return NAN;
+  }
+  return static_cast<float>(total) / static_cast<float>(count);
+}
+
+float TofOverdoorCounter::get_distance_span_mm() const {
+  uint16_t min_distance = UINT16_MAX;
+  uint16_t max_distance = 0;
+  bool seen = false;
+  for (const auto &channel : this->channels_) {
+    if (!channel.initialized || !channel.has_reading) {
+      continue;
+    }
+    min_distance = std::min(min_distance, channel.last_distance);
+    max_distance = std::max(max_distance, channel.last_distance);
+    seen = true;
+  }
+  if (!seen) {
+    return NAN;
+  }
+  return static_cast<float>(max_distance - min_distance);
 }
 
 float TofOverdoorCounter::get_distance_mm(size_t index) const {
@@ -640,6 +743,9 @@ float TofOverdoorCounter::get_exit_count() const { return static_cast<float>(thi
 float TofOverdoorCounter::get_people_count() const { return static_cast<float>(this->people_count_); }
 
 float TofOverdoorCounter::get_presence_state() const {
+  if (this->mode_ != OperatingMode::COUNT) {
+    return 0.0f;
+  }
   return (this->row_is_active_(1) || this->row_is_active_(2) || this->waiting_for_clear_ || this->start_row_ != 0) ? 1.0f
                                                                                                                        : 0.0f;
 }
@@ -647,6 +753,9 @@ float TofOverdoorCounter::get_presence_state() const {
 float TofOverdoorCounter::get_ready_state() const { return this->all_calibrated_() ? 1.0f : 0.0f; }
 
 float TofOverdoorCounter::get_row_active_state(size_t row_index) const {
+  if (this->mode_ != OperatingMode::COUNT) {
+    return 0.0f;
+  }
   return this->row_is_active_(row_index == 0 ? 1 : 2) ? 1.0f : 0.0f;
 }
 
@@ -660,6 +769,9 @@ std::string TofOverdoorCounter::status_text_for_(const Channel &channel) const {
   if (!channel.has_reading) {
     return "Waiting for first sample";
   }
+  if (this->mode_ != OperatingMode::COUNT) {
+    return "Online";
+  }
   if (std::isnan(channel.baseline)) {
     return "Learning floor baseline";
   }
@@ -667,6 +779,10 @@ std::string TofOverdoorCounter::status_text_for_(const Channel &channel) const {
     return "Occupied";
   }
   return "Clear";
+}
+
+std::string TofOverdoorCounter::get_mode_text() const {
+  return this->mode_ == OperatingMode::COUNT ? "Count" : "Monitor";
 }
 
 std::string TofOverdoorCounter::get_status_text(size_t index) const {
@@ -689,6 +805,23 @@ std::string TofOverdoorCounter::get_last_direction_text() const { return this->l
 
 std::string TofOverdoorCounter::get_summary() const {
   std::ostringstream oss;
+  if (this->mode_ != OperatingMode::COUNT) {
+    oss << "Mode Monitor";
+    const auto nearest = this->get_nearest_distance_mm();
+    const auto average = this->get_average_distance_mm();
+    const auto span = this->get_distance_span_mm();
+    if (!std::isnan(nearest)) {
+      oss << " | Nearest " << static_cast<int>(nearest) << " mm";
+    }
+    if (!std::isnan(average)) {
+      oss << " | Average " << static_cast<int>(average) << " mm";
+    }
+    if (!std::isnan(span)) {
+      oss << " | Spread " << static_cast<int>(span) << " mm";
+    }
+    return oss.str();
+  }
+
   oss << "People " << this->people_count_ << " | Entry " << this->entry_count_ << " | Exit " << this->exit_count_
       << " | " << this->phase_text_;
   const auto row_a = this->row_distance_internal_(1);

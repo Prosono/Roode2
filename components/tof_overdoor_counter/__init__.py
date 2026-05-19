@@ -5,17 +5,25 @@ import esphome.pins as pins
 
 tof_overdoor_counter_ns = cg.esphome_ns.namespace("tof_overdoor_counter")
 TofOverdoorCounter = tof_overdoor_counter_ns.class_("TofOverdoorCounter", cg.PollingComponent)
+OperatingMode = tof_overdoor_counter_ns.enum("OperatingMode")
 
 CONF_BASE_ADDRESS = "base_address"
 CONF_COOLDOWN = "cooldown"
 CONF_INIT_RETRIES = "init_retries"
 CONF_INVERT_DIRECTION = "invert_direction"
+CONF_MODE = "mode"
 CONF_POST_ADDRESS_DELAY = "post_address_delay"
 CONF_RELEASE_DELTA = "release_delta"
 CONF_SEQUENCE_TIMEOUT = "sequence_timeout"
 CONF_TRIGGER_DELTA = "trigger_delta"
 CONF_WAKE_DELAY = "wake_delay"
 CONF_XSHUT_PINS = "xshut_pins"
+
+
+MODE_OPTIONS = {
+    "monitor": OperatingMode.MONITOR,
+    "count": OperatingMode.COUNT,
+}
 
 
 def frequency_as_hz(value):
@@ -46,6 +54,7 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_SEQUENCE_TIMEOUT, default="2s"): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_COOLDOWN, default="600ms"): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_INVERT_DIRECTION, default=False): cv.boolean,
+            cv.Optional(CONF_MODE, default="monitor"): cv.enum(MODE_OPTIONS, lower=True),
             cv.Required(CONF_XSHUT_PINS): validate_xshut_pins,
         }
     )
@@ -73,6 +82,7 @@ async def to_code(config):
     cg.add(var.set_sequence_timeout_ms(config[CONF_SEQUENCE_TIMEOUT]))
     cg.add(var.set_cooldown_ms(config[CONF_COOLDOWN]))
     cg.add(var.set_invert_direction(config[CONF_INVERT_DIRECTION]))
+    cg.add(var.set_mode(config[CONF_MODE]))
 
     for pin_config in config[CONF_XSHUT_PINS]:
         pin = await cg.gpio_pin_expression(pin_config)

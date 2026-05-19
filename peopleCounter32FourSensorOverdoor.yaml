@@ -84,6 +84,7 @@ tof_overdoor_counter:
   sequence_timeout: 2s
   cooldown: 600ms
   invert_direction: false
+  mode: monitor
   xshut_pins:
     - GPIO16
     - GPIO17

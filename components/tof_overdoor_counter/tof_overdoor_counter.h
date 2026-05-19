@@ -15,6 +15,11 @@
 namespace esphome {
 namespace tof_overdoor_counter {
 
+enum OperatingMode : uint8_t {
+  MONITOR = 0,
+  COUNT = 1,
+};
+
 class TofOverdoorCounter : public PollingComponent {
  public:
   void setup() override;
@@ -37,6 +42,7 @@ class TofOverdoorCounter : public PollingComponent {
   void set_sequence_timeout_ms(uint32_t sequence_timeout_ms) { this->sequence_timeout_ms_ = sequence_timeout_ms; }
   void set_cooldown_ms(uint32_t cooldown_ms) { this->cooldown_ms_ = cooldown_ms; }
   void set_invert_direction(bool invert_direction) { this->invert_direction_ = invert_direction; }
+  void set_mode(OperatingMode mode) { this->mode_ = mode; }
   void add_xshut_pin(GPIOPin *pin, uint8_t number) {
     this->xshut_pins_.push_back(pin);
     this->xshut_pin_numbers_.push_back(number);
@@ -47,8 +53,12 @@ class TofOverdoorCounter : public PollingComponent {
   void reset_counts();
 
   float get_discovered_sensor_count() const;
+  float get_reporting_sensor_count() const;
   float get_cycle_duration_ms() const;
   float get_update_skew_ms() const;
+  float get_nearest_distance_mm() const;
+  float get_average_distance_mm() const;
+  float get_distance_span_mm() const;
   float get_distance_mm(size_t index) const;
   float get_baseline_mm(size_t index) const;
   float get_row_distance_mm(size_t row_index) const;
@@ -61,6 +71,9 @@ class TofOverdoorCounter : public PollingComponent {
   float get_ready_state() const;
   float get_row_active_state(size_t row_index) const;
   bool get_invert_direction() const { return this->invert_direction_; }
+  bool is_monitor_mode() const { return this->mode_ == OperatingMode::MONITOR; }
+  bool is_count_mode() const { return this->mode_ == OperatingMode::COUNT; }
+  std::string get_mode_text() const;
   std::string get_status_text(size_t index) const;
   std::string get_source_label(size_t index) const;
   std::string get_phase_text() const;
@@ -102,6 +115,7 @@ class TofOverdoorCounter : public PollingComponent {
   uint32_t sequence_timeout_ms_{2000};
   uint32_t cooldown_ms_{600};
   bool invert_direction_{false};
+  OperatingMode mode_{OperatingMode::MONITOR};
   bool wire_initialized_{false};
   bool waiting_for_clear_{false};
   uint8_t start_row_{0};
@@ -134,6 +148,7 @@ class TofOverdoorCounter : public PollingComponent {
   void finalize_sequence_();
   void reset_sequence_();
   bool all_calibrated_() const;
+  bool all_reporting_() const;
   bool row_is_active_(uint8_t row_index) const;
   float row_distance_internal_(uint8_t row_index) const;
   float row_baseline_internal_(uint8_t row_index) const;
