@@ -315,39 +315,15 @@ sensor:
       return id(overdoor_counter).get_distance_mm(0);
 
   - platform: template
-    name: ${friendly_name} U3 Baseline
-    unit_of_measurement: mm
-    accuracy_decimals: 0
-    update_interval: 2s
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_sensors
-      sorting_weight: 20
-    lambda: |-
-      return id(overdoor_counter).get_baseline_mm(0);
-
-  - platform: template
     name: ${friendly_name} U4 Distance
     unit_of_measurement: mm
     accuracy_decimals: 0
     update_interval: 200ms
     web_server:
       sorting_group_id: web_group_sensors
-      sorting_weight: 30
+      sorting_weight: 20
     lambda: |-
       return id(overdoor_counter).get_distance_mm(1);
-
-  - platform: template
-    name: ${friendly_name} U4 Baseline
-    unit_of_measurement: mm
-    accuracy_decimals: 0
-    update_interval: 2s
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_sensors
-      sorting_weight: 40
-    lambda: |-
-      return id(overdoor_counter).get_baseline_mm(1);
 
   - platform: template
     name: ${friendly_name} U7 Distance
@@ -356,21 +332,9 @@ sensor:
     update_interval: 200ms
     web_server:
       sorting_group_id: web_group_sensors
-      sorting_weight: 50
+      sorting_weight: 30
     lambda: |-
       return id(overdoor_counter).get_distance_mm(2);
-
-  - platform: template
-    name: ${friendly_name} U7 Baseline
-    unit_of_measurement: mm
-    accuracy_decimals: 0
-    update_interval: 2s
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_sensors
-      sorting_weight: 60
-    lambda: |-
-      return id(overdoor_counter).get_baseline_mm(2);
 
   - platform: template
     name: ${friendly_name} U8 Distance
@@ -379,21 +343,9 @@ sensor:
     update_interval: 200ms
     web_server:
       sorting_group_id: web_group_sensors
-      sorting_weight: 70
+      sorting_weight: 40
     lambda: |-
       return id(overdoor_counter).get_distance_mm(3);
-
-  - platform: template
-    name: ${friendly_name} U8 Baseline
-    unit_of_measurement: mm
-    accuracy_decimals: 0
-    update_interval: 2s
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_sensors
-      sorting_weight: 80
-    lambda: |-
-      return id(overdoor_counter).get_baseline_mm(3);
 
 text_sensor:
   - platform: template
@@ -439,7 +391,7 @@ text_sensor:
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_sensors
-      sorting_weight: 90
+      sorting_weight: 60
     lambda: |-
       return {id(overdoor_counter).get_status_text(0)};
 
@@ -449,7 +401,7 @@ text_sensor:
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_sensors
-      sorting_weight: 100
+      sorting_weight: 70
     lambda: |-
       return {id(overdoor_counter).get_status_text(1)};
 
@@ -459,7 +411,7 @@ text_sensor:
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_sensors
-      sorting_weight: 110
+      sorting_weight: 80
     lambda: |-
       return {id(overdoor_counter).get_status_text(2)};
 
@@ -469,6 +421,6 @@ text_sensor:
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_sensors
-      sorting_weight: 120
+      sorting_weight: 90
     lambda: |-
       return {id(overdoor_counter).get_status_text(3)};
