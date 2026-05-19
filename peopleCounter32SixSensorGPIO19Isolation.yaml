@@ -1,0 +1,130 @@
+substitutions:
+  devicename: roode-6-gpio19-test
+  friendly_name: Roode Six Sensor GPIO19 Isolation
+
+external_components:
+  refresh: always
+  source: components
+
+esphome:
+  name: ${devicename}
+  friendly_name: ${friendly_name}
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+logger:
+  level: DEBUG
+
+api:
+  reboot_timeout: 60min
+
+ota:
+  - platform: esphome
+    password: !secret roode_ota_password
+
+wifi:
+  ssid: !secret roode_wifi_ssid
+  password: !secret roode_wifi_password
+  use_address: ${devicename}
+  domain: .local
+  power_save_mode: none
+  ap:
+    ssid: "Roode GPIO19 Isolation"
+    password: !secret roode_fallback_ap_password
+
+captive_portal:
+
+web_server:
+  port: 80
+  version: 3
+  auth:
+    username: !secret roode_web_username
+    password: !secret roode_web_password
+
+tof_array_test:
+  id: tof_board_test
+  sda: 21
+  scl: 22
+  frequency: 100kHz
+  timeout: 3000ms
+  wake_delay: 100ms
+  post_address_delay: 120ms
+  init_retries: 3
+  update_interval: 1000ms
+  base_address: 0x30
+  roi:
+    width: 16
+    height: 16
+    center: 199
+  xshut_pins:
+    - GPIO19
+
+button:
+  - platform: restart
+    name: ${friendly_name} Restart
+    entity_category: config
+
+  - platform: template
+    name: ${friendly_name} Rediscover Sensor
+    entity_category: config
+    on_press:
+      - lambda: |-
+          id(tof_board_test).rediscover();
+
+binary_sensor:
+  - platform: status
+    name: ${friendly_name} Device Status
+    entity_category: diagnostic
+
+sensor:
+  - platform: template
+    name: ${friendly_name} Discovered Sensors
+    unit_of_measurement: sensors
+    accuracy_decimals: 0
+    update_interval: 2s
+    lambda: |-
+      return id(tof_board_test).get_discovered_sensor_count();
+
+  - platform: template
+    name: ${friendly_name} Sensor Distance
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    update_interval: 1000ms
+    lambda: |-
+      return id(tof_board_test).get_distance_mm(0);
+
+  - platform: template
+    name: ${friendly_name} Sensor Read Time
+    unit_of_measurement: ms
+    accuracy_decimals: 0
+    update_interval: 2s
+    lambda: |-
+      return id(tof_board_test).get_read_duration_ms(0);
+
+text_sensor:
+  - platform: template
+    name: ${friendly_name} Summary
+    update_interval: 2s
+    lambda: |-
+      return id(tof_board_test).get_summary();
+
+  - platform: template
+    name: ${friendly_name} Discovery Map
+    update_interval: 2s
+    lambda: |-
+      return id(tof_board_test).get_discovery_map();
+
+  - platform: template
+    name: ${friendly_name} Candidate Trace
+    update_interval: 2s
+    lambda: |-
+      return id(tof_board_test).get_candidate_trace();
+
+  - platform: template
+    name: ${friendly_name} Sensor Status
+    update_interval: 2s
+    lambda: |-
+      return id(tof_board_test).get_status_text(0);

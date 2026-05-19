@@ -1,0 +1,8 @@
+substitutions:
+  devicename: roode-six-sensor-bringup-v4
+  friendly_name: Roode Six Sensor Bring-up V4
+  sensor_profile: six_sensor_board_test_v4
+  expected_sensor_count: "6"
+
+packages:
+  bringup: !include peopleCounter32SixSensorBringup.yaml
