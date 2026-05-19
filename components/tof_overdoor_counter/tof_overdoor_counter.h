@@ -60,6 +60,7 @@ class TofOverdoorCounter : public PollingComponent {
   float get_presence_state() const;
   float get_ready_state() const;
   float get_row_active_state(size_t row_index) const;
+  bool get_invert_direction() const { return this->invert_direction_; }
   std::string get_status_text(size_t index) const;
   std::string get_source_label(size_t index) const;
   std::string get_phase_text() const;

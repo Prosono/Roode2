@@ -63,6 +63,11 @@ web_server:
       name: Health
       sorting_weight: 60
 
+tof_overdoor_ui:
+  title: ${friendly_name}
+  label: Front Door Counter
+  counter_id: overdoor_counter
+
 tof_overdoor_counter:
   id: overdoor_counter
   sda: 21
