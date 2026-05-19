@@ -11,7 +11,7 @@ namespace {
 static const char *const TAG = "tof_overdoor_counter";
 constexpr uint8_t PERSISTED_STATE_VERSION = 2;
 constexpr uint32_t STALE_READING_MS = 450;
-constexpr uint32_t CALIBRATION_CLEAR_SETTLE_MS = 350;
+constexpr uint32_t CALIBRATION_CLEAR_SETTLE_MS = 120;
 constexpr float FILTER_ALPHA = 0.42f;
 constexpr float BASELINE_TRACK_ALPHA = 0.015f;
 constexpr float NOISE_TRACK_ALPHA = 0.08f;
@@ -628,48 +628,35 @@ void TofOverdoorCounter::reset_all_counters() {
 
 void TofOverdoorCounter::process_calibration_() {
   const uint32_t now = millis();
-  bool ready_for_sample = true;
-  uint8_t eligible_sensors = 0;
-  bool had_progress = false;
+  uint8_t healthy_sensors = 0;
+  uint8_t clear_sensors = 0;
 
   for (auto &channel : this->channels_) {
     if (!channel.initialized) {
       continue;
     }
 
-    if (channel.calibration_samples != 0) {
-      had_progress = true;
-    }
-
     const float sample =
         !std::isnan(channel.filtered_distance) ? channel.filtered_distance : static_cast<float>(channel.raw_distance);
 
-    if (!channel.has_reading || channel.stale || channel.consecutive_errors >= 3 ||
-        std::isnan(sample) || sample < this->minimum_clear_distance_mm_) {
-      ready_for_sample = false;
-    } else {
-      eligible_sensors++;
+    if (!channel.has_reading || channel.stale || channel.consecutive_errors >= 3 || std::isnan(sample)) {
+      continue;
+    }
+
+    healthy_sensors++;
+    if (sample >= this->minimum_clear_distance_mm_) {
+      clear_sensors++;
     }
   }
 
-  if (eligible_sensors < this->min_valid_sensors_) {
+  if (healthy_sensors < this->min_valid_sensors_) {
     this->calibration_clear_since_ms_ = 0;
     this->phase_text_ = "Waiting for enough healthy sensors to calibrate";
     return;
   }
 
-  if (!ready_for_sample) {
-    for (auto &channel : this->channels_) {
-      channel.calibration_sum = 0.0f;
-      channel.calibration_sq_sum = 0.0f;
-      channel.calibration_min = NAN;
-      channel.calibration_max = NAN;
-      channel.calibration_samples = 0;
-    }
+  if (clear_sensors < this->min_valid_sensors_) {
     this->calibration_clear_since_ms_ = 0;
-    if (had_progress) {
-      ESP_LOGW(TAG, "Calibration paused because the doorway no longer looked clear");
-    }
     this->phase_text_ = "Waiting for clear doorway to calibrate";
     return;
   }
@@ -691,6 +678,13 @@ void TofOverdoorCounter::process_calibration_() {
     }
     const float sample =
         !std::isnan(channel.filtered_distance) ? channel.filtered_distance : static_cast<float>(channel.raw_distance);
+    if (!channel.has_reading || channel.stale || channel.consecutive_errors >= 3 ||
+        std::isnan(sample) || sample < this->minimum_clear_distance_mm_) {
+      continue;
+    }
+    if (channel.calibration_samples >= this->calibration_samples_) {
+      continue;
+    }
     channel.calibration_sum += sample;
     channel.calibration_sq_sum += sample * sample;
     channel.calibration_min = std::isnan(channel.calibration_min) ? sample : std::min(channel.calibration_min, sample);
@@ -698,7 +692,17 @@ void TofOverdoorCounter::process_calibration_() {
     channel.calibration_samples++;
   }
 
-  const uint16_t samples = this->channels_.empty() ? 0 : this->channels_[0].calibration_samples;
+  std::vector<uint16_t> sample_counts;
+  sample_counts.reserve(this->channels_.size());
+  for (const auto &channel : this->channels_) {
+    if (!channel.initialized) {
+      continue;
+    }
+    sample_counts.push_back(channel.calibration_samples);
+  }
+  std::sort(sample_counts.begin(), sample_counts.end(), std::greater<uint16_t>());
+  const size_t required_rank = std::min<size_t>(std::max<uint8_t>(1, this->min_valid_sensors_), sample_counts.size());
+  const uint16_t samples = sample_counts.empty() ? 0 : sample_counts[required_rank - 1];
   this->phase_text_ =
       "Collecting calibration samples (" + std::to_string(samples) + "/" + std::to_string(this->calibration_samples_) + ")";
 
@@ -706,13 +710,13 @@ void TofOverdoorCounter::process_calibration_() {
     return;
   }
 
-  bool stable = true;
+  uint8_t stable_channels = 0;
   std::vector<float> baselines(this->channels_.size(), NAN);
   std::vector<float> noises(this->channels_.size(), NAN);
   std::vector<uint8_t> qualities(this->channels_.size(), 0);
   for (size_t index = 0; index < this->channels_.size(); index++) {
     auto &channel = this->channels_[index];
-    if (!channel.initialized) {
+    if (!channel.initialized || channel.calibration_samples < this->calibration_samples_) {
       continue;
     }
 
@@ -722,29 +726,26 @@ void TofOverdoorCounter::process_calibration_() {
     const float stddev = sqrtf(variance);
     const float span = channel.calibration_max - channel.calibration_min;
 
-    if (span > static_cast<float>(this->baseline_tolerance_mm_ * 4U) ||
-        stddev > static_cast<float>(this->baseline_tolerance_mm_) * 1.6f) {
-      stable = false;
+    if (span > static_cast<float>(this->baseline_tolerance_mm_ * 10U) ||
+        stddev > static_cast<float>(this->baseline_tolerance_mm_) * 3.0f) {
       ESP_LOGW(TAG, "Calibration unstable on %s: mean=%.1f stddev=%.1f span=%.1f", channel.sensor_label.c_str(), mean,
                stddev, span);
-      break;
-    }
-
-    baselines[index] = mean;
-    noises[index] = std::max(1.0f, stddev);
-    qualities[index] = clamp_quality(100.0f - (stddev * 2.5f) - (span * 0.3f));
-  }
-
-  if (!stable) {
-    for (auto &channel : this->channels_) {
       channel.calibration_sum = 0.0f;
       channel.calibration_sq_sum = 0.0f;
       channel.calibration_min = NAN;
       channel.calibration_max = NAN;
       channel.calibration_samples = 0;
+      continue;
     }
-    this->calibration_clear_since_ms_ = now;
-    this->phase_text_ = "Calibration unstable - collecting again";
+
+    baselines[index] = mean;
+    noises[index] = std::max(1.0f, stddev);
+    qualities[index] = clamp_quality(100.0f - (stddev * 2.5f) - (span * 0.3f));
+    stable_channels++;
+  }
+
+  if (stable_channels < this->min_valid_sensors_) {
+    this->phase_text_ = "Calibration still collecting stable samples";
     return;
   }
 
@@ -1536,9 +1537,21 @@ float TofOverdoorCounter::get_calibration_progress() const {
   if (!this->calibration_active_ || this->channels_.empty()) {
     return 100.0f;
   }
-  return clampf((static_cast<float>(this->channels_[0].calibration_samples) / static_cast<float>(this->calibration_samples_)) *
-                    100.0f,
-                0.0f, 100.0f);
+  std::vector<uint16_t> sample_counts;
+  sample_counts.reserve(this->channels_.size());
+  for (const auto &channel : this->channels_) {
+    if (!channel.initialized) {
+      continue;
+    }
+    sample_counts.push_back(channel.calibration_samples);
+  }
+  if (sample_counts.empty() || this->calibration_samples_ == 0) {
+    return 0.0f;
+  }
+  std::sort(sample_counts.begin(), sample_counts.end(), std::greater<uint16_t>());
+  const size_t required_rank = std::min<size_t>(std::max<uint8_t>(1, this->min_valid_sensors_), sample_counts.size());
+  const float supporting_samples = static_cast<float>(sample_counts[required_rank - 1]);
+  return clampf((supporting_samples / static_cast<float>(this->calibration_samples_)) * 100.0f, 0.0f, 100.0f);
 }
 
 float TofOverdoorCounter::get_max_people_inside_value() const { return static_cast<float>(this->max_people_inside_); }
