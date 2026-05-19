@@ -79,12 +79,15 @@ tof_overdoor_counter:
   id: overdoor_counter
   sda: 21
   scl: 22
-  frequency: 100kHz
+  frequency: 400kHz
   timeout: 1500ms
   wake_delay: 60ms
   post_address_delay: 80ms
+  distance_mode: long
+  timing_budget: 33ms
+  intermeasurement_period: 33ms
   init_retries: 3
-  update_interval: 30ms
+  update_interval: 10ms
   base_address: 0x30
   trigger_delta: 320mm
   release_delta: 180mm

@@ -897,35 +897,35 @@ const char OVERDOOR_UI_HTML[] = R"html(
             <div class="settings-grid">
               <label class="field">
                 <span>Trigger threshold (mm)</span>
-                <input type="number" name="trigger_threshold" id="setting-trigger" min="80" max="1200" step="10">
+                <input type="number" name="trigger_threshold" id="setting-trigger" min="80" max="1200" step="10" value="320">
               </label>
               <label class="field">
                 <span>Clear threshold (mm)</span>
-                <input type="number" name="clear_threshold" id="setting-clear" min="40" max="900" step="10">
+                <input type="number" name="clear_threshold" id="setting-clear" min="40" max="900" step="10" value="180">
               </label>
               <label class="field">
                 <span>Baseline tolerance (mm)</span>
-                <input type="number" name="baseline_tolerance" id="setting-baseline" min="20" max="300" step="5">
+                <input type="number" name="baseline_tolerance" id="setting-baseline" min="20" max="300" step="5" value="80">
               </label>
               <label class="field">
                 <span>Debounce (ms)</span>
-                <input type="number" name="debounce_ms" id="setting-debounce" min="5" max="300" step="5">
+                <input type="number" name="debounce_ms" id="setting-debounce" min="5" max="300" step="5" value="45">
               </label>
               <label class="field">
                 <span>Detection timeout (ms)</span>
-                <input type="number" name="detection_timeout_ms" id="setting-timeout" min="300" max="4000" step="50">
+                <input type="number" name="detection_timeout_ms" id="setting-timeout" min="300" max="4000" step="50" value="1600">
               </label>
               <label class="field">
                 <span>Cooldown (ms)</span>
-                <input type="number" name="cooldown_ms" id="setting-cooldown" min="0" max="3000" step="50">
+                <input type="number" name="cooldown_ms" id="setting-cooldown" min="0" max="3000" step="50" value="500">
               </label>
               <label class="field">
                 <span>Min valid sensors</span>
-                <input type="number" name="min_valid_sensors" id="setting-min-valid" min="2" max="4" step="1">
+                <input type="number" name="min_valid_sensors" id="setting-min-valid" min="2" max="4" step="1" value="3">
               </label>
               <label class="field">
                 <span>Max people inside</span>
-                <input type="number" name="max_people_inside" id="setting-max-people" min="1" max="500" step="1">
+                <input type="number" name="max_people_inside" id="setting-max-people" min="1" max="500" step="1" value="50">
               </label>
             </div>
             <div class="toggle-grid">

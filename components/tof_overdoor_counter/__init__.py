@@ -6,6 +6,7 @@ import esphome.pins as pins
 tof_overdoor_counter_ns = cg.esphome_ns.namespace("tof_overdoor_counter")
 TofOverdoorCounter = tof_overdoor_counter_ns.class_("TofOverdoorCounter", cg.PollingComponent)
 OperatingMode = tof_overdoor_counter_ns.enum("OperatingMode")
+SensorDistanceMode = tof_overdoor_counter_ns.enum("SensorDistanceMode")
 
 CONF_BASE_ADDRESS = "base_address"
 CONF_BASELINE_TOLERANCE = "baseline_tolerance"
@@ -13,8 +14,10 @@ CONF_BLOCKED_TIMEOUT = "blocked_timeout"
 CONF_CALIBRATION_SAMPLES = "calibration_samples"
 CONF_COOLDOWN = "cooldown"
 CONF_DEBOUNCE = "debounce"
+CONF_DISTANCE_MODE = "distance_mode"
 CONF_INIT_RETRIES = "init_retries"
 CONF_INVERT_DIRECTION = "invert_direction"
+CONF_INTERMEASUREMENT = "intermeasurement_period"
 CONF_MAX_PEOPLE_INSIDE = "max_people_inside"
 CONF_MINIMUM_CLEAR_DISTANCE = "minimum_clear_distance"
 CONF_MIN_VALID_SENSORS = "min_valid_sensors"
@@ -23,6 +26,7 @@ CONF_POST_ADDRESS_DELAY = "post_address_delay"
 CONF_RELEASE_DELTA = "release_delta"
 CONF_SEQUENCE_TIMEOUT = "sequence_timeout"
 CONF_STANDING_TIMEOUT = "standing_timeout"
+CONF_TIMING_BUDGET = "timing_budget"
 CONF_TRIGGER_DELTA = "trigger_delta"
 CONF_WAKE_DELAY = "wake_delay"
 CONF_XSHUT_PINS = "xshut_pins"
@@ -32,6 +36,11 @@ CONF_AUTO_SAVE_ENABLED = "auto_save_enabled"
 MODE_OPTIONS = {
     "monitor": OperatingMode.MONITOR,
     "count": OperatingMode.COUNT,
+}
+
+DISTANCE_MODE_OPTIONS = {
+    "short": SensorDistanceMode.DISTANCE_MODE_SHORT,
+    "long": SensorDistanceMode.DISTANCE_MODE_LONG,
 }
 
 
@@ -57,6 +66,9 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_BASE_ADDRESS, default=0x30): cv.int_range(min=0x08, max=0x77),
             cv.Optional(CONF_WAKE_DELAY, default="60ms"): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_POST_ADDRESS_DELAY, default="80ms"): cv.positive_time_period_milliseconds,
+            cv.Optional(CONF_DISTANCE_MODE, default="long"): cv.enum(DISTANCE_MODE_OPTIONS, lower=True),
+            cv.Optional(CONF_TIMING_BUDGET, default="33ms"): cv.positive_time_period_milliseconds,
+            cv.Optional(CONF_INTERMEASUREMENT, default="33ms"): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_INIT_RETRIES, default=3): cv.int_range(min=1, max=5),
             cv.Optional(CONF_TRIGGER_DELTA, default="350mm"): cv.distance,
             cv.Optional(CONF_RELEASE_DELTA, default="220mm"): cv.distance,
@@ -76,7 +88,7 @@ CONFIG_SCHEMA = (
             cv.Required(CONF_XSHUT_PINS): validate_xshut_pins,
         }
     )
-    .extend(cv.polling_component_schema("30ms"))
+    .extend(cv.polling_component_schema("10ms"))
 )
 
 
@@ -94,6 +106,9 @@ async def to_code(config):
     cg.add(var.set_base_address(config[CONF_BASE_ADDRESS]))
     cg.add(var.set_wake_delay_ms(config[CONF_WAKE_DELAY]))
     cg.add(var.set_post_address_delay_ms(config[CONF_POST_ADDRESS_DELAY]))
+    cg.add(var.set_distance_mode(config[CONF_DISTANCE_MODE]))
+    cg.add(var.set_timing_budget_ms(config[CONF_TIMING_BUDGET]))
+    cg.add(var.set_intermeasurement_ms(config[CONF_INTERMEASUREMENT]))
     cg.add(var.set_init_retries(config[CONF_INIT_RETRIES]))
     cg.add(var.set_trigger_delta_mm(config[CONF_TRIGGER_DELTA]))
     cg.add(var.set_release_delta_mm(config[CONF_RELEASE_DELTA]))

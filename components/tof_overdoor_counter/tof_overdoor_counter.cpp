@@ -55,6 +55,16 @@ const char *group_name(SensorGroup group) {
   }
 }
 
+const char *distance_mode_name(SensorDistanceMode mode) {
+  switch (mode) {
+    case DISTANCE_MODE_SHORT:
+      return "short";
+    case DISTANCE_MODE_LONG:
+    default:
+      return "long";
+  }
+}
+
 uint8_t popcount_u8(uint8_t value) {
   uint8_t count = 0;
   while (value != 0) {
@@ -156,6 +166,9 @@ void TofOverdoorCounter::dump_config() {
   ESP_LOGCONFIG(TAG, "  SDA Pin: %u", this->sda_pin_);
   ESP_LOGCONFIG(TAG, "  SCL Pin: %u", this->scl_pin_);
   ESP_LOGCONFIG(TAG, "  I2C Frequency: %u Hz", this->i2c_frequency_);
+  ESP_LOGCONFIG(TAG, "  Distance Mode: %s", distance_mode_name(this->distance_mode_));
+  ESP_LOGCONFIG(TAG, "  Timing Budget: %u ms", this->timing_budget_ms_);
+  ESP_LOGCONFIG(TAG, "  Intermeasurement: %u ms", this->intermeasurement_ms_);
   ESP_LOGCONFIG(TAG, "  Trigger Threshold: %u mm", this->trigger_threshold_mm_);
   ESP_LOGCONFIG(TAG, "  Clear Threshold: %u mm", this->clear_threshold_mm_);
   ESP_LOGCONFIG(TAG, "  Baseline Tolerance: %u mm", this->baseline_tolerance_mm_);
@@ -292,17 +305,23 @@ bool TofOverdoorCounter::configure_sensor_(Channel &channel) {
     channel.last_error = status;
     return false;
   }
-  status = sensor.SetDistanceMode(EDistanceMode::Long);
+  const EDistanceMode sensor_distance_mode =
+      this->distance_mode_ == DISTANCE_MODE_SHORT ? EDistanceMode::Short : EDistanceMode::Long;
+  status = sensor.SetDistanceMode(sensor_distance_mode);
   if (status != VL53L1_ERROR_NONE) {
     channel.last_error = status;
     return false;
   }
-  status = sensor.SetTimingBudgetInMs(20);
+  const uint16_t min_timing_budget = this->distance_mode_ == DISTANCE_MODE_SHORT ? 20 : 33;
+  const uint16_t timing_budget_ms = std::max<uint16_t>(this->timing_budget_ms_, min_timing_budget);
+  const uint16_t intermeasurement_ms = std::max<uint16_t>(this->intermeasurement_ms_, timing_budget_ms);
+
+  status = sensor.SetTimingBudgetInMs(timing_budget_ms);
   if (status != VL53L1_ERROR_NONE) {
     channel.last_error = status;
     return false;
   }
-  status = sensor.SetInterMeasurementInMs(25);
+  status = sensor.SetInterMeasurementInMs(intermeasurement_ms);
   if (status != VL53L1_ERROR_NONE) {
     channel.last_error = status;
     return false;
@@ -478,6 +497,9 @@ void TofOverdoorCounter::load_persisted_state_() {
 }
 
 void TofOverdoorCounter::apply_calibration_defaults_() {
+  this->i2c_frequency_ = sanitize_persisted<uint32_t>(this->i2c_frequency_, 100000, 400000, 400000);
+  this->timing_budget_ms_ = sanitize_persisted<uint16_t>(this->timing_budget_ms_, 20, 1000, 33);
+  this->intermeasurement_ms_ = sanitize_persisted<uint16_t>(this->intermeasurement_ms_, 20, 5000, 33);
   this->trigger_threshold_mm_ = sanitize_persisted<uint16_t>(this->trigger_threshold_mm_, 40, 3000, 320);
   this->clear_threshold_mm_ = sanitize_persisted<uint16_t>(this->clear_threshold_mm_, 20, 2500, 180);
   this->baseline_tolerance_mm_ = sanitize_persisted<uint16_t>(this->baseline_tolerance_mm_, 10, 500, 80);
@@ -491,6 +513,13 @@ void TofOverdoorCounter::apply_calibration_defaults_() {
   this->max_people_inside_ = sanitize_persisted<uint16_t>(this->max_people_inside_, 1, 5000, 50);
   this->min_valid_sensors_ = sanitize_persisted<uint8_t>(this->min_valid_sensors_, 2, SENSOR_COUNT, 3);
 
+  const uint16_t min_timing_budget = this->distance_mode_ == DISTANCE_MODE_SHORT ? 20 : 33;
+  if (this->timing_budget_ms_ < min_timing_budget) {
+    this->timing_budget_ms_ = min_timing_budget;
+  }
+  if (this->intermeasurement_ms_ < this->timing_budget_ms_) {
+    this->intermeasurement_ms_ = this->timing_budget_ms_;
+  }
   if (this->clear_threshold_mm_ >= this->trigger_threshold_mm_) {
     this->clear_threshold_mm_ = std::max<uint16_t>(20, this->trigger_threshold_mm_ / 2);
   }

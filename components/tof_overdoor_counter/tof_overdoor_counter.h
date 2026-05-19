@@ -21,6 +21,11 @@ enum OperatingMode : uint8_t {
   COUNT = 1,
 };
 
+enum SensorDistanceMode : uint8_t {
+  DISTANCE_MODE_SHORT = 0,
+  DISTANCE_MODE_LONG = 1,
+};
+
 enum SensorGroup : uint8_t {
   GROUP_OUT = 0,
   GROUP_IN = 1,
@@ -95,6 +100,9 @@ class TofOverdoorCounter : public PollingComponent {
   void set_post_address_delay_ms(uint32_t post_address_delay_ms) {
     this->post_address_delay_ms_ = post_address_delay_ms;
   }
+  void set_distance_mode(SensorDistanceMode distance_mode) { this->distance_mode_ = distance_mode; }
+  void set_timing_budget_ms(uint16_t timing_budget_ms) { this->timing_budget_ms_ = timing_budget_ms; }
+  void set_intermeasurement_ms(uint16_t intermeasurement_ms) { this->intermeasurement_ms_ = intermeasurement_ms; }
   void set_init_retries(uint8_t init_retries) { this->init_retries_ = init_retries; }
   void set_trigger_delta_mm(uint16_t trigger_delta_mm) { this->trigger_threshold_mm_ = trigger_delta_mm; }
   void set_release_delta_mm(uint16_t release_delta_mm) { this->clear_threshold_mm_ = release_delta_mm; }
@@ -230,6 +238,9 @@ class TofOverdoorCounter : public PollingComponent {
   uint8_t base_address_{0x30};
   uint32_t wake_delay_ms_{60};
   uint32_t post_address_delay_ms_{80};
+  SensorDistanceMode distance_mode_{DISTANCE_MODE_LONG};
+  uint16_t timing_budget_ms_{33};
+  uint16_t intermeasurement_ms_{33};
   uint8_t init_retries_{3};
   uint16_t trigger_threshold_mm_{320};
   uint16_t clear_threshold_mm_{180};
