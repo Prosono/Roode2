@@ -454,7 +454,7 @@ sensor:
       return id(overdoor_counter).get_update_skew_ms();
 
   - platform: template
-    name: ${friendly_name} People Count
+    name: ${friendly_name} People Inside
     unit_of_measurement: persons
     accuracy_decimals: 0
     update_interval: 500ms
