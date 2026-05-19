@@ -8,16 +8,25 @@ TofOverdoorCounter = tof_overdoor_counter_ns.class_("TofOverdoorCounter", cg.Pol
 OperatingMode = tof_overdoor_counter_ns.enum("OperatingMode")
 
 CONF_BASE_ADDRESS = "base_address"
+CONF_BASELINE_TOLERANCE = "baseline_tolerance"
+CONF_BLOCKED_TIMEOUT = "blocked_timeout"
+CONF_CALIBRATION_SAMPLES = "calibration_samples"
 CONF_COOLDOWN = "cooldown"
+CONF_DEBOUNCE = "debounce"
 CONF_INIT_RETRIES = "init_retries"
 CONF_INVERT_DIRECTION = "invert_direction"
+CONF_MAX_PEOPLE_INSIDE = "max_people_inside"
+CONF_MINIMUM_CLEAR_DISTANCE = "minimum_clear_distance"
+CONF_MIN_VALID_SENSORS = "min_valid_sensors"
 CONF_MODE = "mode"
 CONF_POST_ADDRESS_DELAY = "post_address_delay"
 CONF_RELEASE_DELTA = "release_delta"
 CONF_SEQUENCE_TIMEOUT = "sequence_timeout"
+CONF_STANDING_TIMEOUT = "standing_timeout"
 CONF_TRIGGER_DELTA = "trigger_delta"
 CONF_WAKE_DELAY = "wake_delay"
 CONF_XSHUT_PINS = "xshut_pins"
+CONF_AUTO_SAVE_ENABLED = "auto_save_enabled"
 
 
 MODE_OPTIONS = {
@@ -51,14 +60,23 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_INIT_RETRIES, default=3): cv.int_range(min=1, max=5),
             cv.Optional(CONF_TRIGGER_DELTA, default="350mm"): cv.distance,
             cv.Optional(CONF_RELEASE_DELTA, default="220mm"): cv.distance,
+            cv.Optional(CONF_BASELINE_TOLERANCE, default="80mm"): cv.distance,
             cv.Optional(CONF_SEQUENCE_TIMEOUT, default="2s"): cv.positive_time_period_milliseconds,
+            cv.Optional(CONF_DEBOUNCE, default="45ms"): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_COOLDOWN, default="600ms"): cv.positive_time_period_milliseconds,
+            cv.Optional(CONF_BLOCKED_TIMEOUT, default="1800ms"): cv.positive_time_period_milliseconds,
+            cv.Optional(CONF_STANDING_TIMEOUT, default="2200ms"): cv.positive_time_period_milliseconds,
+            cv.Optional(CONF_MINIMUM_CLEAR_DISTANCE, default="600mm"): cv.distance,
+            cv.Optional(CONF_CALIBRATION_SAMPLES, default=24): cv.int_range(min=8, max=100),
+            cv.Optional(CONF_MIN_VALID_SENSORS, default=3): cv.int_range(min=2, max=4),
+            cv.Optional(CONF_MAX_PEOPLE_INSIDE, default=50): cv.int_range(min=1, max=500),
+            cv.Optional(CONF_AUTO_SAVE_ENABLED, default=True): cv.boolean,
             cv.Optional(CONF_INVERT_DIRECTION, default=False): cv.boolean,
-            cv.Optional(CONF_MODE, default="monitor"): cv.enum(MODE_OPTIONS, lower=True),
+            cv.Optional(CONF_MODE, default="count"): cv.enum(MODE_OPTIONS, lower=True),
             cv.Required(CONF_XSHUT_PINS): validate_xshut_pins,
         }
     )
-    .extend(cv.polling_component_schema("60ms"))
+    .extend(cv.polling_component_schema("30ms"))
 )
 
 
@@ -79,8 +97,17 @@ async def to_code(config):
     cg.add(var.set_init_retries(config[CONF_INIT_RETRIES]))
     cg.add(var.set_trigger_delta_mm(config[CONF_TRIGGER_DELTA]))
     cg.add(var.set_release_delta_mm(config[CONF_RELEASE_DELTA]))
+    cg.add(var.set_baseline_tolerance_mm(config[CONF_BASELINE_TOLERANCE]))
     cg.add(var.set_sequence_timeout_ms(config[CONF_SEQUENCE_TIMEOUT]))
+    cg.add(var.set_debounce_ms(config[CONF_DEBOUNCE]))
     cg.add(var.set_cooldown_ms(config[CONF_COOLDOWN]))
+    cg.add(var.set_blocked_timeout_ms(config[CONF_BLOCKED_TIMEOUT]))
+    cg.add(var.set_standing_timeout_ms(config[CONF_STANDING_TIMEOUT]))
+    cg.add(var.set_minimum_clear_distance_mm(config[CONF_MINIMUM_CLEAR_DISTANCE]))
+    cg.add(var.set_calibration_samples(config[CONF_CALIBRATION_SAMPLES]))
+    cg.add(var.set_min_valid_sensors(config[CONF_MIN_VALID_SENSORS]))
+    cg.add(var.set_max_people_inside(config[CONF_MAX_PEOPLE_INSIDE]))
+    cg.add(var.set_auto_save_enabled(config[CONF_AUTO_SAVE_ENABLED]))
     cg.add(var.set_invert_direction(config[CONF_INVERT_DIRECTION]))
     cg.add(var.set_mode(config[CONF_MODE]))
 

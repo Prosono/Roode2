@@ -1,0 +1,115 @@
+type: vertical-stack
+cards:
+  - type: markdown
+    content: |
+      ## Roode room counter
+      Denne visningen bruker de fire fungerende ToF-sensorene som to virtuelle dørsoner:
+      - `U3/U4`
+      - `U7/U8`
+
+      Tanken er enkel:
+      - én sone trigges først
+      - den andre følger etter
+      - så teller vi `Entry` eller `Exit`
+
+  - type: grid
+    columns: 4
+    square: false
+    cards:
+      - type: tile
+        entity: input_number.roode_room_people_count
+        name: People in room
+        color: blue
+      - type: tile
+        entity: input_text.roode_last_direction
+        name: Last direction
+        color: amber
+      - type: tile
+        entity: input_select.roode_sequence_state
+        name: Sequence state
+        color: teal
+      - type: tile
+        entity: sensor.roode_passage_summary
+        name: Summary
+        color: green
+
+  - type: grid
+    columns: 2
+    square: false
+    cards:
+      - type: entities
+        title: Pair U3/U4
+        show_header_toggle: false
+        entities:
+          - entity: sensor.roode_pair_u3_u4_distance
+            name: Pair distance
+          - entity: binary_sensor.roode_pair_u3_u4_triggered
+            name: Triggered
+          - entity: input_number.roode_pair_u3_u4_trigger_below_mm
+            name: Trigger below
+          - entity: sensor.roode_four_sensor_overdoor_u3_distance
+            name: U3 distance
+          - entity: sensor.roode_four_sensor_overdoor_u4_distance
+            name: U4 distance
+
+      - type: entities
+        title: Pair U7/U8
+        show_header_toggle: false
+        entities:
+          - entity: sensor.roode_pair_u7_u8_distance
+            name: Pair distance
+          - entity: binary_sensor.roode_pair_u7_u8_triggered
+            name: Triggered
+          - entity: input_number.roode_pair_u7_u8_trigger_below_mm
+            name: Trigger below
+          - entity: sensor.roode_four_sensor_overdoor_u7_distance
+            name: U7 distance
+          - entity: sensor.roode_four_sensor_overdoor_u8_distance
+            name: U8 distance
+
+  - type: history-graph
+    title: Virtual doorway zones
+    hours_to_show: 1
+    refresh_interval: 5
+    entities:
+      - entity: sensor.roode_pair_u3_u4_distance
+        name: U3/U4 pair
+      - entity: sensor.roode_pair_u7_u8_distance
+        name: U7/U8 pair
+
+  - type: history-graph
+    title: Raw sensor distances
+    hours_to_show: 1
+    refresh_interval: 5
+    entities:
+      - entity: sensor.roode_four_sensor_overdoor_u3_distance
+        name: U3
+      - entity: sensor.roode_four_sensor_overdoor_u4_distance
+        name: U4
+      - entity: sensor.roode_four_sensor_overdoor_u7_distance
+        name: U7
+      - entity: sensor.roode_four_sensor_overdoor_u8_distance
+        name: U8
+
+  - type: entities
+    title: Tuning and controls
+    show_header_toggle: false
+    entities:
+      - entity: input_boolean.roode_direction_inverted
+        name: Invert direction
+      - entity: timer.roode_sequence_window
+        name: Sequence window
+      - entity: input_number.roode_room_people_count
+        name: Manual room count
+      - entity: input_text.roode_last_direction
+        name: Last detected direction
+      - entity: input_select.roode_sequence_state
+        name: Current sequence state
+
+  - type: markdown
+    content: |
+      ### Quick test
+      1. Start with both pair distances stable and above the trigger thresholds.
+      2. Walk through the doorway so one pair clearly drops before the other.
+      3. Watch `Sequence state` go from `idle` to `a_first` or `b_first`, then complete.
+      4. If direction is reversed, toggle `Invert direction`.

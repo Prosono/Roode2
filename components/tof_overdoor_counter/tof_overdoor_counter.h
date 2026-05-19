@@ -11,6 +11,7 @@
 #include "esphome/core/component.h"
 #include "esphome/core/gpio.h"
 #include "esphome/core/log.h"
+#include "esphome/core/preferences.h"
 
 namespace esphome {
 namespace tof_overdoor_counter {
@@ -20,8 +21,66 @@ enum OperatingMode : uint8_t {
   COUNT = 1,
 };
 
+enum SensorGroup : uint8_t {
+  GROUP_OUT = 0,
+  GROUP_IN = 1,
+  GROUP_NONE = 2,
+};
+
+enum SystemStatus : uint8_t {
+  STATUS_BOOTING = 0,
+  STATUS_CALIBRATING = 1,
+  STATUS_READY = 2,
+  STATUS_DETECTING = 3,
+  STATUS_BLOCKED = 4,
+  STATUS_DEGRADED = 5,
+  STATUS_ERROR = 6,
+};
+
+enum DetectionOutcome : uint8_t {
+  OUTCOME_NONE = 0,
+  OUTCOME_IN = 1,
+  OUTCOME_OUT = 2,
+  OUTCOME_UNSURE_IN = 3,
+  OUTCOME_UNSURE_OUT = 4,
+};
+
 class TofOverdoorCounter : public PollingComponent {
  public:
+  static constexpr size_t SENSOR_COUNT = 4;
+  static constexpr size_t EVENT_LOG_SIZE = 12;
+
+  struct PersistedCalibration {
+    uint8_t valid{0};
+    uint16_t baseline_mm{0};
+    uint16_t noise_mm{0};
+    uint8_t quality{0};
+  };
+
+  struct PersistedState {
+    uint8_t version{2};
+    int32_t people_inside{0};
+    uint32_t confirmed_in{0};
+    uint32_t confirmed_out{0};
+    uint32_t unsure_in{0};
+    uint32_t unsure_out{0};
+    uint16_t trigger_threshold_mm{320};
+    uint16_t clear_threshold_mm{180};
+    uint16_t baseline_tolerance_mm{80};
+    uint16_t minimum_clear_distance_mm{600};
+    uint16_t debounce_ms{45};
+    uint16_t detection_timeout_ms{1600};
+    uint16_t cooldown_ms{500};
+    uint16_t blocked_timeout_ms{1800};
+    uint16_t standing_timeout_ms{2200};
+    uint16_t calibration_samples{24};
+    uint16_t max_people_inside{50};
+    uint8_t min_valid_sensors{3};
+    uint8_t auto_save_enabled{1};
+    uint8_t invert_direction{0};
+    PersistedCalibration calibrations[SENSOR_COUNT];
+  };
+
   void setup() override;
   void update() override;
   void dump_config() override;
@@ -37,10 +96,23 @@ class TofOverdoorCounter : public PollingComponent {
     this->post_address_delay_ms_ = post_address_delay_ms;
   }
   void set_init_retries(uint8_t init_retries) { this->init_retries_ = init_retries; }
-  void set_trigger_delta_mm(uint16_t trigger_delta_mm) { this->trigger_delta_mm_ = trigger_delta_mm; }
-  void set_release_delta_mm(uint16_t release_delta_mm) { this->release_delta_mm_ = release_delta_mm; }
-  void set_sequence_timeout_ms(uint32_t sequence_timeout_ms) { this->sequence_timeout_ms_ = sequence_timeout_ms; }
+  void set_trigger_delta_mm(uint16_t trigger_delta_mm) { this->trigger_threshold_mm_ = trigger_delta_mm; }
+  void set_release_delta_mm(uint16_t release_delta_mm) { this->clear_threshold_mm_ = release_delta_mm; }
+  void set_sequence_timeout_ms(uint32_t sequence_timeout_ms) { this->detection_timeout_ms_ = sequence_timeout_ms; }
   void set_cooldown_ms(uint32_t cooldown_ms) { this->cooldown_ms_ = cooldown_ms; }
+  void set_baseline_tolerance_mm(uint16_t baseline_tolerance_mm) {
+    this->baseline_tolerance_mm_ = baseline_tolerance_mm;
+  }
+  void set_debounce_ms(uint32_t debounce_ms) { this->debounce_ms_ = debounce_ms; }
+  void set_blocked_timeout_ms(uint32_t blocked_timeout_ms) { this->blocked_timeout_ms_ = blocked_timeout_ms; }
+  void set_standing_timeout_ms(uint32_t standing_timeout_ms) { this->standing_timeout_ms_ = standing_timeout_ms; }
+  void set_minimum_clear_distance_mm(uint16_t minimum_clear_distance_mm) {
+    this->minimum_clear_distance_mm_ = minimum_clear_distance_mm;
+  }
+  void set_calibration_samples(uint16_t calibration_samples) { this->calibration_samples_ = calibration_samples; }
+  void set_min_valid_sensors(uint8_t min_valid_sensors) { this->min_valid_sensors_ = min_valid_sensors; }
+  void set_max_people_inside(uint16_t max_people_inside) { this->max_people_inside_ = max_people_inside; }
+  void set_auto_save_enabled(bool auto_save_enabled) { this->auto_save_enabled_ = auto_save_enabled; }
   void set_invert_direction(bool invert_direction) { this->invert_direction_ = invert_direction; }
   void set_mode(OperatingMode mode) { this->mode_ = mode; }
   void add_xshut_pin(GPIOPin *pin, uint8_t number) {
@@ -51,6 +123,10 @@ class TofOverdoorCounter : public PollingComponent {
   void rediscover();
   void recalibrate();
   void reset_counts();
+  void reset_unsure_in();
+  void reset_unsure_out();
+  void reset_all_counters();
+  void persist_runtime_state();
 
   float get_discovered_sensor_count() const;
   float get_reporting_sensor_count() const;
@@ -60,43 +136,88 @@ class TofOverdoorCounter : public PollingComponent {
   float get_average_distance_mm() const;
   float get_distance_span_mm() const;
   float get_distance_mm(size_t index) const;
+  float get_raw_distance_mm(size_t index) const;
+  float get_filtered_distance_mm(size_t index) const;
   float get_baseline_mm(size_t index) const;
+  float get_delta_mm(size_t index) const;
+  float get_noise_mm(size_t index) const;
+  float get_calibration_quality(size_t index) const;
   float get_row_distance_mm(size_t row_index) const;
   float get_row_baseline_mm(size_t row_index) const;
   float get_row_drop_mm(size_t row_index) const;
   float get_entry_count() const;
   float get_exit_count() const;
   float get_people_count() const;
+  float get_unsure_in_count() const;
+  float get_unsure_out_count() const;
   float get_presence_state() const;
   float get_ready_state() const;
   float get_row_active_state(size_t row_index) const;
+  float get_sensor_active_state(size_t index) const;
+  float get_person_standing_state() const;
+  float get_confidence_score() const;
+  float get_calibration_progress() const;
+  float get_max_people_inside_value() const;
+  float get_trigger_threshold_value() const;
+  float get_clear_threshold_value() const;
+  float get_baseline_tolerance_value() const;
+  float get_debounce_value() const;
+  float get_detection_timeout_value() const;
+  float get_cooldown_value() const;
+  float get_min_valid_sensors_value() const;
   bool get_invert_direction() const { return this->invert_direction_; }
+  bool get_auto_save_enabled() const { return this->auto_save_enabled_; }
   bool is_monitor_mode() const { return this->mode_ == OperatingMode::MONITOR; }
   bool is_count_mode() const { return this->mode_ == OperatingMode::COUNT; }
   std::string get_mode_text() const;
+  std::string get_group_label(size_t group_index) const;
   std::string get_status_text(size_t index) const;
+  std::string get_sensor_health_text(size_t index) const;
   std::string get_source_label(size_t index) const;
   std::string get_phase_text() const;
+  std::string get_system_status_text() const;
   std::string get_last_direction_text() const;
+  std::string get_last_detection_timestamp_text() const;
+  std::string get_last_reason_text() const;
+  std::string get_blocked_sensor_text() const;
   std::string get_summary() const;
   std::string get_discovery_map() const;
+  std::string get_event_log() const;
 
  protected:
   struct Channel {
     std::unique_ptr<VL53L1X_ULD> sensor;
     uint8_t pin_number{0};
     uint8_t address{0};
+    SensorGroup group{GROUP_NONE};
     bool initialized{false};
     bool ranging_started{false};
     bool has_reading{false};
-    bool occupied{false};
-    uint16_t last_distance{0};
-    int last_error{0};
-    uint32_t last_update_ms{0};
-    uint32_t last_read_duration_ms{0};
+    bool calibrated{false};
+    bool active{false};
+    bool blocked{false};
+    bool stale{true};
+    uint16_t raw_distance{0};
+    float filtered_distance{NAN};
     float baseline{NAN};
-    uint16_t baseline_samples{0};
+    float noise{NAN};
+    uint8_t calibration_quality{0};
+    int last_error{0};
+    uint8_t consecutive_errors{0};
+    uint32_t last_update_ms{0};
+    uint32_t last_good_read_ms{0};
+    uint32_t last_read_duration_ms{0};
+    uint32_t active_candidate_since_ms{0};
+    uint32_t clear_candidate_since_ms{0};
+    uint32_t active_since_ms{0};
+    uint32_t first_trigger_in_event_ms{0};
+    float calibration_sum{0.0f};
+    float calibration_sq_sum{0.0f};
+    float calibration_min{NAN};
+    float calibration_max{NAN};
+    uint16_t calibration_samples{0};
     std::string source_label;
+    std::string sensor_label;
   };
 
   std::vector<GPIOPin *> xshut_pins_;
@@ -110,26 +231,54 @@ class TofOverdoorCounter : public PollingComponent {
   uint32_t wake_delay_ms_{60};
   uint32_t post_address_delay_ms_{80};
   uint8_t init_retries_{3};
-  uint16_t trigger_delta_mm_{350};
-  uint16_t release_delta_mm_{220};
-  uint32_t sequence_timeout_ms_{2000};
-  uint32_t cooldown_ms_{600};
+  uint16_t trigger_threshold_mm_{320};
+  uint16_t clear_threshold_mm_{180};
+  uint16_t baseline_tolerance_mm_{80};
+  uint16_t minimum_clear_distance_mm_{600};
+  uint32_t debounce_ms_{45};
+  uint32_t detection_timeout_ms_{1600};
+  uint32_t cooldown_ms_{500};
+  uint32_t blocked_timeout_ms_{1800};
+  uint32_t standing_timeout_ms_{2200};
+  uint16_t calibration_samples_{24};
+  uint16_t max_people_inside_{50};
+  uint8_t min_valid_sensors_{3};
+  bool auto_save_enabled_{true};
   bool invert_direction_{false};
-  OperatingMode mode_{OperatingMode::MONITOR};
+  OperatingMode mode_{OperatingMode::COUNT};
   bool wire_initialized_{false};
-  bool waiting_for_clear_{false};
-  uint8_t start_row_{0};
-  uint8_t last_single_row_{0};
-  bool saw_both_{false};
-  uint32_t sequence_started_ms_{0};
+  bool calibration_active_{true};
+  bool person_standing_in_door_{false};
+  bool event_active_{false};
+  bool state_dirty_{false};
+  SensorGroup event_first_group_{GROUP_NONE};
+  SensorGroup event_second_group_{GROUP_NONE};
+  uint8_t event_sensor_mask_{0};
+  uint8_t event_peak_active_count_{0};
+  uint8_t event_peak_group_counts_[2] = {0, 0};
+  uint32_t calibration_started_ms_{0};
+  uint32_t event_started_ms_{0};
+  uint32_t event_last_activity_ms_{0};
   uint32_t cooldown_until_ms_{0};
   uint32_t cycle_duration_ms_{0};
   uint32_t last_discovery_ms_{0};
-  uint32_t entry_count_{0};
-  uint32_t exit_count_{0};
-  int people_count_{0};
-  std::string last_direction_{"Waiting"};
+  uint32_t last_detection_ms_{0};
+  uint32_t event_log_count_{0};
+  int people_inside_{0};
+  uint32_t confirmed_in_count_{0};
+  uint32_t confirmed_out_count_{0};
+  uint32_t unsure_in_count_{0};
+  uint32_t unsure_out_count_{0};
+  uint8_t last_confidence_{0};
+  SystemStatus system_status_{STATUS_BOOTING};
+  DetectionOutcome last_detection_outcome_{OUTCOME_NONE};
   std::string phase_text_{"Booting"};
+  std::string last_direction_{"Waiting"};
+  std::string last_reason_{"Booting"};
+  std::string blocked_sensor_text_{"None"};
+  std::string event_log_[EVENT_LOG_SIZE];
+  ESPPreferenceObject persisted_state_pref_;
+  bool persisted_state_ready_{false};
 
   bool initialize_wire_();
   bool recover_wire_();
@@ -142,18 +291,42 @@ class TofOverdoorCounter : public PollingComponent {
   bool configure_sensor_(Channel &channel);
   bool read_channel_(Channel &channel);
   bool restart_ranging_(Channel &channel);
-  void update_baselines_();
-  void update_occupancy_states_();
-  void update_state_machine_();
-  void finalize_sequence_();
-  void reset_sequence_();
-  bool all_calibrated_() const;
+  void init_preferences_();
+  void load_persisted_state_();
+  uint32_t preference_key_() const;
+  void apply_calibration_defaults_();
+  void process_calibration_();
+  void update_sensor_states_();
+  void update_sensor_health_();
+  void update_system_status_();
+  void update_detection_state_machine_();
+  void finalize_event_(bool timed_out);
+  void apply_idle_baseline_tracking_();
+  void clear_event_tracking_();
+  void update_blocked_state_();
+  bool ready_for_counting_() const;
   bool all_reporting_() const;
-  bool row_is_active_(uint8_t row_index) const;
-  float row_distance_internal_(uint8_t row_index) const;
-  float row_baseline_internal_(uint8_t row_index) const;
-  float row_drop_internal_(uint8_t row_index) const;
+  uint8_t healthy_sensor_count_() const;
+  uint8_t reporting_sensor_count_() const;
+  uint8_t active_sensor_count_() const;
+  uint8_t active_sensor_count_for_group_(SensorGroup group) const;
+  uint8_t triggered_sensor_count_for_group_(SensorGroup group) const;
+  bool group_is_active_(SensorGroup group) const;
+  float group_distance_internal_(SensorGroup group) const;
+  float group_baseline_internal_(SensorGroup group) const;
+  float group_drop_internal_(SensorGroup group) const;
+  SensorGroup group_for_index_(size_t index) const;
+  SensorGroup determine_first_group_from_current_state_() const;
+  SensorGroup map_physical_group_to_direction_(SensorGroup physical_group) const;
+  std::string direction_text_for_group_(SensorGroup physical_group, bool unsure) const;
+  std::string system_status_text_(SystemStatus status) const;
   std::string status_text_for_(const Channel &channel) const;
+  std::string health_text_for_(const Channel &channel) const;
+  std::string format_uptime_(uint32_t ms) const;
+  void log_event_(const std::string &message);
+  void register_detection_(DetectionOutcome outcome, uint8_t confidence, const std::string &reason);
+  void restore_persisted_calibration_(Channel &channel, size_t index, const PersistedCalibration &persisted);
+  PersistedCalibration build_persisted_calibration_(const Channel &channel) const;
 };
 
 }  // namespace tof_overdoor_counter

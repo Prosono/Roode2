@@ -3,6 +3,7 @@
 #ifdef USE_WEBSERVER
 
 #include <cmath>
+#include <cstdlib>
 #include <string>
 
 #include "esphome/components/json/json_util.h"
@@ -17,6 +18,28 @@ static const char *const TAG = "tof_overdoor_ui";
 namespace {
 
 const char *const SENSOR_CARD_LABELS[] = {"U3", "U4", "U7", "U8"};
+const char *const SENSOR_GROUP_LABELS[] = {"OUT group", "IN group", "OUT group", "IN group"};
+
+int parse_int_arg(AsyncWebServerRequest *request, const char *name, int fallback) {
+  if (!request->hasArg(name)) {
+    return fallback;
+  }
+  auto raw = request->arg(name);
+  if (raw.empty()) {
+    return fallback;
+  }
+  char *end = nullptr;
+  const long parsed = strtol(raw.c_str(), &end, 10);
+  return end != raw.c_str() ? static_cast<int>(parsed) : fallback;
+}
+
+bool parse_bool_arg(AsyncWebServerRequest *request, const char *name, bool fallback) {
+  if (!request->hasArg(name)) {
+    return fallback;
+  }
+  const auto raw = request->arg(name);
+  return raw == "1" || raw == "true" || raw == "on" || raw == "yes";
+}
 
 const char OVERDOOR_UI_HTML[] = R"html(
 <!doctype html>
@@ -24,18 +47,18 @@ const char OVERDOOR_UI_HTML[] = R"html(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Roode Overdoor</title>
+  <title>Roode Overdoor Counter</title>
   <style>
     :root {
       color-scheme: light dark;
       --font-display: "Iowan Old Style", "Palatino Linotype", "URW Palladio L", serif;
       --font-body: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
-      --bg: oklch(96.5% 0.008 95);
-      --bg-soft: oklch(98.5% 0.004 95);
+      --bg: oklch(96.4% 0.008 95);
+      --bg-soft: oklch(98.4% 0.004 95);
       --panel: rgba(255, 255, 255, 0.9);
       --panel-strong: rgba(255, 255, 255, 0.97);
       --line: oklch(82% 0.014 245);
-      --line-strong: oklch(70% 0.032 245);
+      --line-strong: oklch(70% 0.03 245);
       --ink: oklch(27% 0.02 255);
       --ink-soft: oklch(47% 0.02 255);
       --accent: oklch(43% 0.08 243);
@@ -70,9 +93,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
       --shadow: 0 26px 80px rgba(0, 0, 0, 0.3);
     }
 
-    * {
-      box-sizing: border-box;
-    }
+    * { box-sizing: border-box; }
 
     body {
       margin: 0;
@@ -85,33 +106,25 @@ const char OVERDOOR_UI_HTML[] = R"html(
     }
 
     h1, h2, h3 {
+      margin: 0;
       font-family: var(--font-display);
       letter-spacing: -0.03em;
-      margin: 0;
       font-weight: 600;
     }
 
     h1 {
-      font-size: clamp(2.6rem, 4vw, 4.2rem);
-      line-height: 0.95;
+      font-size: clamp(2.4rem, 4vw, 4rem);
+      line-height: 0.96;
     }
 
-    h2 {
-      font-size: clamp(1.55rem, 2vw, 2rem);
-    }
-
-    h3 {
-      font-size: 1.1rem;
-    }
-
-    p {
-      margin: 0;
-    }
+    h2 { font-size: clamp(1.45rem, 2vw, 1.95rem); }
+    h3 { font-size: 1.05rem; }
+    p { margin: 0; }
 
     .shell {
-      width: min(1320px, calc(100vw - 2rem));
+      width: min(1380px, calc(100vw - 2rem));
       margin: 0 auto;
-      padding: 1.1rem 0 2rem;
+      padding: 1.15rem 0 2.2rem;
     }
 
     .panel {
@@ -123,63 +136,63 @@ const char OVERDOOR_UI_HTML[] = R"html(
     }
 
     .eyebrow {
-      margin-bottom: 0.42rem;
+      margin-bottom: 0.4rem;
       letter-spacing: 0.12em;
       text-transform: uppercase;
-      font-size: 0.74rem;
+      font-size: 0.73rem;
       color: var(--ink-soft);
     }
 
     .masthead {
       display: grid;
-      grid-template-columns: minmax(0, 1.3fr) minmax(300px, 0.7fr);
+      grid-template-columns: minmax(0, 1.25fr) minmax(300px, 0.75fr);
       gap: 1rem;
       margin-bottom: 1rem;
     }
 
     .hero {
-      padding: 1.35rem 1.45rem 1.45rem;
+      padding: 1.3rem 1.45rem 1.45rem;
     }
 
     .hero-copy {
-      margin-top: 0.7rem;
+      margin-top: 0.72rem;
       color: var(--ink-soft);
       line-height: 1.58;
-      font-size: 1.03rem;
-      max-width: 60ch;
+      font-size: 1.02rem;
+      max-width: 64ch;
     }
 
-    .hero-steps {
-      margin-top: 1.15rem;
+    .hero-grid {
+      margin-top: 1rem;
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 0.85rem;
+      gap: 0.8rem;
     }
 
-    .step {
-      padding: 1rem;
+    .hero-tip {
+      padding: 0.95rem;
       border-radius: var(--radius-md);
-      background: color-mix(in oklch, var(--panel-strong) 74%, var(--bg-soft));
-      border: 1px solid color-mix(in oklch, var(--line) 86%, transparent);
+      background: color-mix(in oklch, var(--panel-strong) 78%, var(--bg-soft));
+      border: 1px solid color-mix(in oklch, var(--line) 84%, transparent);
     }
 
-    .step strong {
+    .hero-tip strong {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      width: 1.6rem;
-      height: 1.6rem;
+      width: 1.55rem;
+      height: 1.55rem;
       border-radius: 999px;
       background: var(--accent-soft);
       color: var(--accent);
-      font-size: 0.84rem;
-      margin-bottom: 0.5rem;
+      font-size: 0.82rem;
+      margin-bottom: 0.45rem;
     }
 
-    .step p {
+    .hero-tip p {
       color: var(--ink-soft);
       line-height: 1.45;
-      font-size: 0.93rem;
+      font-size: 0.92rem;
     }
 
     .aside {
@@ -194,7 +207,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
       background: var(--panel-strong);
       color: var(--ink);
       box-shadow: var(--shadow);
-      padding: 0.88rem 1.15rem;
+      padding: 0.88rem 1.1rem;
       font: inherit;
       font-weight: 700;
       cursor: pointer;
@@ -206,7 +219,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
       gap: 0.85rem;
     }
 
-    .top-status {
+    .status-strip {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 0.8rem;
@@ -238,18 +251,19 @@ const char OVERDOOR_UI_HTML[] = R"html(
       padding: 0.95rem 1rem;
       border-radius: var(--radius-md);
       background: var(--accent-soft);
+      color: var(--ink);
     }
 
     .aside-note strong {
       display: block;
       margin-bottom: 0.25rem;
-      font-size: 0.96rem;
+      font-size: 0.95rem;
     }
 
     .aside-note p {
       color: var(--ink-soft);
       line-height: 1.45;
-      font-size: 0.94rem;
+      font-size: 0.93rem;
     }
 
     .connection {
@@ -273,230 +287,225 @@ const char OVERDOOR_UI_HTML[] = R"html(
       box-shadow: 0 0 0 0.26rem color-mix(in oklch, currentColor 18%, transparent);
     }
 
-    .layout {
+    .section { padding: 1.2rem; }
+    .stack { display: grid; gap: 1rem; }
+
+    .main-grid {
       display: grid;
-      grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
+      grid-template-columns: minmax(0, 1.25fr) minmax(330px, 0.75fr);
       gap: 1rem;
     }
 
-    .stack {
+    .metrics-grid {
       display: grid;
-      gap: 1rem;
-    }
-
-    .section {
-      padding: 1.2rem;
-    }
-
-    .summary-grid {
-      display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
-      gap: 0.85rem;
-      margin-top: 1rem;
-    }
-
-    .summary-card {
-      padding: 1rem;
-      border-radius: var(--radius-md);
-      background: color-mix(in oklch, var(--panel-strong) 78%, var(--bg-soft));
-      border: 1px solid color-mix(in oklch, var(--line) 84%, transparent);
-    }
-
-    .summary-card span {
-      display: block;
-      margin-bottom: 0.28rem;
-      font-size: 0.74rem;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--ink-soft);
-    }
-
-    .summary-card strong {
-      display: block;
-      font-size: clamp(1.4rem, 2.6vw, 2.2rem);
-      line-height: 1;
-      margin-bottom: 0.28rem;
-    }
-
-    .summary-card p {
-      color: var(--ink-soft);
-      line-height: 1.4;
-      font-size: 0.88rem;
-    }
-
-    .state-banner {
-      margin-top: 1rem;
-      padding: 1rem 1.05rem;
-      border-radius: var(--radius-md);
-      border: 1px solid color-mix(in oklch, var(--line) 84%, transparent);
-      background: color-mix(in oklch, var(--panel-strong) 78%, var(--bg-soft));
-      display: grid;
-      gap: 0.35rem;
-    }
-
-    .state-pill {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: fit-content;
-      padding: 0.5rem 0.8rem;
-      border-radius: 999px;
-      font-size: 0.82rem;
-      font-weight: 800;
-      letter-spacing: 0.03em;
-    }
-
-    .state-ready {
-      background: var(--success-soft);
-      color: var(--success);
-    }
-
-    .state-warn {
-      background: var(--warn-soft);
-      color: color-mix(in oklch, var(--warn) 76%, black);
-    }
-
-    .state-error {
-      background: var(--danger-soft);
-      color: var(--danger);
-    }
-
-    .state-banner p {
-      color: var(--ink-soft);
-      line-height: 1.5;
-    }
-
-    .doorway {
-      display: grid;
-      gap: 1rem;
-    }
-
-    .door-visual {
-      position: relative;
-      padding: 1.2rem;
-      border-radius: var(--radius-lg);
-      background: linear-gradient(180deg, color-mix(in oklch, var(--panel-strong) 75%, var(--bg-soft)), var(--panel-strong));
-      border: 1px solid color-mix(in oklch, var(--line) 84%, transparent);
-      overflow: hidden;
-    }
-
-    .door-visual::before {
-      content: "";
-      position: absolute;
-      inset: 1rem;
-      border-radius: 1.2rem;
-      border: 1px dashed color-mix(in oklch, var(--line-strong) 45%, transparent);
-      pointer-events: none;
-    }
-
-    .door-title {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 1rem;
-      margin-bottom: 0.9rem;
-    }
-
-    .door-title p {
-      color: var(--ink-soft);
-      line-height: 1.45;
-    }
-
-    .door-grid {
-      display: grid;
-      gap: 0.95rem;
-    }
-
-    .row-card {
-      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 0.8rem;
-      padding: 1rem;
+      margin-top: 1rem;
+    }
+
+    .metric {
+      padding: 0.95rem;
       border-radius: var(--radius-md);
-      background: color-mix(in oklch, var(--panel-strong) 86%, var(--bg-soft));
+      background: color-mix(in oklch, var(--panel-strong) 78%, var(--bg-soft));
       border: 1px solid color-mix(in oklch, var(--line) 84%, transparent);
     }
 
-    .row-head {
-      display: flex;
-      justify-content: space-between;
-      gap: 1rem;
-      align-items: start;
-    }
-
-    .row-head p {
-      color: var(--ink-soft);
-      line-height: 1.45;
-      font-size: 0.92rem;
-    }
-
-    .row-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.45rem;
-      padding: 0.45rem 0.75rem;
-      border-radius: 999px;
-      font-size: 0.8rem;
-      font-weight: 800;
-      letter-spacing: 0.03em;
-      background: var(--bg-soft);
-      color: var(--ink-soft);
-      border: 1px solid color-mix(in oklch, var(--line) 84%, transparent);
-      white-space: nowrap;
-    }
-
-    .row-badge.active {
-      background: var(--accent-soft);
-      color: var(--accent);
-      border-color: color-mix(in oklch, var(--accent) 26%, var(--line));
-    }
-
-    .row-metrics {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 0.75rem;
-    }
-
-    .mini-metric {
-      padding: 0.82rem 0.9rem;
-      border-radius: var(--radius-sm);
-      background: var(--bg-soft);
-      border: 1px solid color-mix(in oklch, var(--line) 82%, transparent);
-    }
-
-    .mini-metric span {
+    .metric span {
       display: block;
-      margin-bottom: 0.28rem;
+      margin-bottom: 0.3rem;
       font-size: 0.72rem;
       text-transform: uppercase;
       letter-spacing: 0.08em;
       color: var(--ink-soft);
     }
 
-    .mini-metric strong {
+    .metric strong {
       display: block;
-      font-size: 1.1rem;
+      font-size: clamp(1.35rem, 2vw, 2rem);
+      line-height: 1;
+      margin-bottom: 0.32rem;
+    }
+
+    .metric p {
+      color: var(--ink-soft);
+      line-height: 1.4;
+      font-size: 0.86rem;
+    }
+
+    .banner {
+      margin-top: 1rem;
+      display: grid;
+      gap: 0.4rem;
+      padding: 1rem 1.05rem;
+      border-radius: var(--radius-md);
+      border: 1px solid color-mix(in oklch, var(--line) 84%, transparent);
+      background: color-mix(in oklch, var(--panel-strong) 80%, var(--bg-soft));
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: fit-content;
+      padding: 0.48rem 0.82rem;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      font-weight: 800;
+      letter-spacing: 0.03em;
+      border: 1px solid color-mix(in oklch, var(--line) 84%, transparent);
+      background: var(--bg-soft);
+      color: var(--ink-soft);
+    }
+
+    .pill.ready { background: var(--success-soft); color: var(--success); }
+    .pill.warn { background: var(--warn-soft); color: color-mix(in oklch, var(--warn) 74%, black); }
+    .pill.error { background: var(--danger-soft); color: var(--danger); }
+    .pill.accent { background: var(--accent-soft); color: var(--accent); }
+
+    .banner p {
+      color: var(--ink-soft);
+      line-height: 1.5;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      margin-top: 1rem;
+    }
+
+    button {
+      appearance: none;
+      border: 0;
+      border-radius: 999px;
+      padding: 0.9rem 1.1rem;
+      font: inherit;
+      font-weight: 800;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.45rem;
+      transition: transform 0.18s ease, opacity 0.18s ease;
+    }
+
+    button:hover { transform: translateY(-1px); }
+    button:disabled { opacity: 0.55; cursor: wait; transform: none; }
+
+    .primary { color: white; background: linear-gradient(135deg, color-mix(in oklch, var(--accent) 72%, black), var(--accent)); }
+    .secondary {
+      color: var(--ink);
+      background: color-mix(in oklch, var(--panel-strong) 78%, var(--bg-soft));
+      border: 1px solid var(--line);
+    }
+    .danger {
+      color: var(--danger);
+      background: var(--danger-soft);
+      border: 1px solid color-mix(in oklch, var(--danger) 24%, var(--line));
+    }
+
+    .door-grid,
+    .sensor-grid,
+    .diag-grid {
+      display: grid;
+      gap: 0.8rem;
+    }
+
+    .door-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      margin-top: 1rem;
+    }
+
+    .group-card,
+    .sensor-card,
+    .diag-card,
+    .settings-card,
+    .chart-card {
+      padding: 1rem;
+      border-radius: var(--radius-md);
+      background: color-mix(in oklch, var(--panel-strong) 82%, var(--bg-soft));
+      border: 1px solid color-mix(in oklch, var(--line) 84%, transparent);
+    }
+
+    .group-card.active {
+      border-color: color-mix(in oklch, var(--accent) 28%, var(--line));
+      background: color-mix(in oklch, var(--accent) 8%, var(--bg-soft));
+    }
+
+    .group-head,
+    .sensor-head,
+    .diag-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 0.8rem;
+      align-items: start;
+      margin-bottom: 0.7rem;
+    }
+
+    .group-head p,
+    .sensor-copy,
+    .diag-card p,
+    .settings-copy {
+      color: var(--ink-soft);
+      line-height: 1.45;
+      font-size: 0.92rem;
+    }
+
+    .mini-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.7rem;
+    }
+
+    .mini {
+      padding: 0.82rem 0.88rem;
+      border-radius: var(--radius-sm);
+      background: var(--bg-soft);
+      border: 1px solid color-mix(in oklch, var(--line) 82%, transparent);
+    }
+
+    .mini span {
+      display: block;
+      margin-bottom: 0.26rem;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--ink-soft);
+    }
+
+    .mini strong {
+      display: block;
+      font-size: 1.08rem;
       margin-bottom: 0.2rem;
     }
 
-    .mini-metric p {
+    .mini p {
       color: var(--ink-soft);
       line-height: 1.35;
       font-size: 0.84rem;
     }
 
-    .sensor-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 0.75rem;
+    .bar {
+      width: 100%;
+      height: 0.68rem;
+      border-radius: 999px;
+      overflow: hidden;
+      background: color-mix(in oklch, var(--line) 75%, transparent);
+      margin: 0.65rem 0 0.55rem;
     }
 
-    .sensor-card {
-      padding: 0.95rem;
-      border-radius: var(--radius-md);
-      background: var(--bg-soft);
-      border: 1px solid color-mix(in oklch, var(--line) 84%, transparent);
-      display: grid;
-      gap: 0.55rem;
+    .bar > span {
+      display: block;
+      height: 100%;
+      width: 0;
+      border-radius: inherit;
+      background: linear-gradient(90deg, color-mix(in oklch, var(--accent) 62%, white), var(--accent));
+      transition: width 0.22s ease;
+    }
+
+    .sensor-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      margin-top: 1rem;
     }
 
     .sensor-card.active {
@@ -504,33 +513,14 @@ const char OVERDOOR_UI_HTML[] = R"html(
       background: color-mix(in oklch, var(--accent) 7%, var(--bg-soft));
     }
 
-    .sensor-top {
-      display: flex;
-      justify-content: space-between;
-      gap: 0.8rem;
-      align-items: start;
-    }
-
-    .sensor-title {
+    .sensor-meta {
       display: grid;
-      gap: 0.18rem;
+      gap: 0.12rem;
     }
 
-    .sensor-title strong {
-      font-size: 1rem;
-    }
-
-    .sensor-title span {
+    .sensor-meta span {
       color: var(--ink-soft);
-      font-size: 0.84rem;
-    }
-
-    .sensor-state {
-      padding: 0.32rem 0.58rem;
-      border-radius: 999px;
-      font-size: 0.76rem;
-      font-weight: 800;
-      white-space: nowrap;
+      font-size: 0.83rem;
     }
 
     .sensor-distance {
@@ -550,94 +540,137 @@ const char OVERDOOR_UI_HTML[] = R"html(
       font-size: 0.9rem;
     }
 
-    .bar {
-      width: 100%;
-      height: 0.68rem;
-      border-radius: 999px;
-      overflow: hidden;
-      background: color-mix(in oklch, var(--line) 75%, transparent);
+    .sensor-detail-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.55rem;
     }
 
-    .bar > span {
+    .sensor-detail {
+      padding: 0.72rem 0.78rem;
+      border-radius: var(--radius-sm);
+      background: var(--bg-soft);
+      border: 1px solid color-mix(in oklch, var(--line) 82%, transparent);
+    }
+
+    .sensor-detail span {
       display: block;
-      height: 100%;
-      width: 0;
-      border-radius: inherit;
-      background: linear-gradient(90deg, color-mix(in oklch, var(--accent) 62%, white), var(--accent));
-      transition: width 0.22s ease;
-    }
-
-    .sensor-copy {
+      margin-bottom: 0.22rem;
+      font-size: 0.69rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
       color: var(--ink-soft);
-      line-height: 1.45;
-      font-size: 0.9rem;
     }
 
-    .actions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.75rem;
+    .sensor-detail strong { font-size: 0.98rem; }
+
+    .chart-card {
       margin-top: 1rem;
     }
 
-    button {
-      appearance: none;
-      border: 0;
-      border-radius: 999px;
-      padding: 0.9rem 1.15rem;
-      font: inherit;
-      font-weight: 800;
-      cursor: pointer;
-      transition: transform 0.18s ease, opacity 0.18s ease;
+    .chart-shell {
+      margin-top: 0.85rem;
+      border-radius: var(--radius-md);
+      border: 1px solid color-mix(in oklch, var(--line) 84%, transparent);
+      background: var(--bg-soft);
+      padding: 0.9rem;
+    }
+
+    .chart-stage {
+      width: 100%;
+      aspect-ratio: 2.3 / 1;
+    }
+
+    .chart-legend {
+      margin-top: 0.8rem;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.55rem 0.8rem;
+    }
+
+    .legend-item {
       display: inline-flex;
       align-items: center;
-      justify-content: center;
       gap: 0.45rem;
-    }
-
-    button:hover {
-      transform: translateY(-1px);
-    }
-
-    button:disabled {
-      opacity: 0.55;
-      cursor: wait;
-      transform: none;
-    }
-
-    .primary {
-      color: white;
-      background: linear-gradient(135deg, color-mix(in oklch, var(--accent) 72%, black), var(--accent));
-    }
-
-    .secondary {
-      color: var(--ink);
-      background: color-mix(in oklch, var(--panel-strong) 78%, var(--bg-soft));
-      border: 1px solid var(--line);
-    }
-
-    .debug-grid {
-      display: grid;
-      gap: 0.85rem;
-    }
-
-    .debug-card {
-      padding: 1rem;
-      border-radius: var(--radius-md);
-      background: color-mix(in oklch, var(--panel-strong) 82%, var(--bg-soft));
-      border: 1px solid color-mix(in oklch, var(--line) 84%, transparent);
-      display: grid;
-      gap: 0.45rem;
-    }
-
-    .debug-card strong {
-      font-size: 0.96rem;
-    }
-
-    .debug-card p {
       color: var(--ink-soft);
-      line-height: 1.45;
+      font-size: 0.86rem;
+    }
+
+    .legend-swatch {
+      width: 0.9rem;
+      height: 0.26rem;
+      border-radius: 999px;
+    }
+
+    .diag-grid { margin-top: 1rem; }
+
+    .diag-card pre {
+      margin: 0;
+      white-space: pre-wrap;
       word-break: break-word;
+      font: inherit;
+      color: var(--ink-soft);
+      line-height: 1.5;
+    }
+
+    .settings-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.7rem;
+      margin-top: 0.8rem;
+    }
+
+    label.field {
+      display: grid;
+      gap: 0.28rem;
+      font-size: 0.86rem;
+      color: var(--ink-soft);
+    }
+
+    label.field span {
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    input[type="number"] {
+      width: 100%;
+      padding: 0.82rem 0.88rem;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--line);
+      background: var(--bg-soft);
+      color: var(--ink);
+      font: inherit;
+      font-weight: 700;
+    }
+
+    .toggle-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.7rem;
+      margin-top: 0.7rem;
+    }
+
+    .toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.8rem;
+      padding: 0.82rem 0.88rem;
+      border-radius: var(--radius-sm);
+      background: var(--bg-soft);
+      border: 1px solid color-mix(in oklch, var(--line) 82%, transparent);
+      color: var(--ink);
+      font-size: 0.9rem;
+    }
+
+    .toggle input { inline-size: 1.1rem; block-size: 1.1rem; }
+
+    .settings-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.7rem;
+      margin-top: 0.85rem;
     }
 
     .toast {
@@ -656,30 +689,31 @@ const char OVERDOOR_UI_HTML[] = R"html(
       transition: opacity 0.2s ease, transform 0.2s ease;
     }
 
-    .toast.show {
-      opacity: 1;
-      transform: translateY(0);
-    }
+    .toast.show { opacity: 1; transform: translateY(0); }
 
-    @media (max-width: 1160px) {
-      .layout,
+    @media (max-width: 1180px) {
       .masthead,
-      .hero-steps,
-      .summary-grid {
+      .main-grid,
+      .metrics-grid,
+      .hero-grid {
         grid-template-columns: 1fr;
       }
     }
 
-    @media (max-width: 900px) {
+    @media (max-width: 920px) {
+      .door-grid,
       .sensor-grid,
-      .row-metrics,
-      .top-status {
+      .settings-grid,
+      .toggle-grid,
+      .mini-grid,
+      .sensor-detail-grid,
+      .status-strip {
         grid-template-columns: 1fr;
       }
 
-      .row-head,
-      .sensor-top,
-      .door-title {
+      .group-head,
+      .sensor-head,
+      .diag-head {
         flex-direction: column;
         align-items: start;
       }
@@ -691,21 +725,20 @@ const char OVERDOOR_UI_HTML[] = R"html(
     <div class="masthead">
       <section class="panel hero">
         <p class="eyebrow">Roode service console</p>
-        <h1 id="page-title">Loading device</h1>
-        <p class="hero-copy" id="page-subtitle">Preparing the live doorway view, sensor-pair health, and counting status.</p>
-
-        <div class="hero-steps">
-          <article class="step">
+        <h1 id="page-title">Loading counter</h1>
+        <p class="hero-copy" id="page-subtitle">Preparing live sensor data, detection state, and calibration information.</p>
+        <div class="hero-grid">
+          <article class="hero-tip">
             <strong>1</strong>
-            <p>Leave the doorway empty and wait for the counter to report that it is ready.</p>
+            <p>Calibrate only when the doorway is empty and stable for a few seconds.</p>
           </article>
-          <article class="step">
+          <article class="hero-tip">
             <strong>2</strong>
-            <p>Press recalibrate if the board was just moved or mounted in a new position.</p>
+            <p>OUT means the outside-facing sensor group U3/U7. IN means the inside-facing group U4/U8.</p>
           </article>
-          <article class="step">
+          <article class="hero-tip">
             <strong>3</strong>
-            <p>Move cleanly from one sensor pair to the other and confirm that the phase and count make sense.</p>
+            <p>A clean pass should trigger one group first, then the other, before the doorway clears again.</p>
           </article>
         </div>
       </section>
@@ -713,7 +746,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
       <aside class="aside">
         <button class="theme-toggle" type="button" id="theme-toggle">Switch to dark mode</button>
         <section class="panel aside-card">
-          <div class="top-status">
+          <div class="status-strip">
             <div class="status-chip">
               <span>Connection</span>
               <strong id="connection-copy">Connecting</strong>
@@ -724,8 +757,8 @@ const char OVERDOOR_UI_HTML[] = R"html(
             </div>
           </div>
           <div class="aside-note">
-            <strong>What this page helps you see</strong>
-            <p>Which sensor pair changed first, whether the four working sensors agree, and whether the device counted an entry, an exit, or cancelled the sequence.</p>
+            <strong>What to watch first</strong>
+            <p>Start with the live groups, then the event reason, and finally the per-sensor cards if one side looks suspicious or noisy.</p>
           </div>
         </section>
       </aside>
@@ -733,144 +766,203 @@ const char OVERDOOR_UI_HTML[] = R"html(
 
     <div class="connection" id="connection-pill">Connecting to device</div>
 
-    <div class="layout">
+    <section class="panel section">
+      <p class="eyebrow">System overview</p>
+      <h2 id="counter-label">Front door counter</h2>
+      <div class="metrics-grid">
+        <article class="metric">
+          <span>Sensor ready</span>
+          <strong id="metric-ready">-</strong>
+          <p id="metric-ready-copy">Waiting for state.</p>
+        </article>
+        <article class="metric">
+          <span>System status</span>
+          <strong id="metric-system-status">-</strong>
+          <p id="metric-system-copy">Current state machine state.</p>
+        </article>
+        <article class="metric">
+          <span>People inside</span>
+          <strong id="metric-people">0</strong>
+          <p>Net confirmed count stored on the ESP.</p>
+        </article>
+        <article class="metric">
+          <span>Last direction</span>
+          <strong id="metric-direction">Waiting</strong>
+          <p id="metric-direction-copy">No confirmed pass yet.</p>
+        </article>
+        <article class="metric">
+          <span>Confirmed IN</span>
+          <strong id="metric-entry">0</strong>
+          <p>Number of confirmed entries.</p>
+        </article>
+        <article class="metric">
+          <span>Confirmed OUT</span>
+          <strong id="metric-exit">0</strong>
+          <p>Number of confirmed exits.</p>
+        </article>
+        <article class="metric">
+          <span>Unsure IN / OUT</span>
+          <strong id="metric-unsure">0 / 0</strong>
+          <p>Events that did not have enough agreement to count.</p>
+        </article>
+        <article class="metric">
+          <span>Last confidence</span>
+          <strong id="metric-confidence">0%</strong>
+          <p>Internal confidence for the most recent recorded event.</p>
+        </article>
+      </div>
+
+      <div class="banner">
+        <div class="pill accent" id="phase-pill">Monitoring</div>
+        <h3 id="phase-title">Waiting for live data</h3>
+        <p id="phase-copy">The counter will describe what it is doing right now, and why it decided to count, defer, or reject a pass.</p>
+      </div>
+
+      <div class="actions">
+        <button class="primary" data-command="recalibrate" data-confirm="Start a new calibration now? Make sure the doorway is empty first.">Calibrate sensor</button>
+        <button class="secondary" data-command="rediscover" data-confirm="Rediscover sensors now? This briefly interrupts live counting.">Rediscover sensors</button>
+        <button class="secondary" data-command="reset_counts" data-confirm="Reset People Inside, confirmed IN, and confirmed OUT?">Reset count</button>
+        <button class="secondary" data-command="reset_unsure_in" data-confirm="Reset Unsure Detection IN?">Reset unsure IN</button>
+        <button class="secondary" data-command="reset_unsure_out" data-confirm="Reset Unsure Detection OUT?">Reset unsure OUT</button>
+        <button class="danger" data-command="reset_all_counters" data-confirm="Reset all counters, including unsure events?">Reset all counters</button>
+        <button class="danger" data-command="restart" data-confirm="Restart the ESP now?">Restart ESP</button>
+      </div>
+    </section>
+
+    <div class="main-grid">
       <div class="stack">
         <section class="panel section">
-          <p class="eyebrow">Counting summary</p>
-          <h2 id="counter-label">Doorway Counter</h2>
-
-          <div class="summary-grid">
-            <article class="summary-card">
-              <span id="card-1-label">Ready state</span>
-              <strong id="ready-value">-</strong>
-              <p id="ready-copy">Waiting for device state.</p>
-            </article>
-            <article class="summary-card">
-              <span id="card-2-label">People count</span>
-              <strong id="card-2-value">0</strong>
-              <p id="card-2-copy">Net number of people currently believed to be inside.</p>
-            </article>
-            <article class="summary-card">
-              <span id="card-3-label">Entries</span>
-              <strong id="card-3-value">0</strong>
-              <p id="card-3-copy">Total confirmed entry events since the last reset.</p>
-            </article>
-            <article class="summary-card">
-              <span id="card-4-label">Exits</span>
-              <strong id="card-4-value">0</strong>
-              <p id="card-4-copy">Total confirmed exit events since the last reset.</p>
-            </article>
-            <article class="summary-card">
-              <span id="card-5-label">Last direction</span>
-              <strong id="last-direction">Waiting</strong>
-              <p id="direction-copy">No event confirmed yet.</p>
-            </article>
+          <div class="diag-head">
+            <div>
+              <p class="eyebrow">Live doorway view</p>
+              <h2>OUT and IN sensor groups</h2>
+            </div>
+            <div class="pill" id="standing-pill">Doorway clear</div>
           </div>
+          <p class="settings-copy" id="doorway-copy">U3 and U7 are the OUT sensors. U4 and U8 are the IN sensors. The first group to trigger decides the direction candidate.</p>
+          <div class="door-grid" id="group-grid"></div>
+        </section>
 
-          <div class="state-banner">
-            <div class="state-pill state-ready" id="phase-pill">Monitoring</div>
-            <h3 id="phase-title">Waiting for first live state</h3>
-            <p id="phase-copy">The page will explain what the counter is doing right now and what to test next.</p>
+        <section class="panel section chart-card">
+          <div class="diag-head">
+            <div>
+              <p class="eyebrow">Live detection graph</p>
+              <h2>Distance history</h2>
+            </div>
+            <div class="pill" id="graph-scale-pill">Live</div>
           </div>
-
-          <div class="actions">
-            <button class="primary" id="recalibrate-button" data-command="recalibrate">Recalibrate floor reference</button>
-            <button class="secondary" id="rediscover-button" data-command="rediscover">Rediscover sensors</button>
-            <button class="secondary" id="reset-button" data-command="reset_counts">Reset counts</button>
+          <p class="settings-copy">This graph makes it easier to see who moved first, whether one sensor missed the pass, and whether the empty-doorway baseline is drifting.</p>
+          <div class="chart-shell">
+            <svg class="chart-stage" id="history-chart" viewBox="0 0 1000 420" preserveAspectRatio="none"></svg>
+            <div class="chart-legend" id="chart-legend"></div>
           </div>
         </section>
 
-        <section class="panel section doorway" id="doorway-section">
-          <div class="door-title">
-            <div>
-            <p class="eyebrow">Live doorway view</p>
-            <h2>What each sensor pair sees</h2>
-          </div>
-            <p id="row-copy">Lower distance means an object is closer to the board. Each logical pair is made from two sensors on the same end of the PCB.</p>
-          </div>
-
-          <div class="door-visual">
-            <div class="door-grid">
-              <article class="row-card">
-                <div class="row-head">
-                  <div>
-                    <h3>Pair U3/U4</h3>
-                    <p id="row-a-copy">The two sensors on the ESP-end of the board.</p>
-                  </div>
-                  <div class="row-badge" id="row-a-badge">Clear</div>
-                </div>
-                <div class="row-metrics">
-                  <div class="mini-metric">
-                    <span>Nearest distance</span>
-                    <strong id="row-a-distance">-</strong>
-                    <p>Closest reading from either U3 or U4.</p>
-                  </div>
-                  <div class="mini-metric">
-                    <span>Baseline</span>
-                    <strong id="row-a-baseline">-</strong>
-                    <p>Normal empty-doorway reference for the U3/U4 end.</p>
-                  </div>
-                  <div class="mini-metric">
-                    <span>Drop from baseline</span>
-                    <strong id="row-a-drop">-</strong>
-                    <p>How much closer something is than the usual baseline.</p>
-                  </div>
-                </div>
-              </article>
-
-              <article class="row-card">
-                <div class="row-head">
-                  <div>
-                    <h3>Pair U7/U8</h3>
-                    <p id="row-b-copy">The two sensors on the far end of the board.</p>
-                  </div>
-                  <div class="row-badge" id="row-b-badge">Clear</div>
-                </div>
-                <div class="row-metrics">
-                  <div class="mini-metric">
-                    <span>Nearest distance</span>
-                    <strong id="row-b-distance">-</strong>
-                    <p>Closest reading from either U7 or U8.</p>
-                  </div>
-                  <div class="mini-metric">
-                    <span>Baseline</span>
-                    <strong id="row-b-baseline">-</strong>
-                    <p>Normal empty-doorway reference for the U7/U8 end.</p>
-                  </div>
-                  <div class="mini-metric">
-                    <span>Drop from baseline</span>
-                    <strong id="row-b-drop">-</strong>
-                    <p>How much closer something is than the usual baseline.</p>
-                  </div>
-                </div>
-              </article>
-            </div>
-          </div>
+        <section class="panel section">
+          <p class="eyebrow">Individual sensors</p>
+          <h2>Live sensor health</h2>
+          <div class="sensor-grid" id="sensor-grid"></div>
         </section>
       </div>
 
       <div class="stack">
         <section class="panel section">
-          <p class="eyebrow">Sensor cards</p>
-          <h2>Individual sensor health</h2>
-          <div class="sensor-grid" id="sensor-grid"></div>
+          <p class="eyebrow">Calibration</p>
+          <h2>Calibration health</h2>
+          <div class="diag-grid">
+            <article class="diag-card">
+              <strong>Progress</strong>
+              <p id="calibration-progress-copy">Waiting for state.</p>
+            </article>
+            <article class="diag-card">
+              <strong>Blocked sensor</strong>
+              <p id="blocked-copy">None</p>
+            </article>
+            <article class="diag-card">
+              <strong>Last detection time</strong>
+              <p id="last-detection-copy">Never</p>
+            </article>
+            <article class="diag-card">
+              <strong>Last decision</strong>
+              <p id="last-reason-copy">No decision logged yet.</p>
+            </article>
+          </div>
+        </section>
+
+        <section class="panel section settings-card">
+          <p class="eyebrow">Settings</p>
+          <h2>Detection tuning</h2>
+          <p class="settings-copy">These values are stored on the ESP. Start with small changes, then test a few clean passes before changing more than one setting at a time.</p>
+          <form id="settings-form">
+            <div class="settings-grid">
+              <label class="field">
+                <span>Trigger threshold (mm)</span>
+                <input type="number" name="trigger_threshold" id="setting-trigger" min="80" max="1200" step="10">
+              </label>
+              <label class="field">
+                <span>Clear threshold (mm)</span>
+                <input type="number" name="clear_threshold" id="setting-clear" min="40" max="900" step="10">
+              </label>
+              <label class="field">
+                <span>Baseline tolerance (mm)</span>
+                <input type="number" name="baseline_tolerance" id="setting-baseline" min="20" max="300" step="5">
+              </label>
+              <label class="field">
+                <span>Debounce (ms)</span>
+                <input type="number" name="debounce_ms" id="setting-debounce" min="5" max="300" step="5">
+              </label>
+              <label class="field">
+                <span>Detection timeout (ms)</span>
+                <input type="number" name="detection_timeout_ms" id="setting-timeout" min="300" max="4000" step="50">
+              </label>
+              <label class="field">
+                <span>Cooldown (ms)</span>
+                <input type="number" name="cooldown_ms" id="setting-cooldown" min="0" max="3000" step="50">
+              </label>
+              <label class="field">
+                <span>Min valid sensors</span>
+                <input type="number" name="min_valid_sensors" id="setting-min-valid" min="2" max="4" step="1">
+              </label>
+              <label class="field">
+                <span>Max people inside</span>
+                <input type="number" name="max_people_inside" id="setting-max-people" min="1" max="500" step="1">
+              </label>
+            </div>
+            <div class="toggle-grid">
+              <label class="toggle">
+                <span>Invert direction</span>
+                <input type="checkbox" name="invert_direction" id="setting-invert">
+              </label>
+              <label class="toggle">
+                <span>Auto save enabled</span>
+                <input type="checkbox" name="auto_save_enabled" id="setting-autosave">
+              </label>
+            </div>
+            <div class="settings-actions">
+              <button class="primary" type="submit">Save settings</button>
+            </div>
+          </form>
         </section>
 
         <section class="panel section">
-          <p class="eyebrow">Diagnostics</p>
-          <h2>Debug clues</h2>
-          <div class="debug-grid">
-            <article class="debug-card">
+          <p class="eyebrow">Debug</p>
+          <h2>Reasoning and event log</h2>
+          <div class="diag-grid">
+            <article class="diag-card">
               <strong>Discovery map</strong>
-              <p id="discovery-map">Waiting for device state.</p>
+              <p id="discovery-map-copy">Waiting for state.</p>
             </article>
-            <article class="debug-card">
+            <article class="diag-card">
               <strong>Sync timing</strong>
-              <p id="timing-copy">Waiting for device state.</p>
+              <p id="timing-copy">Waiting for state.</p>
             </article>
-            <article class="debug-card">
-              <strong>How to test direction</strong>
-              <p id="test-copy">Walk one clear path through the doorway so one sensor pair becomes active before the other. Covering all four sensors at once only proves detection, not direction.</p>
+            <article class="diag-card">
+              <strong>Summary</strong>
+              <p id="summary-copy">Waiting for state.</p>
+            </article>
+            <article class="diag-card">
+              <strong>Recent events</strong>
+              <pre id="event-log-copy">No events yet.</pre>
             </article>
           </div>
         </section>
@@ -883,17 +975,23 @@ const char OVERDOOR_UI_HTML[] = R"html(
   <script>
     const stateUrl = '/tof-overdoor-ui/state';
     const actionUrl = '/tof-overdoor-ui/action';
-    const sensorGrid = document.getElementById('sensor-grid');
     const pageTitle = document.getElementById('page-title');
     const pageSubtitle = document.getElementById('page-subtitle');
     const counterLabel = document.getElementById('counter-label');
-    const doorwaySection = document.getElementById('doorway-section');
     const connectionPill = document.getElementById('connection-pill');
     const connectionCopy = document.getElementById('connection-copy');
     const lastSync = document.getElementById('last-sync');
-    const toast = document.getElementById('toast');
     const themeToggle = document.getElementById('theme-toggle');
+    const toast = document.getElementById('toast');
+    const groupGrid = document.getElementById('group-grid');
+    const sensorGrid = document.getElementById('sensor-grid');
+    const historyChart = document.getElementById('history-chart');
+    const chartLegend = document.getElementById('chart-legend');
+    const settingsForm = document.getElementById('settings-form');
 
+    const chartColors = ['#2b5876', '#357266', '#a86d32', '#8a3d4b'];
+    const chartHistory = [[], [], [], []];
+    const historyLimit = 90;
     let refreshTimer = null;
     let busy = false;
     let lastOnline = true;
@@ -922,7 +1020,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
       toast.style.color = isError ? 'var(--danger)' : 'var(--ink)';
       toast.classList.add('show');
       clearTimeout(showToast._timer);
-      showToast._timer = setTimeout(() => toast.classList.remove('show'), 2400);
+      showToast._timer = setTimeout(() => toast.classList.remove('show'), 2600);
     }
 
     function escapeHtml(value) {
@@ -939,173 +1037,306 @@ const char OVERDOOR_UI_HTML[] = R"html(
       return `${Math.round(num)} mm`;
     }
 
-    function formatCount(value) {
+    function formatInt(value) {
       const num = Number(value);
       if (!Number.isFinite(num)) return '0';
       return `${Math.round(num)}`;
     }
 
-    function barWidth(distance) {
-      const num = Number(distance);
+    function formatPercent(value) {
+      const num = Number(value);
       if (!Number.isFinite(num)) return '0%';
-      const clamped = Math.max(0, Math.min(2500, num));
-      return `${(clamped / 2500) * 100}%`;
+      return `${Math.round(num)}%`;
     }
 
-    function phaseStyle(phase) {
-      const text = String(phase || '').toLowerCase();
-      if (text.includes('ready') || text.includes('monitoring')) return 'state-ready';
-      if (text.includes('timeout') || text.includes('cancel') || text.includes('clear')) return 'state-warn';
-      return 'state-ready';
+    function chipClass(status) {
+      const text = String(status || '').toLowerCase();
+      if (text.includes('error') || text.includes('missing')) return 'pill error';
+      if (text.includes('blocked') || text.includes('warning') || text.includes('degraded') || text.includes('unsure')) return 'pill warn';
+      if (text.includes('detect') || text.includes('trigger')) return 'pill accent';
+      return 'pill ready';
     }
 
-    function phaseDescription(state) {
-      const phase = String(state.phase || '').toLowerCase();
-      if (!state.ready) {
-        return 'The board is still learning empty-doorway baselines. Leave the doorway clear for a moment so the reference values settle.';
+    function sensorCopy(sensor) {
+      const health = String(sensor.health || '');
+      if (sensor.status === 'Blocked') {
+        return 'This sensor has stayed triggered longer than the blocked timeout and needs a clear doorway before the next clean pass.';
       }
-      if (phase.includes('u3/u4 pair leading')) {
-        return 'The U3/U4 end changed first. If the U7/U8 end follows next and the doorway clears, the event should become a count.';
+      if (sensor.status && String(sensor.status).startsWith('Read error')) {
+        return 'This sensor is reporting read errors. Watch whether the raw and filtered values recover or stay unstable.';
       }
-      if (phase.includes('u7/u8 pair leading')) {
-        return 'The U7/U8 end changed first. If the U3/U4 end follows next and the doorway clears, the event should become a count in the opposite direction.';
+      if (sensor.active) {
+        return `This sensor currently contributes to an active ${sensor.group}.`;
       }
-      if (phase.includes('both sensor pairs active')) {
-        return 'Both sensor pairs currently see an object. This is expected mid-pass, but it is not enough on its own to decide direction.';
+      if (health === 'Warning') {
+        return 'This sensor is online, but it has recently looked noisy or borderline compared with its baseline.';
       }
-      if (phase.includes('settling')) {
-        return 'A recent event finished and the counter is pausing briefly before accepting the next one.';
+      if (health === 'Error') {
+        return 'This sensor is missing, stale, or has too many consecutive read errors right now.';
       }
-      if (phase.includes('cancel')) {
-        return 'The last movement pattern did not look like a clean pass through the doorway, so it was ignored on purpose.';
-      }
-      if (phase.includes('clear')) {
-        return 'The counter is waiting for the doorway to become empty again before treating a new sequence as valid.';
-      }
-      return 'The counter is ready. A clean pass should activate one sensor pair first, then the other, and then clear again.';
-    }
-
-    function readyCopy(state) {
-      if (!state.ready) return 'Learning empty-doorway baseline';
-      return state.presence ? 'Ready, but something is still in view' : 'Ready for real pass testing';
+      return 'This sensor currently looks clear and stable.';
     }
 
     function directionCopy(direction) {
-      if (direction === 'Entry') return 'The most recent clean pass was counted as an entry.';
-      if (direction === 'Exit') return 'The most recent clean pass was counted as an exit.';
-      if (direction === 'Cancelled') return 'The last motion pattern was intentionally ignored because it did not look like a valid pass.';
-      if (direction === 'Reset') return 'Counts were reset by a user action.';
-      return 'No clean pass has been confirmed yet.';
+      const text = String(direction || '').toUpperCase();
+      if (text === 'IN') return 'A clean pass was recorded as entering the room.';
+      if (text === 'OUT') return 'A clean pass was recorded as leaving the room.';
+      if (text === 'UNSURE_IN') return 'The device saw an IN-like sequence, but not enough sensors agreed to count it.';
+      if (text === 'UNSURE_OUT') return 'The device saw an OUT-like sequence, but not enough sensors agreed to count it.';
+      if (text === 'RESET') return 'Counters were reset manually.';
+      if (text === 'CANCELLED') return 'The last movement pattern was intentionally rejected as not trustworthy enough.';
+      return 'No recorded event yet.';
     }
 
-    function rowStatusCopy(active, label) {
-      return active
-        ? `${label} currently sees something closer than its normal doorway baseline.`
-        : `${label} looks clear right now.`;
+    function phaseCopy(state) {
+      const phase = String(state.phase || '').toLowerCase();
+      if (state.system_status === 'Calibrating') {
+        return 'Calibration is running now. Keep the doorway empty and stable until the progress reaches 100%.';
+      }
+      if (state.system_status === 'Blocked') {
+        return 'At least one sensor has stayed active too long, or someone is standing in the doorway. The counter waits for the opening to clear before it trusts a new event.';
+      }
+      if (phase.includes('out group triggered first')) {
+        return 'OUT triggered first. If IN follows and enough sensors agree before the timeout, this becomes a valid OUT candidate unless direction is inverted.';
+      }
+      if (phase.includes('in group triggered first')) {
+        return 'IN triggered first. If OUT follows and enough sensors agree before the timeout, this becomes a valid IN candidate unless direction is inverted.';
+      }
+      if (phase.includes('detect')) {
+        return 'The state machine is actively evaluating a pass and waiting to see whether enough sensors agree.';
+      }
+      if (phase.includes('cooldown')) {
+        return 'A short cooldown is active to keep one pass from being counted twice.';
+      }
+      return String(state.last_reason || 'The device is ready for a clean pass.');
     }
 
-    function sensorStatusClass(status) {
-      const text = String(status || '').toLowerCase();
-      if (text.includes('error') || text.includes('missing')) return 'state-error';
-      if (text.includes('occupied')) return 'state-warn';
-      return 'state-ready';
+    function groupDescription(group, active) {
+      if (active) {
+        return `${group.label} currently sees something closer than its usual baseline.`;
+      }
+      return `${group.label} looks clear right now.`;
     }
 
-    function renderState(state) {
-      const monitorMode = String(state.mode || '').toLowerCase() === 'monitor';
-      pageTitle.textContent = state.title || 'Roode Overdoor';
-      pageSubtitle.textContent = state.subtitle || 'Visual verification for the four working doorway sensors and the two sensor pairs.';
-      counterLabel.textContent = monitorMode ? 'Four sensor monitor' : (state.label || 'Doorway Counter');
+    function updateMetric(id, value) {
+      const node = document.getElementById(id);
+      if (node) node.textContent = value;
+    }
 
-      document.getElementById('card-1-label').textContent = monitorMode ? 'Sensor state' : 'Ready state';
-      document.getElementById('card-2-label').textContent = monitorMode ? 'Sensors online' : 'People count';
-      document.getElementById('card-3-label').textContent = monitorMode ? 'Nearest distance' : 'Entries';
-      document.getElementById('card-4-label').textContent = monitorMode ? 'Average distance' : 'Exits';
-      document.getElementById('card-5-label').textContent = monitorMode ? 'Distance spread' : 'Last direction';
+    function setCheckbox(id, value) {
+      const node = document.getElementById(id);
+      if (node) node.checked = !!value;
+    }
 
-      document.getElementById('ready-value').textContent = state.ready ? 'Ready' : 'Calibrating';
-      document.getElementById('ready-copy').textContent = monitorMode
-        ? (state.ready ? 'All discovered sensors are reporting live distances.' : 'Waiting for first live readings from all discovered sensors.')
-        : readyCopy(state);
-      document.getElementById('card-2-value').textContent = monitorMode
-        ? `${formatCount(state.reporting_sensors)}/${formatCount(state.discovered_sensors)}`
-        : String(state.people_count ?? 0);
-      document.getElementById('card-2-copy').textContent = monitorMode
-        ? 'How many of the discovered sensors are currently delivering live readings.'
-        : 'Net number of people currently believed to be inside.';
-      document.getElementById('card-3-value').textContent = monitorMode
-        ? formatMm(state.nearest_distance)
-        : String(state.entry_count ?? 0);
-      document.getElementById('card-3-copy').textContent = monitorMode
-        ? 'Closest live reading across all four working sensors.'
-        : 'Total confirmed entry events since the last reset.';
-      document.getElementById('card-4-value').textContent = monitorMode
-        ? formatMm(state.average_distance)
-        : String(state.exit_count ?? 0);
-      document.getElementById('card-4-copy').textContent = monitorMode
-        ? 'Average live distance across the four working sensors.'
-        : 'Total confirmed exit events since the last reset.';
-      document.getElementById('last-direction').textContent = monitorMode
-        ? formatMm(state.distance_span)
-        : (state.last_direction || 'Waiting');
-      document.getElementById('direction-copy').textContent = monitorMode
-        ? 'Difference between the farthest and nearest live reading. Lower spread usually means the sensors agree more closely.'
-        : directionCopy(state.last_direction);
+    function setNumber(id, value) {
+      const node = document.getElementById(id);
+      if (node && Number.isFinite(Number(value))) {
+        node.value = Math.round(Number(value));
+      }
+    }
 
-      const phasePill = document.getElementById('phase-pill');
-      phasePill.className = `state-pill ${phaseStyle(state.phase)}`;
-      phasePill.textContent = monitorMode ? 'Monitoring only' : (state.phase || 'Monitoring');
-      document.getElementById('phase-title').textContent = monitorMode
-        ? (state.summary || 'Watching live distances from four sensors')
-        : (state.summary || 'Monitoring doorway');
-      document.getElementById('phase-copy').textContent = monitorMode
-        ? 'Counting logic is paused in this mode. Use it to verify that all four sensors respond, agree with each other, and stay stable when the doorway is empty.'
-        : phaseDescription(state);
+    function updateHistory(state) {
+      (state.sensors || []).forEach((sensor, index) => {
+        if (!chartHistory[index]) return;
+        const value = Number(sensor.distance);
+        if (Number.isFinite(value)) {
+          chartHistory[index].push(value);
+          if (chartHistory[index].length > historyLimit) {
+            chartHistory[index].shift();
+          }
+        }
+      });
+    }
 
-      doorwaySection.style.display = monitorMode ? 'none' : '';
-      document.getElementById('recalibrate-button').style.display = monitorMode ? 'none' : '';
-      document.getElementById('reset-button').style.display = monitorMode ? 'none' : '';
+    function renderChart(state) {
+      updateHistory(state);
+      const series = chartHistory.filter((points) => points.length > 1);
+      if (!series.length) {
+        historyChart.innerHTML = '';
+        chartLegend.innerHTML = '';
+        return;
+      }
 
-      const rowABadge = document.getElementById('row-a-badge');
-      rowABadge.className = `row-badge ${state.row_a_active ? 'active' : ''}`;
-      rowABadge.textContent = state.row_a_active ? 'Active now' : 'Clear';
-      document.getElementById('row-a-distance').textContent = formatMm(state.row_a_distance);
-      document.getElementById('row-a-baseline').textContent = formatMm(state.row_a_baseline);
-      document.getElementById('row-a-drop').textContent = formatMm(state.row_a_drop);
-      document.getElementById('row-a-copy').textContent = rowStatusCopy(state.row_a_active, 'Pair U3/U4');
+      let min = Infinity;
+      let max = -Infinity;
+      chartHistory.forEach((points) => {
+        points.forEach((value) => {
+          min = Math.min(min, value);
+          max = Math.max(max, value);
+        });
+      });
+      if (!Number.isFinite(min) || !Number.isFinite(max)) return;
+      if (max - min < 120) {
+        max += 60;
+        min -= 60;
+      }
 
-      const rowBBadge = document.getElementById('row-b-badge');
-      rowBBadge.className = `row-badge ${state.row_b_active ? 'active' : ''}`;
-      rowBBadge.textContent = state.row_b_active ? 'Active now' : 'Clear';
-      document.getElementById('row-b-distance').textContent = formatMm(state.row_b_distance);
-      document.getElementById('row-b-baseline').textContent = formatMm(state.row_b_baseline);
-      document.getElementById('row-b-drop').textContent = formatMm(state.row_b_drop);
-      document.getElementById('row-b-copy').textContent = rowStatusCopy(state.row_b_active, 'Pair U7/U8');
+      const width = 1000;
+      const height = 420;
+      const left = 36;
+      const right = 26;
+      const top = 22;
+      const bottom = 36;
+      const chartWidth = width - left - right;
+      const chartHeight = height - top - bottom;
 
-      document.getElementById('discovery-map').textContent = state.discovery_map || 'No discovery data';
-      document.getElementById('timing-copy').textContent =
-        `${state.reporting_sensors || state.discovered_sensors} sensors reporting, cycle ${Math.round(Number(state.cycle_duration_ms || 0))} ms, skew ${Math.round(Number(state.update_skew_ms || 0))} ms.`;
-      document.getElementById('test-copy').textContent = monitorMode
-        ? 'Move a hand under one sensor at a time and verify that the nearest distance changes quickly, then compare whether all four sensors settle back to a similar empty-doorway value.'
-        : 'Walk one clear path through the doorway so one sensor pair becomes active before the other. Covering all four sensors at once only proves detection, not direction.';
+      const gridLines = [0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+        const y = top + chartHeight * ratio;
+        const value = Math.round(max - ((max - min) * ratio));
+        return `
+          <line x1="${left}" y1="${y}" x2="${width - right}" y2="${y}" stroke="rgba(120,132,148,0.18)" stroke-width="1"/>
+          <text x="0" y="${y + 4}" fill="currentColor" opacity="0.55" font-size="16">${value} mm</text>
+        `;
+      }).join('');
 
+      const lines = chartHistory.map((points, index) => {
+        if (points.length < 2) return '';
+        const step = chartWidth / Math.max(1, historyLimit - 1);
+        const pointsAttr = points.map((value, pointIndex) => {
+          const x = left + step * pointIndex;
+          const y = top + chartHeight * (1 - ((value - min) / (max - min)));
+          return `${x},${y}`;
+        }).join(' ');
+        return `<polyline fill="none" stroke="${chartColors[index]}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="${pointsAttr}"/>`;
+      }).join('');
+
+      historyChart.innerHTML = `
+        <rect x="${left}" y="${top}" width="${chartWidth}" height="${chartHeight}" rx="18" fill="none" stroke="rgba(120,132,148,0.22)" stroke-width="1.5"/>
+        ${gridLines}
+        ${lines}
+      `;
+
+      chartLegend.innerHTML = (state.sensors || []).map((sensor, index) => `
+        <span class="legend-item">
+          <span class="legend-swatch" style="background:${chartColors[index]};"></span>
+          <span>${escapeHtml(sensor.label)} · ${escapeHtml(sensor.group)}</span>
+        </span>
+      `).join('');
+
+      updateMetric('graph-scale-pill', `${Math.round(min)}-${Math.round(max)} mm`);
+    }
+
+    function renderGroups(state) {
+      groupGrid.innerHTML = (state.groups || []).map((group) => `
+        <article class="group-card ${group.active ? 'active' : ''}">
+          <div class="group-head">
+            <div>
+              <h3>${escapeHtml(group.label)}</h3>
+              <p>${escapeHtml(group.description)}</p>
+            </div>
+            <div class="${chipClass(group.active ? 'detecting' : group.health)}">${group.active ? 'Triggered' : escapeHtml(group.health || 'Ready')}</div>
+          </div>
+          <div class="mini-grid">
+            <div class="mini">
+              <span>Nearest distance</span>
+              <strong>${formatMm(group.distance)}</strong>
+              <p>Closest live reading within this group.</p>
+            </div>
+            <div class="mini">
+              <span>Baseline</span>
+              <strong>${formatMm(group.baseline)}</strong>
+              <p>Average empty-doorway reference for this group.</p>
+            </div>
+            <div class="mini">
+              <span>Drop from baseline</span>
+              <strong>${formatMm(group.drop)}</strong>
+              <p>${escapeHtml(groupDescription(group, group.active))}</p>
+            </div>
+          </div>
+        </article>
+      `).join('');
+    }
+
+    function renderSensors(state) {
       sensorGrid.innerHTML = (state.sensors || []).map((sensor) => `
         <article class="sensor-card ${sensor.active ? 'active' : ''}">
-          <div class="sensor-top">
-            <div class="sensor-title">
+          <div class="sensor-head">
+            <div class="sensor-meta">
               <strong>${escapeHtml(sensor.label)}</strong>
-              <span>${escapeHtml(sensor.source)}</span>
+              <span>${escapeHtml(sensor.group)} · ${escapeHtml(sensor.source)}</span>
             </div>
-            <div class="sensor-state ${sensorStatusClass(sensor.status)}">${escapeHtml(sensor.status)}</div>
+            <div class="${chipClass(sensor.status)}">${escapeHtml(sensor.status)}</div>
           </div>
           <div class="sensor-distance">
             <strong>${formatMm(sensor.distance)}</strong>
             <span>Baseline ${formatMm(sensor.baseline)}</span>
           </div>
-          <div class="bar"><span style="width:${barWidth(sensor.distance)}"></span></div>
-          <p class="sensor-copy">Drop from baseline: ${formatMm(sensor.drop)}. ${sensor.active ? 'This sensor currently contributes to an active sensor pair.' : 'This sensor currently sees a clear doorway.'}</p>
+          <div class="bar"><span style="width:${Math.max(0, Math.min(100, Number(sensor.distance || 0) / 25))}%"></span></div>
+          <div class="sensor-detail-grid">
+            <div class="sensor-detail">
+              <span>Drop</span>
+              <strong>${formatMm(sensor.drop)}</strong>
+            </div>
+            <div class="sensor-detail">
+              <span>Noise</span>
+              <strong>${formatMm(sensor.noise)}</strong>
+            </div>
+            <div class="sensor-detail">
+              <span>Cal quality</span>
+              <strong>${formatPercent(sensor.quality)}</strong>
+            </div>
+          </div>
+          <p class="sensor-copy">${escapeHtml(sensorCopy(sensor))}</p>
         </article>
       `).join('');
+    }
+
+    function renderState(state) {
+      pageTitle.textContent = state.title || 'Roode Overdoor Counter';
+      pageSubtitle.textContent = state.subtitle || 'Local ESP-based counting with four ToF sensors.';
+      counterLabel.textContent = state.label || 'Front door counter';
+
+      updateMetric('metric-ready', state.ready ? 'Yes' : 'No');
+      updateMetric('metric-ready-copy', state.ready
+        ? 'Baselines are valid and enough healthy sensors are reporting.'
+        : 'Still calibrating, rediscovering, or waiting for enough healthy sensors.');
+      updateMetric('metric-system-status', state.system_status || 'Booting');
+      updateMetric('metric-system-copy', state.person_standing
+        ? 'Someone appears to be standing in the doorway.'
+        : 'Live state for the local counter state machine.');
+      updateMetric('metric-people', formatInt(state.people_count));
+      updateMetric('metric-direction', state.last_direction || 'Waiting');
+      updateMetric('metric-direction-copy', directionCopy(state.last_direction));
+      updateMetric('metric-entry', formatInt(state.entry_count));
+      updateMetric('metric-exit', formatInt(state.exit_count));
+      updateMetric('metric-unsure', `${formatInt(state.unsure_in_count)} / ${formatInt(state.unsure_out_count)}`);
+      updateMetric('metric-confidence', formatPercent(state.last_confidence));
+
+      const phasePill = document.getElementById('phase-pill');
+      phasePill.className = chipClass(state.system_status);
+      phasePill.textContent = state.phase || state.system_status || 'Monitoring';
+      updateMetric('phase-title', state.system_status === 'Ready'
+        ? 'Counter is ready for clean passes'
+        : (state.system_status || 'Monitoring'));
+      updateMetric('phase-copy', phaseCopy(state));
+
+      const standingPill = document.getElementById('standing-pill');
+      standingPill.className = chipClass(state.person_standing ? 'blocked' : 'ready');
+      standingPill.textContent = state.person_standing ? 'Person standing in door' : 'Doorway clear';
+
+      updateMetric('calibration-progress-copy', `${formatPercent(state.calibration_progress)} complete. Last detection at ${state.last_detection_time || 'Never'}.`);
+      updateMetric('blocked-copy', state.blocked_sensor || 'None');
+      updateMetric('last-detection-copy', state.last_detection_time || 'Never');
+      updateMetric('last-reason-copy', state.last_reason || 'No decision logged yet.');
+      updateMetric('discovery-map-copy', state.discovery_map || 'No discovery data yet.');
+      updateMetric('timing-copy', `${formatInt(state.reporting_sensors)} of ${formatInt(state.discovered_sensors)} sensors reporting, cycle ${formatInt(state.cycle_duration_ms)} ms, skew ${formatInt(state.update_skew_ms)} ms.`);
+      updateMetric('summary-copy', state.summary || 'No summary yet.');
+      document.getElementById('event-log-copy').textContent = state.event_log || 'No events yet.';
+
+      setNumber('setting-trigger', state.trigger_threshold);
+      setNumber('setting-clear', state.clear_threshold);
+      setNumber('setting-baseline', state.baseline_tolerance);
+      setNumber('setting-debounce', state.debounce_ms);
+      setNumber('setting-timeout', state.detection_timeout_ms);
+      setNumber('setting-cooldown', state.cooldown_ms);
+      setNumber('setting-min-valid', state.min_valid_sensors);
+      setNumber('setting-max-people', state.max_people_inside);
+      setCheckbox('setting-invert', state.invert_direction);
+      setCheckbox('setting-autosave', state.auto_save_enabled);
+
+      renderGroups(state);
+      renderSensors(state);
+      renderChart(state);
     }
 
     async function fetchState() {
@@ -1114,8 +1345,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
       return response.json();
     }
 
-    async function postAction(action) {
-      const params = new URLSearchParams({ action });
+    async function postParams(params) {
       const response = await fetch(`${actionUrl}?${params.toString()}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
@@ -1149,7 +1379,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
     }
 
     function refreshDelay() {
-      if (document.hidden) return 2500;
+      if (document.hidden) return 1800;
       if (busy) return 600;
       return 120;
     }
@@ -1162,10 +1392,13 @@ const char OVERDOOR_UI_HTML[] = R"html(
     document.addEventListener('click', async (event) => {
       const button = event.target.closest('button[data-command]');
       if (!button || busy) return;
+      const confirmText = button.dataset.confirm;
+      if (confirmText && !window.confirm(confirmText)) return;
       busy = true;
       button.disabled = true;
       try {
-        const result = await postAction(button.dataset.command);
+        const params = new URLSearchParams({ action: button.dataset.command });
+        const result = await postParams(params);
         showToast(result.message || 'Updated');
         await refresh(true);
       } catch (error) {
@@ -1176,10 +1409,36 @@ const char OVERDOOR_UI_HTML[] = R"html(
       }
     });
 
-    document.addEventListener('visibilitychange', () => {
-      if (!document.hidden) {
-        refresh(true);
+    settingsForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (busy) return;
+      busy = true;
+      try {
+        const data = new FormData(settingsForm);
+        const params = new URLSearchParams();
+        params.set('action', 'apply_settings');
+        params.set('trigger_threshold', data.get('trigger_threshold'));
+        params.set('clear_threshold', data.get('clear_threshold'));
+        params.set('baseline_tolerance', data.get('baseline_tolerance'));
+        params.set('debounce_ms', data.get('debounce_ms'));
+        params.set('detection_timeout_ms', data.get('detection_timeout_ms'));
+        params.set('cooldown_ms', data.get('cooldown_ms'));
+        params.set('min_valid_sensors', data.get('min_valid_sensors'));
+        params.set('max_people_inside', data.get('max_people_inside'));
+        params.set('invert_direction', document.getElementById('setting-invert').checked ? '1' : '0');
+        params.set('auto_save_enabled', document.getElementById('setting-autosave').checked ? '1' : '0');
+        const result = await postParams(params);
+        showToast(result.message || 'Settings saved');
+        await refresh(true);
+      } catch (error) {
+        showToast(error.message || 'Unable to save settings', true);
+      } finally {
+        busy = false;
       }
+    });
+
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) refresh(true);
     });
 
     refresh(true);
@@ -1188,14 +1447,14 @@ const char OVERDOOR_UI_HTML[] = R"html(
 </html>
 )html";
 
-std::string readiness_copy(const tof_overdoor_counter::TofOverdoorCounter *counter) {
-  if (counter->get_ready_state() < 0.5f) {
-    return "Calibrating";
-  }
-  if (counter->get_presence_state() > 0.5f) {
-    return "Ready, but occupied";
-  }
-  return "Ready";
+std::string default_subtitle(const tof_overdoor_counter::TofOverdoorCounter *counter) {
+  return counter->is_monitor_mode()
+             ? "Live monitor for four working ToF sensors, focused on baselines, agreement, and placement stability."
+             : "Local four-sensor people counter with OUT = U3/U7 and IN = U4/U8, including calibration, confidence, and event reasoning.";
+}
+
+const char *sensor_group_label_for_index(size_t index) {
+  return index < 4 ? SENSOR_GROUP_LABELS[index] : "Unknown";
 }
 
 }  // namespace
@@ -1248,52 +1507,76 @@ class TofOverdoorUi::Handler : public AsyncWebHandler {
     auto *counter = this->parent_->counter_;
     auto json = json::build_json([this, counter](JsonObject root) {
       root["title"] = this->parent_->title_.empty() ? App.get_friendly_name() : this->parent_->title_;
-      root["subtitle"] = counter->is_monitor_mode()
-                              ? "A clearer live view of the four working doorway sensors as one combined monitor."
-                              : "A clearer live view of the four working doorway sensors, the two sensor pairs, and the counting state machine.";
-      root["label"] = this->parent_->label_.empty() ? "Doorway Counter" : this->parent_->label_;
+      root["subtitle"] = default_subtitle(counter);
+      root["label"] = this->parent_->label_.empty() ? "Front Door Counter" : this->parent_->label_;
       root["connection_text"] = "Connected to device";
       root["mode"] = counter->get_mode_text();
       root["ready"] = counter->get_ready_state() > 0.5f;
       root["presence"] = counter->get_presence_state() > 0.5f;
-      root["reporting_sensors"] = static_cast<int>(counter->get_reporting_sensor_count());
+      root["person_standing"] = counter->get_person_standing_state() > 0.5f;
+      root["system_status"] = counter->get_system_status_text();
+      root["phase"] = counter->get_phase_text();
       root["people_count"] = static_cast<int>(counter->get_people_count());
       root["entry_count"] = static_cast<int>(counter->get_entry_count());
       root["exit_count"] = static_cast<int>(counter->get_exit_count());
-      root["phase"] = counter->get_phase_text();
+      root["unsure_in_count"] = static_cast<int>(counter->get_unsure_in_count());
+      root["unsure_out_count"] = static_cast<int>(counter->get_unsure_out_count());
       root["last_direction"] = counter->get_last_direction_text();
+      root["last_detection_time"] = counter->get_last_detection_timestamp_text();
+      root["last_reason"] = counter->get_last_reason_text();
+      root["blocked_sensor"] = counter->get_blocked_sensor_text();
       root["summary"] = counter->get_summary();
       root["discovery_map"] = counter->get_discovery_map();
+      root["event_log"] = counter->get_event_log();
       root["discovered_sensors"] = static_cast<int>(counter->get_discovered_sensor_count());
+      root["reporting_sensors"] = static_cast<int>(counter->get_reporting_sensor_count());
       root["cycle_duration_ms"] = counter->get_cycle_duration_ms();
       root["update_skew_ms"] = counter->get_update_skew_ms();
       root["nearest_distance"] = counter->get_nearest_distance_mm();
       root["average_distance"] = counter->get_average_distance_mm();
       root["distance_span"] = counter->get_distance_span_mm();
-      root["row_a_active"] = counter->get_row_active_state(0) > 0.5f;
-      root["row_b_active"] = counter->get_row_active_state(1) > 0.5f;
-      root["row_a_distance"] = counter->get_row_distance_mm(0);
-      root["row_b_distance"] = counter->get_row_distance_mm(1);
-      root["row_a_baseline"] = counter->get_row_baseline_mm(0);
-      root["row_b_baseline"] = counter->get_row_baseline_mm(1);
-      root["row_a_drop"] = counter->get_row_drop_mm(0);
-      root["row_b_drop"] = counter->get_row_drop_mm(1);
+      root["last_confidence"] = counter->get_confidence_score();
+      root["calibration_progress"] = counter->get_calibration_progress();
+      root["trigger_threshold"] = counter->get_trigger_threshold_value();
+      root["clear_threshold"] = counter->get_clear_threshold_value();
+      root["baseline_tolerance"] = counter->get_baseline_tolerance_value();
+      root["debounce_ms"] = counter->get_debounce_value();
+      root["detection_timeout_ms"] = counter->get_detection_timeout_value();
+      root["cooldown_ms"] = counter->get_cooldown_value();
+      root["min_valid_sensors"] = counter->get_min_valid_sensors_value();
+      root["max_people_inside"] = counter->get_max_people_inside_value();
       root["invert_direction"] = counter->get_invert_direction();
-      root["ready_copy"] = readiness_copy(counter);
+      root["auto_save_enabled"] = counter->get_auto_save_enabled();
+
+      auto groups = root["groups"].to<JsonArray>();
+      for (size_t group_index = 0; group_index < 2; group_index++) {
+        auto group = groups.add<JsonObject>();
+        group["label"] = counter->get_group_label(group_index);
+        group["description"] = group_index == 0 ? "Outside-facing group used for OUT-first detection." :
+                                                    "Inside-facing group used for IN-first detection.";
+        group["active"] = counter->get_row_active_state(group_index) > 0.5f;
+        group["distance"] = counter->get_row_distance_mm(group_index);
+        group["baseline"] = counter->get_row_baseline_mm(group_index);
+        group["drop"] = counter->get_row_drop_mm(group_index);
+        group["health"] = counter->get_row_active_state(group_index) > 0.5f ? "Triggered" : "Ready";
+      }
 
       auto sensors = root["sensors"].to<JsonArray>();
       for (size_t index = 0; index < 4; index++) {
         auto sensor = sensors.add<JsonObject>();
         sensor["label"] = SENSOR_CARD_LABELS[index];
+        sensor["group"] = sensor_group_label_for_index(index);
         sensor["source"] = counter->get_source_label(index);
         sensor["status"] = counter->get_status_text(index);
+        sensor["health"] = counter->get_sensor_health_text(index);
         sensor["distance"] = counter->get_distance_mm(index);
+        sensor["raw"] = counter->get_raw_distance_mm(index);
+        sensor["filtered"] = counter->get_filtered_distance_mm(index);
         sensor["baseline"] = counter->get_baseline_mm(index);
-        const auto baseline = counter->get_baseline_mm(index);
-        const auto distance = counter->get_distance_mm(index);
-        sensor["drop"] = std::isnan(baseline) || std::isnan(distance) ? NAN : baseline - distance;
-        sensor["active"] = counter->get_row_active_state(index < 2 ? 0 : 1) > 0.5f &&
-                           counter->get_status_text(index) == "Occupied";
+        sensor["noise"] = counter->get_noise_mm(index);
+        sensor["quality"] = counter->get_calibration_quality(index);
+        sensor["drop"] = counter->get_delta_mm(index);
+        sensor["active"] = counter->get_sensor_active_state(index) > 0.5f;
       }
     });
     request->send(200, "application/json", json.c_str());
@@ -1301,18 +1584,61 @@ class TofOverdoorUi::Handler : public AsyncWebHandler {
 
   void handle_action_(AsyncWebServerRequest *request) {
     auto *counter = this->parent_->counter_;
-    auto action = request->arg("action");
+    const auto action = request->arg("action");
     std::string message = "Updated";
 
     if (action == "recalibrate") {
       counter->recalibrate();
-      message = "Floor reference recalibration started";
+      message = "Calibration started. Keep the doorway empty.";
     } else if (action == "rediscover") {
       counter->rediscover();
-      message = "Sensor rediscovery started";
+      message = "Sensor rediscovery started.";
     } else if (action == "reset_counts") {
       counter->reset_counts();
-      message = "Counts reset";
+      counter->persist_runtime_state();
+      message = "Confirmed counters reset.";
+    } else if (action == "reset_unsure_in") {
+      counter->reset_unsure_in();
+      counter->persist_runtime_state();
+      message = "Unsure IN counter reset.";
+    } else if (action == "reset_unsure_out") {
+      counter->reset_unsure_out();
+      counter->persist_runtime_state();
+      message = "Unsure OUT counter reset.";
+    } else if (action == "reset_all_counters") {
+      counter->reset_all_counters();
+      counter->persist_runtime_state();
+      message = "All counters reset.";
+    } else if (action == "restart") {
+      message = "Restarting ESP.";
+      auto response = json::build_json([&message](JsonObject root) {
+        root["ok"] = true;
+        root["message"] = message;
+      });
+      request->send(200, "application/json", response.c_str());
+      App.safe_reboot();
+      return;
+    } else if (action == "apply_settings") {
+      counter->set_trigger_delta_mm(static_cast<uint16_t>(
+          std::max(80, std::min(1200, parse_int_arg(request, "trigger_threshold", static_cast<int>(counter->get_trigger_threshold_value()))))));
+      counter->set_release_delta_mm(static_cast<uint16_t>(
+          std::max(40, std::min(900, parse_int_arg(request, "clear_threshold", static_cast<int>(counter->get_clear_threshold_value()))))));
+      counter->set_baseline_tolerance_mm(static_cast<uint16_t>(
+          std::max(20, std::min(300, parse_int_arg(request, "baseline_tolerance", static_cast<int>(counter->get_baseline_tolerance_value()))))));
+      counter->set_debounce_ms(static_cast<uint32_t>(
+          std::max(5, std::min(300, parse_int_arg(request, "debounce_ms", static_cast<int>(counter->get_debounce_value()))))));
+      counter->set_sequence_timeout_ms(static_cast<uint32_t>(std::max(
+          300, std::min(4000, parse_int_arg(request, "detection_timeout_ms", static_cast<int>(counter->get_detection_timeout_value()))))));
+      counter->set_cooldown_ms(static_cast<uint32_t>(
+          std::max(0, std::min(3000, parse_int_arg(request, "cooldown_ms", static_cast<int>(counter->get_cooldown_value()))))));
+      counter->set_min_valid_sensors(static_cast<uint8_t>(
+          std::max(2, std::min(4, parse_int_arg(request, "min_valid_sensors", static_cast<int>(counter->get_min_valid_sensors_value()))))));
+      counter->set_max_people_inside(static_cast<uint16_t>(
+          std::max(1, std::min(500, parse_int_arg(request, "max_people_inside", static_cast<int>(counter->get_max_people_inside_value()))))));
+      counter->set_invert_direction(parse_bool_arg(request, "invert_direction", counter->get_invert_direction()));
+      counter->set_auto_save_enabled(parse_bool_arg(request, "auto_save_enabled", counter->get_auto_save_enabled()));
+      counter->persist_runtime_state();
+      message = "Detection settings saved to the ESP.";
     } else {
       request->send(400, "application/json", "{\"ok\":false,\"message\":\"Unsupported action\"}");
       return;

@@ -1,0 +1,306 @@
+# Home Assistant package for counting entries/exits with the four working
+# over-door sensors. This assumes:
+# - U3 and U4 belong to one side/end of the doorway
+# - U7 and U8 belong to the other side/end of the doorway
+# - the ESP firmware is running in monitor mode and exposes raw distance sensors
+#
+# If your entity IDs differ, update the four sensor.* entity IDs below.
+
+input_number:
+  roode_room_people_count:
+    name: Roode Room People Count
+    min: 0
+    max: 50
+    step: 1
+    mode: box
+    icon: mdi:account-group
+
+  roode_pair_a_trigger_below_mm:
+    name: Roode Pair U3/U4 Trigger Below
+    min: 100
+    max: 3000
+    step: 10
+    unit_of_measurement: mm
+    mode: box
+    icon: mdi:arrow-collapse-down
+    initial: 1200
+
+  roode_pair_b_trigger_below_mm:
+    name: Roode Pair U7/U8 Trigger Below
+    min: 100
+    max: 3000
+    step: 10
+    unit_of_measurement: mm
+    mode: box
+    icon: mdi:arrow-collapse-down
+    initial: 1200
+
+input_boolean:
+  roode_direction_inverted:
+    name: Roode Direction Inverted
+    icon: mdi:swap-horizontal
+
+input_select:
+  roode_sequence_state:
+    name: Roode Sequence State
+    options:
+      - idle
+      - a_first
+      - b_first
+      - a_then_b
+      - b_then_a
+    initial: idle
+    icon: mdi:state-machine
+
+input_text:
+  roode_last_direction:
+    name: Roode Last Direction
+    max: 64
+    initial: Waiting
+
+timer:
+  roode_sequence_window:
+    name: Roode Sequence Window
+    duration: "00:00:02"
+
+template:
+  - sensor:
+      - name: Roode Pair U3/U4 Distance
+        unique_id: roode_pair_u3_u4_distance
+        unit_of_measurement: mm
+        state: >
+          {% set u3 = states('sensor.roode_four_sensor_overdoor_u3_distance')|float(9999) %}
+          {% set u4 = states('sensor.roode_four_sensor_overdoor_u4_distance')|float(9999) %}
+          {{ [u3, u4] | min | round(0) }}
+
+      - name: Roode Pair U7/U8 Distance
+        unique_id: roode_pair_u7_u8_distance
+        unit_of_measurement: mm
+        state: >
+          {% set u7 = states('sensor.roode_four_sensor_overdoor_u7_distance')|float(9999) %}
+          {% set u8 = states('sensor.roode_four_sensor_overdoor_u8_distance')|float(9999) %}
+          {{ [u7, u8] | min | round(0) }}
+
+      - name: Roode Passage Summary
+        unique_id: roode_passage_summary
+        state: >
+          Count {{ states('input_number.roode_room_people_count')|int(0) }}
+          | Seq {{ states('input_select.roode_sequence_state') }}
+          | A {{ states('sensor.roode_pair_u3_u4_distance') }} mm
+          | B {{ states('sensor.roode_pair_u7_u8_distance') }} mm
+
+  - binary_sensor:
+      - name: Roode Pair U3/U4 Triggered
+        unique_id: roode_pair_u3_u4_triggered
+        delay_on:
+          milliseconds: 40
+        delay_off:
+          milliseconds: 120
+        state: >
+          {% set distance = states('sensor.roode_pair_u3_u4_distance')|float(9999) %}
+          {% set threshold = states('input_number.roode_pair_a_trigger_below_mm')|float(1200) %}
+          {{ distance < threshold }}
+
+      - name: Roode Pair U7/U8 Triggered
+        unique_id: roode_pair_u7_u8_triggered
+        delay_on:
+          milliseconds: 40
+        delay_off:
+          milliseconds: 120
+        state: >
+          {% set distance = states('sensor.roode_pair_u7_u8_distance')|float(9999) %}
+          {% set threshold = states('input_number.roode_pair_b_trigger_below_mm')|float(1200) %}
+          {{ distance < threshold }}
+
+automation:
+  - alias: Roode Doorway Sequence
+    id: roode_doorway_sequence
+    mode: queued
+    trigger:
+      - platform: state
+        entity_id:
+          - binary_sensor.roode_pair_u3_u4_triggered
+          - binary_sensor.roode_pair_u7_u8_triggered
+    variables:
+      seq: "{{ states('input_select.roode_sequence_state') }}"
+      a_active: "{{ is_state('binary_sensor.roode_pair_u3_u4_triggered', 'on') }}"
+      b_active: "{{ is_state('binary_sensor.roode_pair_u7_u8_triggered', 'on') }}"
+      inverted: "{{ is_state('input_boolean.roode_direction_inverted', 'on') }}"
+    action:
+      - choose:
+          - conditions: >
+              {{ seq == 'idle'
+                 and trigger.entity_id == 'binary_sensor.roode_pair_u3_u4_triggered'
+                 and trigger.to_state.state == 'on'
+                 and not b_active }}
+            sequence:
+              - service: input_select.select_option
+                target:
+                  entity_id: input_select.roode_sequence_state
+                data:
+                  option: a_first
+              - service: timer.start
+                target:
+                  entity_id: timer.roode_sequence_window
+
+          - conditions: >
+              {{ seq == 'idle'
+                 and trigger.entity_id == 'binary_sensor.roode_pair_u7_u8_triggered'
+                 and trigger.to_state.state == 'on'
+                 and not a_active }}
+            sequence:
+              - service: input_select.select_option
+                target:
+                  entity_id: input_select.roode_sequence_state
+                data:
+                  option: b_first
+              - service: timer.start
+                target:
+                  entity_id: timer.roode_sequence_window
+
+          - conditions: >
+              {{ seq == 'a_first'
+                 and trigger.entity_id == 'binary_sensor.roode_pair_u7_u8_triggered'
+                 and trigger.to_state.state == 'on' }}
+            sequence:
+              - service: input_select.select_option
+                target:
+                  entity_id: input_select.roode_sequence_state
+                data:
+                  option: a_then_b
+              - service: timer.start
+                target:
+                  entity_id: timer.roode_sequence_window
+
+          - conditions: >
+              {{ seq == 'b_first'
+                 and trigger.entity_id == 'binary_sensor.roode_pair_u3_u4_triggered'
+                 and trigger.to_state.state == 'on' }}
+            sequence:
+              - service: input_select.select_option
+                target:
+                  entity_id: input_select.roode_sequence_state
+                data:
+                  option: b_then_a
+              - service: timer.start
+                target:
+                  entity_id: timer.roode_sequence_window
+
+          - conditions: >
+              {{ seq == 'a_then_b' and not a_active and not b_active }}
+            sequence:
+              - choose:
+                  - conditions: "{{ not inverted }}"
+                    sequence:
+                      - service: input_number.set_value
+                        target:
+                          entity_id: input_number.roode_room_people_count
+                        data:
+                          value: >
+                            {% set current = states('input_number.roode_room_people_count')|int(0) %}
+                            {{ [current + 1, 50] | min }}
+                      - service: input_text.set_value
+                        target:
+                          entity_id: input_text.roode_last_direction
+                        data:
+                          value: Entry
+                  - conditions: "{{ inverted }}"
+                    sequence:
+                      - service: input_number.set_value
+                        target:
+                          entity_id: input_number.roode_room_people_count
+                        data:
+                          value: >
+                            {% set current = states('input_number.roode_room_people_count')|int(0) %}
+                            {{ [current - 1, 0] | max }}
+                      - service: input_text.set_value
+                        target:
+                          entity_id: input_text.roode_last_direction
+                        data:
+                          value: Exit
+              - service: input_select.select_option
+                target:
+                  entity_id: input_select.roode_sequence_state
+                data:
+                  option: idle
+              - service: timer.cancel
+                target:
+                  entity_id: timer.roode_sequence_window
+
+          - conditions: >
+              {{ seq == 'b_then_a' and not a_active and not b_active }}
+            sequence:
+              - choose:
+                  - conditions: "{{ not inverted }}"
+                    sequence:
+                      - service: input_number.set_value
+                        target:
+                          entity_id: input_number.roode_room_people_count
+                        data:
+                          value: >
+                            {% set current = states('input_number.roode_room_people_count')|int(0) %}
+                            {{ [current - 1, 0] | max }}
+                      - service: input_text.set_value
+                        target:
+                          entity_id: input_text.roode_last_direction
+                        data:
+                          value: Exit
+                  - conditions: "{{ inverted }}"
+                    sequence:
+                      - service: input_number.set_value
+                        target:
+                          entity_id: input_number.roode_room_people_count
+                        data:
+                          value: >
+                            {% set current = states('input_number.roode_room_people_count')|int(0) %}
+                            {{ [current + 1, 50] | min }}
+                      - service: input_text.set_value
+                        target:
+                          entity_id: input_text.roode_last_direction
+                        data:
+                          value: Entry
+              - service: input_select.select_option
+                target:
+                  entity_id: input_select.roode_sequence_state
+                data:
+                  option: idle
+              - service: timer.cancel
+                target:
+                  entity_id: timer.roode_sequence_window
+
+          - conditions: >
+              {{ seq in ['a_first', 'b_first'] and not a_active and not b_active }}
+            sequence:
+              - service: input_select.select_option
+                target:
+                  entity_id: input_select.roode_sequence_state
+                data:
+                  option: idle
+              - service: input_text.set_value
+                target:
+                  entity_id: input_text.roode_last_direction
+                data:
+                  value: Cancelled
+              - service: timer.cancel
+                target:
+                  entity_id: timer.roode_sequence_window
+
+  - alias: Roode Doorway Sequence Timeout
+    id: roode_doorway_sequence_timeout
+    mode: single
+    trigger:
+      - platform: event
+        event_type: timer.finished
+        event_data:
+          entity_id: timer.roode_sequence_window
+    action:
+      - service: input_select.select_option
+        target:
+          entity_id: input_select.roode_sequence_state
+        data:
+          option: idle
+      - service: input_text.set_value
+        target:
+          entity_id: input_text.roode_last_direction
+        data:
+          value: Timeout
