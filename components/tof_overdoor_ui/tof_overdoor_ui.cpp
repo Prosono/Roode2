@@ -1149,9 +1149,9 @@ const char OVERDOOR_UI_HTML[] = R"html(
     }
 
     function refreshDelay() {
-      if (document.hidden) return 8000;
-      if (busy) return 4000;
-      return 1200;
+      if (document.hidden) return 2500;
+      if (busy) return 600;
+      return 120;
     }
 
     function scheduleRefresh() {
