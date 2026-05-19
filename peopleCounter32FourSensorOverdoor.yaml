@@ -28,7 +28,11 @@ ota:
 wifi:
   ssid: !secret roode_wifi_ssid
   password: !secret roode_wifi_password
-  use_address: ${devicename}
+  use_address: 10.0.0.94
+  manual_ip:
+    static_ip: 10.0.0.100
+    gateway: 10.0.0.1
+    subnet: 255.255.255.0
   domain: .local
   power_save_mode: none
   ap:

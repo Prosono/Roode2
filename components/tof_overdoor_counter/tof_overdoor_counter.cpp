@@ -11,6 +11,7 @@ namespace {
 static const char *const TAG = "tof_overdoor_counter";
 constexpr uint8_t PERSISTED_STATE_VERSION = 2;
 constexpr uint32_t STALE_READING_MS = 450;
+constexpr uint32_t CALIBRATION_CLEAR_SETTLE_MS = 350;
 constexpr float FILTER_ALPHA = 0.42f;
 constexpr float BASELINE_TRACK_ALPHA = 0.015f;
 constexpr float NOISE_TRACK_ALPHA = 0.08f;
@@ -570,6 +571,7 @@ void TofOverdoorCounter::rediscover() {
 void TofOverdoorCounter::recalibrate() {
   this->calibration_active_ = true;
   this->calibration_started_ms_ = millis();
+  this->calibration_clear_since_ms_ = 0;
   this->person_standing_in_door_ = false;
   this->blocked_sensor_text_ = "None";
   this->phase_text_ = "Waiting for clear doorway to calibrate";
@@ -577,15 +579,11 @@ void TofOverdoorCounter::recalibrate() {
   this->cooldown_until_ms_ = 0;
 
   for (auto &channel : this->channels_) {
-    channel.calibrated = false;
     channel.active = false;
     channel.blocked = false;
     channel.active_candidate_since_ms = 0;
     channel.clear_candidate_since_ms = 0;
     channel.active_since_ms = 0;
-    channel.baseline = NAN;
-    channel.noise = NAN;
-    channel.calibration_quality = 0;
     channel.calibration_sum = 0.0f;
     channel.calibration_sq_sum = 0.0f;
     channel.calibration_min = NAN;
@@ -629,42 +627,61 @@ void TofOverdoorCounter::reset_all_counters() {
 }
 
 void TofOverdoorCounter::process_calibration_() {
+  const uint32_t now = millis();
   bool ready_for_sample = true;
   uint8_t eligible_sensors = 0;
+  bool had_progress = false;
 
   for (auto &channel : this->channels_) {
     if (!channel.initialized) {
       continue;
     }
 
-    if (!channel.has_reading || channel.consecutive_errors >= 3 || channel.raw_distance < this->minimum_clear_distance_mm_) {
-      ready_for_sample = false;
-      break;
+    if (channel.calibration_samples != 0) {
+      had_progress = true;
     }
-    eligible_sensors++;
+
+    const float sample =
+        !std::isnan(channel.filtered_distance) ? channel.filtered_distance : static_cast<float>(channel.raw_distance);
+
+    if (!channel.has_reading || channel.stale || channel.consecutive_errors >= 3 ||
+        std::isnan(sample) || sample < this->minimum_clear_distance_mm_) {
+      ready_for_sample = false;
+    } else {
+      eligible_sensors++;
+    }
   }
 
   if (eligible_sensors < this->min_valid_sensors_) {
+    this->calibration_clear_since_ms_ = 0;
     this->phase_text_ = "Waiting for enough healthy sensors to calibrate";
     return;
   }
 
   if (!ready_for_sample) {
-    bool had_progress = false;
     for (auto &channel : this->channels_) {
-      if (channel.calibration_samples != 0) {
-        had_progress = true;
-      }
       channel.calibration_sum = 0.0f;
       channel.calibration_sq_sum = 0.0f;
       channel.calibration_min = NAN;
       channel.calibration_max = NAN;
       channel.calibration_samples = 0;
     }
+    this->calibration_clear_since_ms_ = 0;
     if (had_progress) {
-      ESP_LOGW(TAG, "Calibration reset because the doorway was not clear or stable");
+      ESP_LOGW(TAG, "Calibration paused because the doorway no longer looked clear");
     }
     this->phase_text_ = "Waiting for clear doorway to calibrate";
+    return;
+  }
+
+  if (this->calibration_clear_since_ms_ == 0) {
+    this->calibration_clear_since_ms_ = now;
+  }
+
+  const uint32_t clear_stable_ms = now - this->calibration_clear_since_ms_;
+  if (clear_stable_ms < CALIBRATION_CLEAR_SETTLE_MS) {
+    this->phase_text_ = "Waiting for doorway to stay clear (" + std::to_string(clear_stable_ms) + "/" +
+                        std::to_string(CALIBRATION_CLEAR_SETTLE_MS) + " ms)";
     return;
   }
 
@@ -690,7 +707,11 @@ void TofOverdoorCounter::process_calibration_() {
   }
 
   bool stable = true;
-  for (auto &channel : this->channels_) {
+  std::vector<float> baselines(this->channels_.size(), NAN);
+  std::vector<float> noises(this->channels_.size(), NAN);
+  std::vector<uint8_t> qualities(this->channels_.size(), 0);
+  for (size_t index = 0; index < this->channels_.size(); index++) {
+    auto &channel = this->channels_[index];
     if (!channel.initialized) {
       continue;
     }
@@ -709,10 +730,9 @@ void TofOverdoorCounter::process_calibration_() {
       break;
     }
 
-    channel.baseline = mean;
-    channel.noise = std::max(1.0f, stddev);
-    channel.calibration_quality = clamp_quality(100.0f - (stddev * 2.5f) - (span * 0.3f));
-    channel.calibrated = true;
+    baselines[index] = mean;
+    noises[index] = std::max(1.0f, stddev);
+    qualities[index] = clamp_quality(100.0f - (stddev * 2.5f) - (span * 0.3f));
   }
 
   if (!stable) {
@@ -722,13 +742,25 @@ void TofOverdoorCounter::process_calibration_() {
       channel.calibration_min = NAN;
       channel.calibration_max = NAN;
       channel.calibration_samples = 0;
-      channel.calibrated = false;
     }
-    this->phase_text_ = "Calibration unstable - retrying";
+    this->calibration_clear_since_ms_ = now;
+    this->phase_text_ = "Calibration unstable - collecting again";
     return;
   }
 
+  for (size_t index = 0; index < this->channels_.size(); index++) {
+    auto &channel = this->channels_[index];
+    if (!channel.initialized) {
+      continue;
+    }
+    channel.baseline = baselines[index];
+    channel.noise = noises[index];
+    channel.calibration_quality = qualities[index];
+    channel.calibrated = true;
+  }
+
   this->calibration_active_ = false;
+  this->calibration_clear_since_ms_ = 0;
   this->phase_text_ = "Calibration completed";
   this->last_reason_ = "Calibration completed successfully";
   this->state_dirty_ = true;
