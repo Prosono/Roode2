@@ -74,6 +74,7 @@ class TofOverdoorCounter : public PollingComponent {
     uint8_t pin_number{0};
     uint8_t address{0};
     bool initialized{false};
+    bool ranging_started{false};
     bool has_reading{false};
     bool occupied{false};
     uint16_t last_distance{0};
@@ -126,6 +127,7 @@ class TofOverdoorCounter : public PollingComponent {
   bool set_temp_address_(VL53L1X_ULD &sensor, uint8_t address);
   bool configure_sensor_(Channel &channel);
   bool read_channel_(Channel &channel);
+  bool restart_ranging_(Channel &channel);
   void update_baselines_();
   void update_occupancy_states_();
   void update_state_machine_();

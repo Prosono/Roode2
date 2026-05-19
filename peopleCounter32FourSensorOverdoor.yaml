@@ -77,7 +77,7 @@ tof_overdoor_counter:
   wake_delay: 60ms
   post_address_delay: 80ms
   init_retries: 3
-  update_interval: 120ms
+  update_interval: 60ms
   base_address: 0x30
   trigger_delta: 350mm
   release_delta: 220mm

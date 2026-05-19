@@ -49,7 +49,7 @@ CONFIG_SCHEMA = (
             cv.Required(CONF_XSHUT_PINS): validate_xshut_pins,
         }
     )
-    .extend(cv.polling_component_schema("120ms"))
+    .extend(cv.polling_component_schema("60ms"))
 )
 
 

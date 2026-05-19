@@ -8,7 +8,7 @@ namespace tof_overdoor_counter {
 
 static const char *const TAG = "tof_overdoor_counter";
 
-static const char *row_name(uint8_t row_index) { return row_index == 1 ? "Row A" : "Row B"; }
+static const char *pair_name(uint8_t row_index) { return row_index == 1 ? "U3/U4 pair" : "U7/U8 pair"; }
 
 void TofOverdoorCounter::setup() {
   this->prepare_xshut_pins_();
@@ -197,7 +197,15 @@ bool TofOverdoorCounter::configure_sensor_(Channel &channel) {
     return false;
   }
 
+  status = sensor.StartRanging();
+  if (status != VL53L1_ERROR_NONE) {
+    channel.last_error = status;
+    channel.ranging_started = false;
+    return false;
+  }
+
   channel.initialized = true;
+  channel.ranging_started = true;
   channel.last_error = 0;
   return true;
 }
@@ -206,57 +214,38 @@ bool TofOverdoorCounter::read_channel_(Channel &channel) {
   auto &sensor = *channel.sensor;
   const uint32_t started = millis();
 
-  auto status = sensor.StartRanging();
-  if (status != VL53L1_ERROR_NONE) {
-    channel.last_error = status;
+  if (!channel.ranging_started && !this->restart_ranging_(channel)) {
     channel.occupied = false;
     return false;
   }
 
   uint8_t ready = 0;
-  const uint32_t wait_started = millis();
-  while (!ready && (millis() - wait_started) < this->timeout_ms_) {
-    status = sensor.CheckForDataReady(&ready);
-    if (status != VL53L1_ERROR_NONE) {
-      channel.last_error = status;
-      sensor.StopRanging();
-      channel.occupied = false;
-      return false;
-    }
-    if (!ready) {
-      delay(1);
-      App.feed_wdt();
-    }
+  auto status = sensor.CheckForDataReady(&ready);
+  if (status != VL53L1_ERROR_NONE) {
+    channel.last_error = status;
+    channel.occupied = false;
+    this->restart_ranging_(channel);
+    return false;
   }
 
   if (!ready) {
-    channel.last_error = VL53L1_ERROR_TIME_OUT;
-    sensor.StopRanging();
-    channel.occupied = false;
-    return false;
+    return true;
   }
 
   uint16_t distance = 0;
   status = sensor.GetDistanceInMm(&distance);
   if (status != VL53L1_ERROR_NONE) {
     channel.last_error = status;
-    sensor.StopRanging();
     channel.occupied = false;
+    this->restart_ranging_(channel);
     return false;
   }
 
   status = sensor.ClearInterrupt();
   if (status != VL53L1_ERROR_NONE) {
     channel.last_error = status;
-    sensor.StopRanging();
     channel.occupied = false;
-    return false;
-  }
-
-  status = sensor.StopRanging();
-  if (status != VL53L1_ERROR_NONE) {
-    channel.last_error = status;
-    channel.occupied = false;
+    this->restart_ranging_(channel);
     return false;
   }
 
@@ -265,6 +254,26 @@ bool TofOverdoorCounter::read_channel_(Channel &channel) {
   channel.last_error = 0;
   channel.last_update_ms = millis();
   channel.last_read_duration_ms = millis() - started;
+  return true;
+}
+
+bool TofOverdoorCounter::restart_ranging_(Channel &channel) {
+  if (!channel.sensor) {
+    channel.ranging_started = false;
+    return false;
+  }
+
+  auto &sensor = *channel.sensor;
+  sensor.StopRanging();
+  delay(2);
+  const auto status = sensor.StartRanging();
+  if (status != VL53L1_ERROR_NONE) {
+    channel.last_error = status;
+    channel.ranging_started = false;
+    return false;
+  }
+
+  channel.ranging_started = true;
   return true;
 }
 
@@ -426,9 +435,9 @@ void TofOverdoorCounter::update_state_machine_() {
       this->last_single_row_ = single_row;
       this->saw_both_ = false;
       this->sequence_started_ms_ = now;
-      this->phase_text_ = std::string(row_name(single_row)) + " leading";
+      this->phase_text_ = std::string(pair_name(single_row)) + " leading";
     } else if (row_a && row_b) {
-      this->phase_text_ = "Both rows active - waiting for an edge";
+      this->phase_text_ = "Both sensor pairs active - waiting for an edge";
     } else {
       this->phase_text_ = "Ready";
     }
@@ -450,13 +459,13 @@ void TofOverdoorCounter::update_state_machine_() {
 
   if (row_a && row_b) {
     this->saw_both_ = true;
-    this->phase_text_ = "Both rows active";
+    this->phase_text_ = "Both sensor pairs active";
     return;
   }
 
   if (single_row != 0) {
     this->last_single_row_ = single_row;
-    this->phase_text_ = std::string(row_name(single_row)) + " active";
+    this->phase_text_ = std::string(pair_name(single_row)) + " active";
   }
 }
 

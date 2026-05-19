@@ -692,7 +692,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
       <section class="panel hero">
         <p class="eyebrow">Roode service console</p>
         <h1 id="page-title">Loading device</h1>
-        <p class="hero-copy" id="page-subtitle">Preparing the live doorway view, sensor health, and counting status.</p>
+        <p class="hero-copy" id="page-subtitle">Preparing the live doorway view, sensor-pair health, and counting status.</p>
 
         <div class="hero-steps">
           <article class="step">
@@ -705,7 +705,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
           </article>
           <article class="step">
             <strong>3</strong>
-            <p>Walk through the doorway in one clear direction and confirm that the phase and count make sense.</p>
+            <p>Move cleanly from one sensor pair to the other and confirm that the phase and count make sense.</p>
           </article>
         </div>
       </section>
@@ -725,7 +725,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
           </div>
           <div class="aside-note">
             <strong>What this page helps you see</strong>
-            <p>Which row saw movement first, whether all four sensors agree, and whether the device counted an entry, an exit, or cancelled the sequence.</p>
+            <p>Which sensor pair changed first, whether the four working sensors agree, and whether the device counted an entry, an exit, or cancelled the sequence.</p>
           </div>
         </section>
       </aside>
@@ -783,10 +783,10 @@ const char OVERDOOR_UI_HTML[] = R"html(
         <section class="panel section doorway">
           <div class="door-title">
             <div>
-              <p class="eyebrow">Live doorway view</p>
-              <h2>What each row sees</h2>
-            </div>
-            <p id="row-copy">Lower distance means an object is closer to the board. A row becomes active when one of its two sensors drops far enough below its normal baseline.</p>
+            <p class="eyebrow">Live doorway view</p>
+            <h2>What each sensor pair sees</h2>
+          </div>
+            <p id="row-copy">Lower distance means an object is closer to the board. Each logical pair is made from two sensors on the same end of the PCB.</p>
           </div>
 
           <div class="door-visual">
@@ -794,8 +794,8 @@ const char OVERDOOR_UI_HTML[] = R"html(
               <article class="row-card">
                 <div class="row-head">
                   <div>
-                    <h3>Row A</h3>
-                    <p id="row-a-copy">Top pair of sensors watching the first half of the doorway.</p>
+                    <h3>Pair U3/U4</h3>
+                    <p id="row-a-copy">The two sensors on the ESP-end of the board.</p>
                   </div>
                   <div class="row-badge" id="row-a-badge">Clear</div>
                 </div>
@@ -803,12 +803,12 @@ const char OVERDOOR_UI_HTML[] = R"html(
                   <div class="mini-metric">
                     <span>Nearest distance</span>
                     <strong id="row-a-distance">-</strong>
-                    <p>Closest reading from either sensor in Row A.</p>
+                    <p>Closest reading from either U3 or U4.</p>
                   </div>
                   <div class="mini-metric">
                     <span>Baseline</span>
                     <strong id="row-a-baseline">-</strong>
-                    <p>Normal empty-doorway reference for Row A.</p>
+                    <p>Normal empty-doorway reference for the U3/U4 end.</p>
                   </div>
                   <div class="mini-metric">
                     <span>Drop from baseline</span>
@@ -821,8 +821,8 @@ const char OVERDOOR_UI_HTML[] = R"html(
               <article class="row-card">
                 <div class="row-head">
                   <div>
-                    <h3>Row B</h3>
-                    <p id="row-b-copy">Bottom pair of sensors watching the second half of the doorway.</p>
+                    <h3>Pair U7/U8</h3>
+                    <p id="row-b-copy">The two sensors on the far end of the board.</p>
                   </div>
                   <div class="row-badge" id="row-b-badge">Clear</div>
                 </div>
@@ -830,12 +830,12 @@ const char OVERDOOR_UI_HTML[] = R"html(
                   <div class="mini-metric">
                     <span>Nearest distance</span>
                     <strong id="row-b-distance">-</strong>
-                    <p>Closest reading from either sensor in Row B.</p>
+                    <p>Closest reading from either U7 or U8.</p>
                   </div>
                   <div class="mini-metric">
                     <span>Baseline</span>
                     <strong id="row-b-baseline">-</strong>
-                    <p>Normal empty-doorway reference for Row B.</p>
+                    <p>Normal empty-doorway reference for the U7/U8 end.</p>
                   </div>
                   <div class="mini-metric">
                     <span>Drop from baseline</span>
@@ -870,7 +870,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
             </article>
             <article class="debug-card">
               <strong>How to test direction</strong>
-              <p id="test-copy">Walk one clear path through the doorway so one row becomes active before the other. Covering all four sensors at once only proves detection, not direction.</p>
+              <p id="test-copy">Walk one clear path through the doorway so one sensor pair becomes active before the other. Covering all four sensors at once only proves detection, not direction.</p>
             </article>
           </div>
         </section>
@@ -957,14 +957,14 @@ const char OVERDOOR_UI_HTML[] = R"html(
       if (!state.ready) {
         return 'The board is still learning empty-doorway baselines. Leave the doorway clear for a moment so the reference values settle.';
       }
-      if (phase.includes('row a leading')) {
-        return 'Row A changed first. If Row B follows next and the doorway clears, the event should become a count.';
+      if (phase.includes('u3/u4 pair leading')) {
+        return 'The U3/U4 end changed first. If the U7/U8 end follows next and the doorway clears, the event should become a count.';
       }
-      if (phase.includes('row b leading')) {
-        return 'Row B changed first. If Row A follows next and the doorway clears, the event should become a count in the opposite direction.';
+      if (phase.includes('u7/u8 pair leading')) {
+        return 'The U7/U8 end changed first. If the U3/U4 end follows next and the doorway clears, the event should become a count in the opposite direction.';
       }
-      if (phase.includes('both rows active')) {
-        return 'Both rows currently see an object. This is expected mid-pass, but it is not enough on its own to decide direction.';
+      if (phase.includes('both sensor pairs active')) {
+        return 'Both sensor pairs currently see an object. This is expected mid-pass, but it is not enough on its own to decide direction.';
       }
       if (phase.includes('settling')) {
         return 'A recent event finished and the counter is pausing briefly before accepting the next one.';
@@ -975,7 +975,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
       if (phase.includes('clear')) {
         return 'The counter is waiting for the doorway to become empty again before treating a new sequence as valid.';
       }
-      return 'The counter is ready. A clean pass should activate one row first, then the other, and then clear again.';
+      return 'The counter is ready. A clean pass should activate one sensor pair first, then the other, and then clear again.';
     }
 
     function readyCopy(state) {
@@ -1006,7 +1006,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
 
     function renderState(state) {
       pageTitle.textContent = state.title || 'Roode Overdoor';
-      pageSubtitle.textContent = state.subtitle || 'Visual verification for the four working doorway sensors.';
+      pageSubtitle.textContent = state.subtitle || 'Visual verification for the four working doorway sensors and the two sensor pairs.';
       counterLabel.textContent = state.label || 'Doorway Counter';
 
       document.getElementById('ready-value').textContent = state.ready ? 'Ready' : 'Calibrating';
@@ -1029,7 +1029,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
       document.getElementById('row-a-distance').textContent = formatMm(state.row_a_distance);
       document.getElementById('row-a-baseline').textContent = formatMm(state.row_a_baseline);
       document.getElementById('row-a-drop').textContent = formatMm(state.row_a_drop);
-      document.getElementById('row-a-copy').textContent = rowStatusCopy(state.row_a_active, 'Row A');
+      document.getElementById('row-a-copy').textContent = rowStatusCopy(state.row_a_active, 'Pair U3/U4');
 
       const rowBBadge = document.getElementById('row-b-badge');
       rowBBadge.className = `row-badge ${state.row_b_active ? 'active' : ''}`;
@@ -1037,7 +1037,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
       document.getElementById('row-b-distance').textContent = formatMm(state.row_b_distance);
       document.getElementById('row-b-baseline').textContent = formatMm(state.row_b_baseline);
       document.getElementById('row-b-drop').textContent = formatMm(state.row_b_drop);
-      document.getElementById('row-b-copy').textContent = rowStatusCopy(state.row_b_active, 'Row B');
+      document.getElementById('row-b-copy').textContent = rowStatusCopy(state.row_b_active, 'Pair U7/U8');
 
       document.getElementById('discovery-map').textContent = state.discovery_map || 'No discovery data';
       document.getElementById('timing-copy').textContent =
@@ -1057,7 +1057,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
             <span>Baseline ${formatMm(sensor.baseline)}</span>
           </div>
           <div class="bar"><span style="width:${barWidth(sensor.distance)}"></span></div>
-          <p class="sensor-copy">Drop from baseline: ${formatMm(sensor.drop)}. ${sensor.active ? 'This sensor currently contributes to an active row.' : 'This sensor currently sees a clear doorway.'}</p>
+          <p class="sensor-copy">Drop from baseline: ${formatMm(sensor.drop)}. ${sensor.active ? 'This sensor currently contributes to an active sensor pair.' : 'This sensor currently sees a clear doorway.'}</p>
         </article>
       `).join('');
     }
@@ -1202,7 +1202,7 @@ class TofOverdoorUi::Handler : public AsyncWebHandler {
     auto *counter = this->parent_->counter_;
     auto json = json::build_json([this, counter](JsonObject root) {
       root["title"] = this->parent_->title_.empty() ? App.get_friendly_name() : this->parent_->title_;
-      root["subtitle"] = "A clearer live view of the four working doorway sensors, the two logical rows, and the counting state machine.";
+      root["subtitle"] = "A clearer live view of the four working doorway sensors, the two sensor pairs, and the counting state machine.";
       root["label"] = this->parent_->label_.empty() ? "Doorway Counter" : this->parent_->label_;
       root["connection_text"] = "Connected to device";
       root["ready"] = counter->get_ready_state() > 0.5f;
