@@ -58,7 +58,7 @@ class TofOverdoorCounter : public PollingComponent {
   };
 
   struct PersistedState {
-    uint8_t version{2};
+    uint8_t version{3};
     int32_t people_inside{0};
     uint32_t confirmed_in{0};
     uint32_t confirmed_out{0};

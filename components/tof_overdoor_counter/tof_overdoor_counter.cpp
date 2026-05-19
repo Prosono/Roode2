@@ -9,7 +9,7 @@ namespace tof_overdoor_counter {
 namespace {
 
 static const char *const TAG = "tof_overdoor_counter";
-constexpr uint8_t PERSISTED_STATE_VERSION = 2;
+constexpr uint8_t PERSISTED_STATE_VERSION = 3;
 constexpr uint32_t STALE_READING_MS = 450;
 constexpr uint32_t CALIBRATION_CLEAR_SETTLE_MS = 120;
 constexpr float FILTER_ALPHA = 0.42f;
@@ -66,6 +66,14 @@ uint8_t popcount_u8(uint8_t value) {
 
 float clampf(float value, float min_value, float max_value) {
   return std::max(min_value, std::min(value, max_value));
+}
+
+template<typename T>
+T sanitize_persisted(T value, T min_value, T max_value, T fallback) {
+  if (value < min_value || value > max_value) {
+    return fallback;
+  }
+  return value;
 }
 
 uint8_t clamp_quality(float value) {
@@ -435,20 +443,24 @@ void TofOverdoorCounter::load_persisted_state_() {
   this->confirmed_out_count_ = state.confirmed_out;
   this->unsure_in_count_ = state.unsure_in;
   this->unsure_out_count_ = state.unsure_out;
-  this->trigger_threshold_mm_ = state.trigger_threshold_mm;
-  this->clear_threshold_mm_ = state.clear_threshold_mm;
-  this->baseline_tolerance_mm_ = state.baseline_tolerance_mm;
-  this->minimum_clear_distance_mm_ = state.minimum_clear_distance_mm;
-  this->debounce_ms_ = state.debounce_ms;
-  this->detection_timeout_ms_ = state.detection_timeout_ms;
-  this->cooldown_ms_ = state.cooldown_ms;
-  this->blocked_timeout_ms_ = state.blocked_timeout_ms;
-  this->standing_timeout_ms_ = state.standing_timeout_ms;
-  this->calibration_samples_ = state.calibration_samples;
-  this->max_people_inside_ = state.max_people_inside;
-  this->min_valid_sensors_ = state.min_valid_sensors;
+  this->trigger_threshold_mm_ = sanitize_persisted<uint16_t>(state.trigger_threshold_mm, 40, 3000, 320);
+  this->clear_threshold_mm_ = sanitize_persisted<uint16_t>(state.clear_threshold_mm, 20, 2500, 180);
+  this->baseline_tolerance_mm_ = sanitize_persisted<uint16_t>(state.baseline_tolerance_mm, 10, 500, 80);
+  this->minimum_clear_distance_mm_ = sanitize_persisted<uint16_t>(state.minimum_clear_distance_mm, 100, 4000, 600);
+  this->debounce_ms_ = sanitize_persisted<uint16_t>(state.debounce_ms, 5, 5000, 45);
+  this->detection_timeout_ms_ = sanitize_persisted<uint16_t>(state.detection_timeout_ms, 200, 20000, 1600);
+  this->cooldown_ms_ = sanitize_persisted<uint16_t>(state.cooldown_ms, 0, 20000, 500);
+  this->blocked_timeout_ms_ = sanitize_persisted<uint16_t>(state.blocked_timeout_ms, 200, 60000, 1800);
+  this->standing_timeout_ms_ = sanitize_persisted<uint16_t>(state.standing_timeout_ms, 200, 60000, 2200);
+  this->calibration_samples_ = sanitize_persisted<uint16_t>(state.calibration_samples, 4, 128, 24);
+  this->max_people_inside_ = sanitize_persisted<uint16_t>(state.max_people_inside, 1, 5000, 50);
+  this->min_valid_sensors_ = sanitize_persisted<uint8_t>(state.min_valid_sensors, 2, SENSOR_COUNT, 3);
   this->auto_save_enabled_ = state.auto_save_enabled != 0;
   this->invert_direction_ = state.invert_direction != 0;
+
+  if (this->clear_threshold_mm_ >= this->trigger_threshold_mm_) {
+    this->clear_threshold_mm_ = std::max<uint16_t>(20, this->trigger_threshold_mm_ / 2);
+  }
 
   for (size_t index = 0; index < this->channels_.size() && index < SENSOR_COUNT; index++) {
     this->restore_persisted_calibration_(this->channels_[index], index, state.calibrations[index]);
