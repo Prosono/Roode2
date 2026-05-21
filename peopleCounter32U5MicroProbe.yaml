@@ -1,0 +1,220 @@
+substitutions:
+  devicename: roode-u5-micro-probe
+  friendly_name: Roode U5 Micro Probe
+
+external_components:
+  refresh: always
+  source: components
+
+esphome:
+  name: ${devicename}
+  friendly_name: ${friendly_name}
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+logger:
+  level: DEBUG
+
+api:
+  reboot_timeout: 60min
+
+ota:
+  - platform: esphome
+    password: !secret roode_ota_password
+
+wifi:
+  ssid: !secret roode_wifi_ssid
+  password: !secret roode_wifi_password
+  use_address: 10.0.0.100
+  manual_ip:
+    static_ip: 10.0.0.100
+    gateway: 10.0.0.1
+    subnet: 255.255.255.0
+  domain: .local
+  power_save_mode: none
+  ap:
+    ssid: "Roode U5 Probe"
+    password: !secret roode_fallback_ap_password
+
+captive_portal:
+
+web_server:
+  port: 80
+  version: 3
+  auth:
+    username: !secret roode_web_username
+    password: !secret roode_web_password
+  sorting_groups:
+    - id: web_group_overview
+      name: Overview
+      sorting_weight: 10
+    - id: web_group_controls
+      name: Controls
+      sorting_weight: 20
+    - id: web_group_probe
+      name: Probe Result
+      sorting_weight: 30
+
+tof_array_test:
+  id: u5_probe
+  sda: 21
+  scl: 22
+  frequency: 100kHz
+  timeout: 1500ms
+  wake_delay: 80ms
+  post_address_delay: 120ms
+  distance_mode: long
+  probe_mode: micro_probe
+  timing_budget: 33ms
+  intermeasurement_period: 37ms
+  init_retries: 1
+  update_interval: 500ms
+  base_address: 0x30
+  roi:
+    width: 16
+    height: 16
+    center: 199
+  xshut_pins:
+    - GPIO18
+
+button:
+  - platform: restart
+    name: ${friendly_name} Restart
+    entity_category: config
+    web_server:
+      sorting_group_id: web_group_controls
+      sorting_weight: 20
+
+  - platform: template
+    name: ${friendly_name} Run Probe Again
+    entity_category: config
+    web_server:
+      sorting_group_id: web_group_controls
+      sorting_weight: 10
+    on_press:
+      - lambda: |-
+          id(u5_probe).rediscover();
+
+binary_sensor:
+  - platform: status
+    name: ${friendly_name} Device Status
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_overview
+      sorting_weight: 10
+
+sensor:
+  - platform: template
+    name: ${friendly_name} Discovered Sensors
+    unit_of_measurement: sensors
+    accuracy_decimals: 0
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_overview
+      sorting_weight: 20
+    lambda: |-
+      return id(u5_probe).get_discovered_sensor_count();
+
+text_sensor:
+  - platform: template
+    name: ${friendly_name} Summary
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_overview
+      sorting_weight: 30
+    lambda: |-
+      return {id(u5_probe).get_summary()};
+
+  - platform: template
+    name: ${friendly_name} Candidate Trace
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_overview
+      sorting_weight: 40
+    lambda: |-
+      return {id(u5_probe).get_candidate_trace()};
+
+  - platform: template
+    name: ${friendly_name} Discovery Map
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_overview
+      sorting_weight: 50
+    lambda: |-
+      return {id(u5_probe).get_discovery_map()};
+
+  - platform: template
+    name: ${friendly_name} U5 Status
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_probe
+      sorting_weight: 10
+    lambda: |-
+      return {id(u5_probe).get_status_text(0)};
+
+  - platform: template
+    name: ${friendly_name} U5 Source
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_probe
+      sorting_weight: 20
+    lambda: |-
+      return {id(u5_probe).get_source_label(0)};
+
+  - platform: template
+    name: ${friendly_name} U5 Address
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_probe
+      sorting_weight: 30
+    lambda: |-
+      return {id(u5_probe).get_address_hex(0)};
+
+  - platform: template
+    name: ${friendly_name} U5 Sensor ID
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_probe
+      sorting_weight: 40
+    lambda: |-
+      return {id(u5_probe).get_sensor_id_hex(0)};
+
+  - platform: template
+    name: ${friendly_name} U5 Firmware State
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_probe
+      sorting_weight: 50
+    lambda: |-
+      return {id(u5_probe).get_boot_state_hex(0)};
+
+  - platform: template
+    name: ${friendly_name} U5 Address Register
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_probe
+      sorting_weight: 60
+    lambda: |-
+      return {id(u5_probe).get_address_register_hex(0)};
+
+  - platform: template
+    name: ${friendly_name} U5 Last Stage
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_probe
+      sorting_weight: 70
+    lambda: |-
+      return {id(u5_probe).get_last_stage(0)};

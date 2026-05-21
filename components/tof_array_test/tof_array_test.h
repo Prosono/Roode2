@@ -19,6 +19,11 @@ enum SensorDistanceMode : uint8_t {
   DISTANCE_MODE_LONG = 1,
 };
 
+enum SensorProbeMode : uint8_t {
+  PROBE_MODE_FULL_INIT = 0,
+  PROBE_MODE_MICRO_PROBE = 1,
+};
+
 struct TestROI {
   uint8_t width;
   uint8_t height;
@@ -40,6 +45,7 @@ class TofArrayTest : public PollingComponent {
   void set_wake_delay_ms(uint32_t wake_delay_ms) { this->wake_delay_ms_ = wake_delay_ms; }
   void set_post_address_delay_ms(uint32_t post_address_delay_ms) { this->post_address_delay_ms_ = post_address_delay_ms; }
   void set_distance_mode(SensorDistanceMode distance_mode) { this->distance_mode_ = distance_mode; }
+  void set_probe_mode(SensorProbeMode probe_mode) { this->probe_mode_ = probe_mode; }
   void set_timing_budget_ms(uint16_t timing_budget_ms) { this->timing_budget_ms_ = timing_budget_ms; }
   void set_intermeasurement_ms(uint16_t intermeasurement_ms) { this->intermeasurement_ms_ = intermeasurement_ms; }
   void set_init_retries(uint8_t init_retries) { this->init_retries_ = init_retries; }
@@ -66,6 +72,10 @@ class TofArrayTest : public PollingComponent {
   std::string get_summary() const;
   std::string get_discovery_map() const;
   std::string get_candidate_trace() const;
+  std::string get_sensor_id_hex(size_t index) const;
+  std::string get_boot_state_hex(size_t index) const;
+  std::string get_address_register_hex(size_t index) const;
+  std::string get_last_stage(size_t index) const;
 
  protected:
   struct Channel {
@@ -75,6 +85,7 @@ class TofArrayTest : public PollingComponent {
     bool initialized{false};
     bool ranging_started{false};
     bool has_reading{false};
+    bool micro_probe_ok{false};
     bool default_timing_fallback{false};
     uint16_t last_distance{0};
     uint16_t sensor_id{0};
@@ -101,6 +112,7 @@ class TofArrayTest : public PollingComponent {
   uint32_t wake_delay_ms_{20};
   uint32_t post_address_delay_ms_{30};
   SensorDistanceMode distance_mode_{DISTANCE_MODE_LONG};
+  SensorProbeMode probe_mode_{PROBE_MODE_FULL_INIT};
   uint16_t timing_budget_ms_{33};
   uint16_t intermeasurement_ms_{33};
   uint8_t init_retries_{2};
@@ -119,9 +131,13 @@ class TofArrayTest : public PollingComponent {
   bool wait_for_boot_(VL53L1X_ULD &sensor);
   bool set_temp_address_(VL53L1X_ULD &sensor, uint8_t address);
   bool write_register_address_(uint8_t address, uint16_t register_address, uint8_t *wire_rc = nullptr);
+  bool write_register8_(uint8_t address, uint16_t register_address, uint8_t value, uint8_t *wire_rc = nullptr);
   bool read_register8_(uint8_t address, uint16_t register_address, uint8_t &value, uint8_t *wire_rc = nullptr);
   bool read_register16_(uint8_t address, uint16_t register_address, uint16_t &value, uint8_t *wire_rc = nullptr);
   bool capture_identity_(Channel &channel);
+  bool probe_register_roundtrip_(Channel &channel, uint16_t register_address, const char *label);
+  bool run_micro_probe_(Channel &channel);
+  int safe_sensor_init_(Channel &channel);
   bool configure_sensor_(Channel &channel);
   bool start_all_ranging_();
   bool read_channel_(Channel &channel);

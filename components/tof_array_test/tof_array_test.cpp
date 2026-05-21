@@ -8,6 +8,14 @@ namespace esphome {
 namespace tof_array_test {
 
 static const char *const TAG = "tof_array_test";
+static const uint8_t VL53L1X_DEFAULT_CONFIGURATION_SAFE[] = {
+    0x00, 0x00, 0x00, 0x01, 0x02, 0x00, 0x02, 0x08, 0x00, 0x08, 0x10, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0xff,
+    0x00, 0x0F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20, 0x0b, 0x00, 0x00, 0x02, 0x0a, 0x21, 0x00, 0x00, 0x05, 0x00,
+    0x00, 0x00, 0x00, 0xc8, 0x00, 0x00, 0x38, 0xff, 0x01, 0x00, 0x08, 0x00, 0x00, 0x01, 0xcc, 0x0f, 0x01, 0xf1,
+    0x0d, 0x01, 0x68, 0x00, 0x80, 0x08, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x0f, 0x89, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x01, 0x0f, 0x0d, 0x0e, 0x0e, 0x00, 0x00, 0x02, 0xc7, 0xff, 0x9B, 0x00, 0x00, 0x00, 0x01, 0x00,
+    0x00,
+};
 
 void TofArrayTest::set_roi(uint8_t width, uint8_t height, uint8_t center) {
   this->roi_.width = width;
@@ -25,6 +33,10 @@ void TofArrayTest::setup() {
 }
 
 void TofArrayTest::update() {
+  if (this->probe_mode_ == PROBE_MODE_MICRO_PROBE) {
+    return;
+  }
+
   if (this->channels_.empty()) {
     ESP_LOGW(TAG, "No active ToF sensors discovered yet");
     return;
@@ -59,6 +71,7 @@ void TofArrayTest::dump_config() {
   ESP_LOGCONFIG(TAG, "  Wake Delay: %u ms", this->wake_delay_ms_);
   ESP_LOGCONFIG(TAG, "  Post-Address Delay: %u ms", this->post_address_delay_ms_);
   ESP_LOGCONFIG(TAG, "  Distance Mode: %s", this->distance_mode_ == DISTANCE_MODE_SHORT ? "short" : "long");
+  ESP_LOGCONFIG(TAG, "  Probe Mode: %s", this->probe_mode_ == PROBE_MODE_MICRO_PROBE ? "micro_probe" : "full_init");
   ESP_LOGCONFIG(TAG, "  Timing Budget: %u ms", this->timing_budget_ms_);
   ESP_LOGCONFIG(TAG, "  Intermeasurement: %u ms", this->intermeasurement_ms_);
   ESP_LOGCONFIG(TAG, "  Init Retries: %u", this->init_retries_);
@@ -173,6 +186,18 @@ bool TofArrayTest::write_register_address_(uint8_t address, uint16_t register_ad
   return rc == 0;
 }
 
+bool TofArrayTest::write_register8_(uint8_t address, uint16_t register_address, uint8_t value, uint8_t *wire_rc) {
+  Wire.beginTransmission(address);
+  Wire.write(static_cast<uint8_t>(register_address >> 8));
+  Wire.write(static_cast<uint8_t>(register_address & 0xFF));
+  Wire.write(value);
+  const uint8_t rc = Wire.endTransmission();
+  if (wire_rc != nullptr) {
+    *wire_rc = rc;
+  }
+  return rc == 0;
+}
+
 bool TofArrayTest::read_register8_(uint8_t address, uint16_t register_address, uint8_t &value, uint8_t *wire_rc) {
   uint8_t rc = 0;
   if (!this->write_register_address_(address, register_address, &rc)) {
@@ -258,15 +283,200 @@ bool TofArrayTest::capture_identity_(Channel &channel) {
   return true;
 }
 
+bool TofArrayTest::probe_register_roundtrip_(Channel &channel, uint16_t register_address, const char *label) {
+  uint8_t before = 0;
+  uint8_t wire_rc = 0;
+  channel.last_stage = std::string("probe_read_") + label;
+  if (!this->read_register8_(channel.address, register_address, before, &wire_rc)) {
+    ESP_LOGW(TAG, "Probe read failed for %s at reg 0x%04X (%s, wire_rc=%u)", channel.source_label.c_str(),
+             register_address, label, wire_rc);
+    channel.last_error = VL53L1_ERROR_CONTROL_INTERFACE;
+    return false;
+  }
+
+  channel.last_stage = std::string("probe_write_") + label;
+  if (!this->write_register8_(channel.address, register_address, before, &wire_rc)) {
+    ESP_LOGW(TAG, "Probe write failed for %s at reg 0x%04X (%s, wire_rc=%u)", channel.source_label.c_str(),
+             register_address, label, wire_rc);
+    channel.last_error = VL53L1_ERROR_CONTROL_INTERFACE;
+    return false;
+  }
+
+  uint8_t after = 0;
+  channel.last_stage = std::string("probe_verify_") + label;
+  if (!this->read_register8_(channel.address, register_address, after, &wire_rc)) {
+    ESP_LOGW(TAG, "Probe verify read failed for %s at reg 0x%04X (%s, wire_rc=%u)", channel.source_label.c_str(),
+             register_address, label, wire_rc);
+    channel.last_error = VL53L1_ERROR_CONTROL_INTERFACE;
+    return false;
+  }
+
+  if (after != before) {
+    ESP_LOGW(TAG,
+             "Probe verify mismatch for %s at reg 0x%04X (%s): wrote/read 0x%02X but got 0x%02X",
+             channel.source_label.c_str(), register_address, label, before, after);
+    channel.last_error = VL53L1_ERROR_CONTROL_INTERFACE;
+    return false;
+  }
+
+  ESP_LOGD(TAG, "Probe roundtrip OK for %s at reg 0x%04X (%s) value=0x%02X", channel.source_label.c_str(),
+           register_address, label, before);
+  return true;
+}
+
+bool TofArrayTest::run_micro_probe_(Channel &channel) {
+  channel.micro_probe_ok = false;
+  channel.last_error = 0;
+  channel.last_stage = "probe_identity";
+  if (!this->capture_identity_(channel)) {
+    channel.last_error = VL53L1_ERROR_CONTROL_INTERFACE;
+    return false;
+  }
+
+  if (!this->probe_register_roundtrip_(channel, VL53L1_VHV_CONFIG__TIMEOUT_MACROP_LOOP_BOUND, "vhv_timeout")) {
+    return false;
+  }
+
+  if (!this->probe_register_roundtrip_(channel, PHASECAL_CONFIG__TIMEOUT_MACROP, "phasecal_timeout")) {
+    return false;
+  }
+
+  uint8_t wire_rc = 0;
+  channel.last_stage = "probe_write_mode_stop";
+  if (!this->write_register8_(channel.address, SYSTEM__MODE_START, 0x00, &wire_rc)) {
+    ESP_LOGW(TAG, "Probe stop write failed for %s (wire_rc=%u)", channel.source_label.c_str(), wire_rc);
+    channel.last_error = VL53L1_ERROR_CONTROL_INTERFACE;
+    return false;
+  }
+
+  channel.last_stage = "probe_write_mode_start";
+  if (!this->write_register8_(channel.address, SYSTEM__MODE_START, 0x40, &wire_rc)) {
+    ESP_LOGW(TAG, "Probe start write failed for %s (wire_rc=%u)", channel.source_label.c_str(), wire_rc);
+    channel.last_error = VL53L1_ERROR_CONTROL_INTERFACE;
+    return false;
+  }
+
+  delay(5);
+  App.feed_wdt();
+
+  uint8_t gpio_status = 0;
+  channel.last_stage = "probe_gpio_status_after_start";
+  if (!this->read_register8_(channel.address, GPIO__TIO_HV_STATUS, gpio_status, &wire_rc)) {
+    ESP_LOGW(TAG, "Probe GPIO status read failed after start for %s (wire_rc=%u)", channel.source_label.c_str(),
+             wire_rc);
+    channel.last_error = VL53L1_ERROR_CONTROL_INTERFACE;
+    return false;
+  }
+
+  channel.last_stage = "probe_write_mode_stop_after_start";
+  if (!this->write_register8_(channel.address, SYSTEM__MODE_START, 0x00, &wire_rc)) {
+    ESP_LOGW(TAG, "Probe stop-after-start write failed for %s (wire_rc=%u)", channel.source_label.c_str(), wire_rc);
+    channel.last_error = VL53L1_ERROR_CONTROL_INTERFACE;
+    return false;
+  }
+
+  channel.initialized = true;
+  channel.micro_probe_ok = true;
+  channel.ranging_started = false;
+  channel.last_stage = "micro_probe_ok";
+  channel.last_error = 0;
+  ESP_LOGI(TAG, "Micro probe completed for %s at 0x%02X (gpio_status=0x%02X)", channel.source_label.c_str(),
+           channel.address, gpio_status);
+  return true;
+}
+
+int TofArrayTest::safe_sensor_init_(Channel &channel) {
+  channel.last_stage = "init_write_defaults";
+  for (uint16_t reg = 0x2D; reg <= 0x87; reg++) {
+    uint8_t rc = 0;
+    if (!this->write_register8_(channel.address, reg, VL53L1X_DEFAULT_CONFIGURATION_SAFE[reg - 0x2D], &rc)) {
+      ESP_LOGW(TAG, "Default config write failed for %s at reg 0x%04X (wire_rc=%u)", channel.source_label.c_str(),
+               reg, rc);
+      return VL53L1_ERROR_CONTROL_INTERFACE;
+    }
+  }
+
+  channel.last_stage = "init_start_ranging";
+  uint8_t rc = 0;
+  if (!this->write_register8_(channel.address, SYSTEM__MODE_START, 0x40, &rc)) {
+    ESP_LOGW(TAG, "Start ranging write failed for %s at 0x%02X (wire_rc=%u)", channel.source_label.c_str(),
+             channel.address, rc);
+    return VL53L1_ERROR_CONTROL_INTERFACE;
+  }
+  auto status = VL53L1_ERROR_NONE;
+
+  channel.last_stage = "init_wait_data_ready";
+  uint8_t ready = 0;
+  uint8_t gpio_status = 0;
+  const uint32_t started = millis();
+  while ((millis() - started) < this->timeout_ms_) {
+    uint8_t rc = 0;
+    if (!this->read_register8_(channel.address, GPIO__TIO_HV_STATUS, gpio_status, &rc)) {
+      ESP_LOGV(TAG, "Data-ready poll read failed for %s at 0x%02X (wire_rc=%u)", channel.source_label.c_str(),
+               channel.address, rc);
+      delay(1);
+      App.feed_wdt();
+      continue;
+    }
+    ready = (gpio_status & 0x01) ? 1 : 0;
+    if (ready != 0) {
+      break;
+    }
+    delay(1);
+    App.feed_wdt();
+  }
+
+  channel.last_stage = "init_clear_interrupt";
+  if (ready) {
+    uint8_t rc = 0;
+    if (!this->write_register8_(channel.address, SYSTEM__INTERRUPT_CLEAR, 0x01, &rc)) {
+      ESP_LOGW(TAG, "Interrupt clear failed for %s at 0x%02X (wire_rc=%u)", channel.source_label.c_str(),
+               channel.address, rc);
+      this->write_register8_(channel.address, SYSTEM__MODE_START, 0x00, nullptr);
+      return VL53L1_ERROR_CONTROL_INTERFACE;
+    }
+  } else {
+    ESP_LOGW(TAG,
+             "Init validation did not complete cleanly for %s at 0x%02X (gpio_status=0x%02X, ready=%u). Continuing "
+             "with best-effort init.",
+             channel.source_label.c_str(), channel.address, gpio_status, ready);
+  }
+
+  channel.last_stage = "init_stop_ranging";
+  if (!this->write_register8_(channel.address, SYSTEM__MODE_START, 0x00, &rc) && status == VL53L1_ERROR_NONE) {
+    ESP_LOGW(TAG, "Stop ranging write failed for %s at 0x%02X (wire_rc=%u)", channel.source_label.c_str(),
+             channel.address, rc);
+    status = VL53L1_ERROR_CONTROL_INTERFACE;
+  }
+
+  channel.last_stage = "init_finalize";
+  rc = 0;
+  if (!this->write_register8_(channel.address, VL53L1_VHV_CONFIG__TIMEOUT_MACROP_LOOP_BOUND, 0x09, &rc)) {
+    ESP_LOGW(TAG, "Finalize write 0x0008 failed for %s (wire_rc=%u)", channel.source_label.c_str(), rc);
+    return VL53L1_ERROR_CONTROL_INTERFACE;
+  }
+  if (!this->write_register8_(channel.address, 0x000B, 0x00, &rc)) {
+    ESP_LOGW(TAG, "Finalize write 0x000B failed for %s (wire_rc=%u)", channel.source_label.c_str(), rc);
+    return VL53L1_ERROR_CONTROL_INTERFACE;
+  }
+
+  return status;
+}
+
 bool TofArrayTest::configure_sensor_(Channel &channel) {
   auto &sensor = *channel.sensor;
   channel.default_timing_fallback = false;
+  channel.micro_probe_ok = false;
   channel.last_stage = "boot_wait";
   if (!this->wait_for_boot_(sensor)) {
     channel.last_error = VL53L1_ERROR_TIME_OUT;
     return false;
   }
   this->capture_identity_(channel);
+
+  if (this->probe_mode_ == PROBE_MODE_MICRO_PROBE) {
+    return this->run_micro_probe_(channel);
+  }
 
   VL53L1_Error status = VL53L1_ERROR_NONE;
   const uint8_t retries = std::max<uint8_t>(1, this->init_retries_);
@@ -282,7 +492,7 @@ bool TofArrayTest::configure_sensor_(Channel &channel) {
     }
 
     channel.last_stage = "init";
-    status = sensor.Init();
+    status = this->safe_sensor_init_(channel);
     if (status == VL53L1_ERROR_NONE) {
       break;
     }
@@ -376,6 +586,11 @@ bool TofArrayTest::configure_sensor_(Channel &channel) {
 }
 
 bool TofArrayTest::start_all_ranging_() {
+  if (this->probe_mode_ == PROBE_MODE_MICRO_PROBE) {
+    ESP_LOGI(TAG, "Probe mode is micro_probe; skipping continuous ranging start");
+    return !this->channels_.empty();
+  }
+
   uint8_t started_count = 0;
 
   for (auto &channel : this->channels_) {
@@ -555,6 +770,9 @@ void TofArrayTest::rediscover() {
       snprintf(addr, sizeof(addr), "0x%02X", channel.address);
       snprintf(id, sizeof(id), "0x%04X", channel.sensor_id);
       std::string trace = label + ": OK -> " + std::string(addr) + " id " + id;
+      if (channel.micro_probe_ok) {
+        trace += " micro_probe";
+      }
       if (channel.default_timing_fallback) {
         trace += " (default timing)";
       }
@@ -578,7 +796,11 @@ void TofArrayTest::rediscover() {
     this->recover_wire_();
   }
 
-  this->start_all_ranging_();
+  if (this->probe_mode_ == PROBE_MODE_FULL_INIT) {
+    this->start_all_ranging_();
+  } else {
+    ESP_LOGI(TAG, "Micro probe discovery complete; no ranging start requested");
+  }
   this->last_discovery_ms_ = millis();
   ESP_LOGI(TAG, "Discovery complete: %u sensors active", static_cast<unsigned>(this->channels_.size()));
 }
@@ -666,6 +888,9 @@ std::string TofArrayTest::status_text_for_(const Channel &channel) const {
   if (!channel.initialized) {
     return "Init failed";
   }
+  if (channel.micro_probe_ok) {
+    return "Micro probe OK";
+  }
   if (channel.last_error != 0) {
     return "Read error " + std::to_string(channel.last_error);
   }
@@ -722,6 +947,14 @@ std::string TofArrayTest::get_source_label(size_t index) const {
 
 std::string TofArrayTest::get_summary() const {
   std::ostringstream oss;
+  if (this->probe_mode_ == PROBE_MODE_MICRO_PROBE) {
+    oss << this->channels_.size() << "/" << this->xshut_pins_.size() << " sensors passed micro probe";
+    if (!this->channels_.empty()) {
+      oss << ", last stage " << this->channels_.front().last_stage;
+    }
+    return oss.str();
+  }
+
   oss << this->channels_.size() << "/" << this->xshut_pins_.size()
       << " sensors discovered, cycle " << this->cycle_duration_ms_ << " ms";
   const auto skew = this->get_update_skew_ms();
@@ -763,6 +996,40 @@ std::string TofArrayTest::get_candidate_trace() const {
     oss << this->candidate_trace_[i];
   }
   return oss.str();
+}
+
+std::string TofArrayTest::get_sensor_id_hex(size_t index) const {
+  if (index >= this->channels_.size()) {
+    return "N/A";
+  }
+  char buffer[12];
+  snprintf(buffer, sizeof(buffer), "0x%04X", this->channels_[index].sensor_id);
+  return {buffer};
+}
+
+std::string TofArrayTest::get_boot_state_hex(size_t index) const {
+  if (index >= this->channels_.size()) {
+    return "N/A";
+  }
+  char buffer[8];
+  snprintf(buffer, sizeof(buffer), "0x%02X", this->channels_[index].boot_state);
+  return {buffer};
+}
+
+std::string TofArrayTest::get_address_register_hex(size_t index) const {
+  if (index >= this->channels_.size()) {
+    return "N/A";
+  }
+  char buffer[8];
+  snprintf(buffer, sizeof(buffer), "0x%02X", this->channels_[index].address_register);
+  return {buffer};
+}
+
+std::string TofArrayTest::get_last_stage(size_t index) const {
+  if (index >= this->channels_.size()) {
+    return "N/A";
+  }
+  return this->channels_[index].last_stage;
 }
 
 }  // namespace tof_array_test

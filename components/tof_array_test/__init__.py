@@ -8,6 +8,7 @@ AUTO_LOAD = ["sensor", "text_sensor", "button"]
 tof_array_test_ns = cg.esphome_ns.namespace("tof_array_test")
 TofArrayTest = tof_array_test_ns.class_("TofArrayTest", cg.PollingComponent)
 SensorDistanceMode = tof_array_test_ns.enum("SensorDistanceMode")
+SensorProbeMode = tof_array_test_ns.enum("SensorProbeMode")
 
 CONF_BASE_ADDRESS = "base_address"
 CONF_CENTER = "center"
@@ -16,6 +17,7 @@ CONF_HEIGHT = "height"
 CONF_INIT_RETRIES = "init_retries"
 CONF_INTERMEASUREMENT_PERIOD = "intermeasurement_period"
 CONF_POST_ADDRESS_DELAY = "post_address_delay"
+CONF_PROBE_MODE = "probe_mode"
 CONF_ROI = "roi"
 CONF_TIMING_BUDGET = "timing_budget"
 CONF_WAKE_DELAY = "wake_delay"
@@ -27,6 +29,13 @@ DISTANCE_MODE_LONG = "long"
 DISTANCE_MODES = {
     DISTANCE_MODE_SHORT: SensorDistanceMode.DISTANCE_MODE_SHORT,
     DISTANCE_MODE_LONG: SensorDistanceMode.DISTANCE_MODE_LONG,
+}
+
+PROBE_MODE_FULL_INIT = "full_init"
+PROBE_MODE_MICRO_PROBE = "micro_probe"
+PROBE_MODES = {
+    PROBE_MODE_FULL_INIT: SensorProbeMode.PROBE_MODE_FULL_INIT,
+    PROBE_MODE_MICRO_PROBE: SensorProbeMode.PROBE_MODE_MICRO_PROBE,
 }
 
 
@@ -46,6 +55,7 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_WAKE_DELAY, default="20ms"): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_POST_ADDRESS_DELAY, default="30ms"): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_DISTANCE_MODE, default=DISTANCE_MODE_LONG): cv.enum(DISTANCE_MODES, lower=True),
+            cv.Optional(CONF_PROBE_MODE, default=PROBE_MODE_FULL_INIT): cv.enum(PROBE_MODES, lower=True),
             cv.Optional(CONF_TIMING_BUDGET, default="33ms"): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_INTERMEASUREMENT_PERIOD, default="37ms"): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_INIT_RETRIES, default=3): cv.int_range(min=1, max=5),
@@ -78,6 +88,7 @@ async def to_code(config):
     cg.add(var.set_wake_delay_ms(config[CONF_WAKE_DELAY]))
     cg.add(var.set_post_address_delay_ms(config[CONF_POST_ADDRESS_DELAY]))
     cg.add(var.set_distance_mode(config[CONF_DISTANCE_MODE]))
+    cg.add(var.set_probe_mode(config[CONF_PROBE_MODE]))
     cg.add(var.set_timing_budget_ms(config[CONF_TIMING_BUDGET]))
     cg.add(var.set_intermeasurement_ms(config[CONF_INTERMEASUREMENT_PERIOD]))
     cg.add(var.set_init_retries(config[CONF_INIT_RETRIES]))
