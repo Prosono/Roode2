@@ -990,6 +990,7 @@ void TofOverdoorCounter::clear_event_tracking_() {
   this->event_active_ = false;
   this->event_started_ms_ = 0;
   this->event_last_activity_ms_ = 0;
+  this->standing_clear_since_ms_ = 0;
   this->event_first_group_ = GROUP_NONE;
   this->event_second_group_ = GROUP_NONE;
   this->event_sensor_mask_ = 0;
@@ -1144,9 +1145,32 @@ void TofOverdoorCounter::update_detection_state_machine_() {
   const uint8_t active_out = this->active_sensor_count_for_group_(GROUP_OUT);
   const uint8_t active_in = this->active_sensor_count_for_group_(GROUP_IN);
 
+  if (this->person_standing_in_door_ && this->event_active_) {
+    if (active_count == 0) {
+      if (this->standing_clear_since_ms_ == 0) {
+        this->standing_clear_since_ms_ = now;
+      }
+      const uint32_t clear_ms = now - this->standing_clear_since_ms_;
+      if (clear_ms >= CALIBRATION_CLEAR_SETTLE_MS) {
+        this->last_reason_ = "Doorway cleared after standing event";
+        this->person_standing_in_door_ = false;
+        this->clear_event_tracking_();
+        this->phase_text_ = "Ready";
+      } else {
+        this->phase_text_ = "Waiting for doorway to clear after standing event";
+      }
+      return;
+    }
+
+    this->standing_clear_since_ms_ = 0;
+    this->phase_text_ = "Person standing in doorway";
+    return;
+  }
+
   if (!this->event_active_) {
     if (active_count == 0) {
       this->person_standing_in_door_ = false;
+      this->standing_clear_since_ms_ = 0;
       this->phase_text_ = "Ready";
       return;
     }
@@ -1208,9 +1232,10 @@ void TofOverdoorCounter::update_detection_state_machine_() {
 
   if ((now - this->event_started_ms_) >= this->standing_timeout_ms_) {
     this->person_standing_in_door_ = true;
+    this->standing_clear_since_ms_ = 0;
   }
 
-  if ((now - this->event_started_ms_) >= this->detection_timeout_ms_) {
+  if (!this->person_standing_in_door_ && (now - this->event_started_ms_) >= this->detection_timeout_ms_) {
     this->finalize_event_(true);
     return;
   }

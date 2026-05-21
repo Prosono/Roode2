@@ -275,6 +275,7 @@ class TofOverdoorCounter : public PollingComponent {
   uint32_t event_group_confirmed_ms_[2] = {0, 0};
   uint32_t calibration_started_ms_{0};
   uint32_t calibration_clear_since_ms_{0};
+  uint32_t standing_clear_since_ms_{0};
   uint32_t event_started_ms_{0};
   uint32_t event_last_activity_ms_{0};
   uint32_t cooldown_until_ms_{0};
