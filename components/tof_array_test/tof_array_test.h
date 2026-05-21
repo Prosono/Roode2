@@ -14,6 +14,11 @@
 namespace esphome {
 namespace tof_array_test {
 
+enum SensorDistanceMode : uint8_t {
+  DISTANCE_MODE_SHORT = 0,
+  DISTANCE_MODE_LONG = 1,
+};
+
 struct TestROI {
   uint8_t width;
   uint8_t height;
@@ -34,6 +39,9 @@ class TofArrayTest : public PollingComponent {
   void set_base_address(uint8_t address) { this->base_address_ = address; }
   void set_wake_delay_ms(uint32_t wake_delay_ms) { this->wake_delay_ms_ = wake_delay_ms; }
   void set_post_address_delay_ms(uint32_t post_address_delay_ms) { this->post_address_delay_ms_ = post_address_delay_ms; }
+  void set_distance_mode(SensorDistanceMode distance_mode) { this->distance_mode_ = distance_mode; }
+  void set_timing_budget_ms(uint16_t timing_budget_ms) { this->timing_budget_ms_ = timing_budget_ms; }
+  void set_intermeasurement_ms(uint16_t intermeasurement_ms) { this->intermeasurement_ms_ = intermeasurement_ms; }
   void set_init_retries(uint8_t init_retries) { this->init_retries_ = init_retries; }
   void set_roi(uint8_t width, uint8_t height, uint8_t center);
   void add_xshut_pin(GPIOPin *pin, uint8_t number) {
@@ -65,10 +73,13 @@ class TofArrayTest : public PollingComponent {
     int xshut_index{-1};
     uint8_t address{0};
     bool initialized{false};
+    bool ranging_started{false};
     bool has_reading{false};
     uint16_t last_distance{0};
     int last_error{0};
+    uint8_t consecutive_errors{0};
     uint32_t last_update_ms{0};
+    uint32_t last_good_read_ms{0};
     uint32_t last_read_duration_ms{0};
     std::string source_label;
   };
@@ -84,6 +95,9 @@ class TofArrayTest : public PollingComponent {
   uint8_t base_address_{0x30};
   uint32_t wake_delay_ms_{20};
   uint32_t post_address_delay_ms_{30};
+  SensorDistanceMode distance_mode_{DISTANCE_MODE_LONG};
+  uint16_t timing_budget_ms_{33};
+  uint16_t intermeasurement_ms_{33};
   uint8_t init_retries_{2};
   uint32_t cycle_duration_ms_{0};
   uint32_t last_discovery_ms_{0};
@@ -100,8 +114,11 @@ class TofArrayTest : public PollingComponent {
   bool wait_for_boot_(VL53L1X_ULD &sensor);
   bool set_temp_address_(VL53L1X_ULD &sensor, uint8_t address);
   bool configure_sensor_(Channel &channel);
+  bool start_all_ranging_();
   bool read_channel_(Channel &channel);
+  bool restart_ranging_(Channel &channel);
   std::string status_text_for_(const Channel &channel) const;
+  std::string sensor_label_for_pin_(uint8_t pin_number) const;
 };
 
 }  // namespace tof_array_test

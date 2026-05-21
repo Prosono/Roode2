@@ -31,14 +31,22 @@ void TofArrayTest::update() {
   }
 
   const uint32_t started = millis();
+  bool should_resync = false;
   for (auto &channel : this->channels_) {
     if (!channel.initialized) {
       continue;
     }
-    this->read_channel_(channel);
+    if (!this->read_channel_(channel)) {
+      should_resync = true;
+    }
     App.feed_wdt();
   }
   this->cycle_duration_ms_ = millis() - started;
+
+  if (should_resync) {
+    this->recover_wire_();
+    this->start_all_ranging_();
+  }
 }
 
 void TofArrayTest::dump_config() {
@@ -50,6 +58,9 @@ void TofArrayTest::dump_config() {
   ESP_LOGCONFIG(TAG, "  Base Address: 0x%02X", this->base_address_);
   ESP_LOGCONFIG(TAG, "  Wake Delay: %u ms", this->wake_delay_ms_);
   ESP_LOGCONFIG(TAG, "  Post-Address Delay: %u ms", this->post_address_delay_ms_);
+  ESP_LOGCONFIG(TAG, "  Distance Mode: %s", this->distance_mode_ == DISTANCE_MODE_SHORT ? "short" : "long");
+  ESP_LOGCONFIG(TAG, "  Timing Budget: %u ms", this->timing_budget_ms_);
+  ESP_LOGCONFIG(TAG, "  Intermeasurement: %u ms", this->intermeasurement_ms_);
   ESP_LOGCONFIG(TAG, "  Init Retries: %u", this->init_retries_);
   ESP_LOGCONFIG(TAG, "  ROI: width=%u height=%u center=%u", this->roi_.width, this->roi_.height, this->roi_.center);
   ESP_LOGCONFIG(TAG, "  XSHUT Candidates: %u", static_cast<unsigned>(this->xshut_pins_.size()));
@@ -201,21 +212,27 @@ bool TofArrayTest::configure_sensor_(Channel &channel) {
              status);
     return false;
   }
-  status = sensor.SetDistanceMode(EDistanceMode::Long);
+  const EDistanceMode sensor_distance_mode =
+      this->distance_mode_ == DISTANCE_MODE_SHORT ? EDistanceMode::Short : EDistanceMode::Long;
+  status = sensor.SetDistanceMode(sensor_distance_mode);
   if (status != VL53L1_ERROR_NONE) {
     channel.last_error = status;
     ESP_LOGE(TAG, "SetDistanceMode failed for %s at 0x%02X, error=%d", channel.source_label.c_str(), channel.address,
              status);
     return false;
   }
-  status = sensor.SetTimingBudgetInMs(50);
+  const uint16_t min_timing_budget = this->distance_mode_ == DISTANCE_MODE_SHORT ? 20 : 33;
+  const uint16_t timing_budget_ms = std::max<uint16_t>(this->timing_budget_ms_, min_timing_budget);
+  const uint16_t intermeasurement_ms = std::max<uint16_t>(this->intermeasurement_ms_, timing_budget_ms);
+
+  status = sensor.SetTimingBudgetInMs(timing_budget_ms);
   if (status != VL53L1_ERROR_NONE) {
     channel.last_error = status;
     ESP_LOGE(TAG, "SetTimingBudgetInMs failed for %s at 0x%02X, error=%d", channel.source_label.c_str(),
              channel.address, status);
     return false;
   }
-  status = sensor.SetInterMeasurementInMs(55);
+  status = sensor.SetInterMeasurementInMs(intermeasurement_ms);
   if (status != VL53L1_ERROR_NONE) {
     channel.last_error = status;
     ESP_LOGE(TAG, "SetInterMeasurementInMs failed for %s at 0x%02X, error=%d", channel.source_label.c_str(),
@@ -224,67 +241,111 @@ bool TofArrayTest::configure_sensor_(Channel &channel) {
   }
 
   channel.initialized = true;
+  channel.ranging_started = false;
   channel.last_error = 0;
+  channel.consecutive_errors = 0;
   return true;
+}
+
+bool TofArrayTest::start_all_ranging_() {
+  uint8_t started_count = 0;
+
+  for (auto &channel : this->channels_) {
+    if (!channel.initialized || !channel.sensor) {
+      continue;
+    }
+
+    auto &sensor = *channel.sensor;
+    if (channel.ranging_started) {
+      sensor.StopRanging();
+      delay(1);
+    }
+
+    const auto status = sensor.StartRanging();
+    if (status != VL53L1_ERROR_NONE) {
+      channel.last_error = status;
+      channel.ranging_started = false;
+      ESP_LOGW(TAG, "Failed to start ranging on %s (err %d)", channel.source_label.c_str(), status);
+      continue;
+    }
+
+    channel.ranging_started = true;
+    channel.last_error = 0;
+    started_count++;
+    delayMicroseconds(250);
+    App.feed_wdt();
+  }
+
+  ESP_LOGI(TAG, "Started continuous ranging on %u sensors in a synchronized batch",
+           static_cast<unsigned>(started_count));
+  return started_count > 0;
 }
 
 bool TofArrayTest::read_channel_(Channel &channel) {
   auto &sensor = *channel.sensor;
   const uint32_t started = millis();
 
-  auto status = sensor.StartRanging();
-  if (status != VL53L1_ERROR_NONE) {
-    channel.last_error = status;
+  if (!channel.ranging_started && !this->restart_ranging_(channel)) {
     return false;
   }
 
   uint8_t ready = 0;
-  auto wait_started = millis();
-  while (!ready && (millis() - wait_started) < this->timeout_ms_) {
-    status = sensor.CheckForDataReady(&ready);
-    if (status != VL53L1_ERROR_NONE) {
-      channel.last_error = status;
-      sensor.StopRanging();
-      return false;
-    }
-    if (!ready) {
-      delay(1);
-      App.feed_wdt();
-    }
+  auto status = sensor.CheckForDataReady(&ready);
+  if (status != VL53L1_ERROR_NONE) {
+    channel.last_error = status;
+    channel.consecutive_errors++;
+    this->restart_ranging_(channel);
+    return false;
   }
 
   if (!ready) {
-    channel.last_error = VL53L1_ERROR_TIME_OUT;
-    sensor.StopRanging();
-    return false;
+    return true;
   }
 
   uint16_t distance = 0;
   status = sensor.GetDistanceInMm(&distance);
   if (status != VL53L1_ERROR_NONE) {
     channel.last_error = status;
-    sensor.StopRanging();
+    channel.consecutive_errors++;
+    this->restart_ranging_(channel);
     return false;
   }
 
   status = sensor.ClearInterrupt();
   if (status != VL53L1_ERROR_NONE) {
     channel.last_error = status;
-    sensor.StopRanging();
-    return false;
-  }
-
-  status = sensor.StopRanging();
-  if (status != VL53L1_ERROR_NONE) {
-    channel.last_error = status;
+    channel.consecutive_errors++;
+    this->restart_ranging_(channel);
     return false;
   }
 
   channel.last_distance = distance;
   channel.has_reading = true;
   channel.last_error = 0;
+  channel.consecutive_errors = 0;
   channel.last_update_ms = millis();
+  channel.last_good_read_ms = channel.last_update_ms;
   channel.last_read_duration_ms = millis() - started;
+  return true;
+}
+
+bool TofArrayTest::restart_ranging_(Channel &channel) {
+  if (!channel.sensor) {
+    channel.ranging_started = false;
+    return false;
+  }
+
+  auto &sensor = *channel.sensor;
+  sensor.StopRanging();
+  delay(2);
+  const auto status = sensor.StartRanging();
+  if (status != VL53L1_ERROR_NONE) {
+    channel.last_error = status;
+    channel.ranging_started = false;
+    return false;
+  }
+
+  channel.ranging_started = true;
   return true;
 }
 
@@ -323,7 +384,8 @@ void TofArrayTest::rediscover() {
   for (size_t index = 0; index < this->xshut_pins_.size(); index++) {
     this->set_xshut_(index, true);
     delay(this->wake_delay_ms_);
-    const std::string label = "GPIO" + std::to_string(this->xshut_pin_numbers_[index]);
+    const std::string label = this->sensor_label_for_pin_(this->xshut_pin_numbers_[index]) + " / GPIO" +
+                              std::to_string(this->xshut_pin_numbers_[index]);
 
     if (!this->probe_default_sensor_()) {
       ESP_LOGD(TAG, "No sensor found on candidate GPIO%u", this->xshut_pin_numbers_[index]);
@@ -373,6 +435,7 @@ void TofArrayTest::rediscover() {
     this->recover_wire_();
   }
 
+  this->start_all_ranging_();
   this->last_discovery_ms_ = millis();
   ESP_LOGI(TAG, "Discovery complete: %u sensors active", static_cast<unsigned>(this->channels_.size()));
 }
@@ -469,6 +532,25 @@ std::string TofArrayTest::status_text_for_(const Channel &channel) const {
   return "OK";
 }
 
+std::string TofArrayTest::sensor_label_for_pin_(uint8_t pin_number) const {
+  switch (pin_number) {
+    case 16:
+      return "U3";
+    case 17:
+      return "U4";
+    case 18:
+      return "U5";
+    case 19:
+      return "U6";
+    case 23:
+      return "U7";
+    case 25:
+      return "U8";
+    default:
+      return "Unknown";
+  }
+}
+
 std::string TofArrayTest::get_status_text(size_t index) const {
   if (index >= this->channels_.size()) {
     return "Not detected";
@@ -494,7 +576,7 @@ std::string TofArrayTest::get_source_label(size_t index) const {
 
 std::string TofArrayTest::get_summary() const {
   std::ostringstream oss;
-  oss << this->channels_.size() << "/" << (this->xshut_pins_.size() + 1)
+  oss << this->channels_.size() << "/" << this->xshut_pins_.size()
       << " sensors discovered, cycle " << this->cycle_duration_ms_ << " ms";
   const auto skew = this->get_update_skew_ms();
   if (!std::isnan(skew)) {

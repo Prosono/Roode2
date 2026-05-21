@@ -1,0 +1,615 @@
+substitutions:
+  devicename: roode-six-sensor-retry
+  friendly_name: Roode Six Sensor Retry
+
+external_components:
+  refresh: always
+  source: components
+
+esphome:
+  name: ${devicename}
+  friendly_name: ${friendly_name}
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+logger:
+  level: DEBUG
+
+api:
+  reboot_timeout: 60min
+
+ota:
+  - platform: esphome
+    password: !secret roode_ota_password
+
+wifi:
+  ssid: !secret roode_wifi_ssid
+  password: !secret roode_wifi_password
+  use_address: 10.0.0.100
+  manual_ip:
+    static_ip: 10.0.0.100
+    gateway: 10.0.0.1
+    subnet: 255.255.255.0
+  domain: .local
+  power_save_mode: none
+  ap:
+    ssid: "Roode 6 Retry"
+    password: !secret roode_fallback_ap_password
+
+captive_portal:
+
+web_server:
+  port: 80
+  version: 3
+  auth:
+    username: !secret roode_web_username
+    password: !secret roode_web_password
+  sorting_groups:
+    - id: web_group_overview
+      name: Overview
+      sorting_weight: 10
+    - id: web_group_controls
+      name: Controls
+      sorting_weight: 20
+    - id: web_group_live
+      name: Live Distances
+      sorting_weight: 30
+    - id: web_group_timing
+      name: Timing
+      sorting_weight: 40
+    - id: web_group_health
+      name: Sensor Health
+      sorting_weight: 50
+
+tof_array_test:
+  id: tof_board_test
+  sda: 21
+  scl: 22
+  frequency: 400kHz
+  timeout: 1500ms
+  wake_delay: 60ms
+  post_address_delay: 80ms
+  distance_mode: long
+  timing_budget: 33ms
+  intermeasurement_period: 33ms
+  init_retries: 3
+  update_interval: 10ms
+  base_address: 0x30
+  roi:
+    width: 16
+    height: 16
+    center: 199
+  xshut_pins:
+    - GPIO16
+    - GPIO17
+    - GPIO18
+    - GPIO19
+    - GPIO23
+    - GPIO25
+
+button:
+  - platform: restart
+    name: ${friendly_name} Restart
+    entity_category: config
+    web_server:
+      sorting_group_id: web_group_controls
+      sorting_weight: 20
+
+  - platform: template
+    name: ${friendly_name} Rediscover Sensors
+    entity_category: config
+    web_server:
+      sorting_group_id: web_group_controls
+      sorting_weight: 10
+    on_press:
+      - lambda: |-
+          id(tof_board_test).rediscover();
+
+binary_sensor:
+  - platform: status
+    name: ${friendly_name} Device Status
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_overview
+      sorting_weight: 10
+
+sensor:
+  - platform: template
+    name: ${friendly_name} Discovered Sensors
+    unit_of_measurement: sensors
+    accuracy_decimals: 0
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_overview
+      sorting_weight: 20
+    lambda: |-
+      return id(tof_board_test).get_discovered_sensor_count();
+
+  - platform: template
+    name: ${friendly_name} Cycle Duration
+    unit_of_measurement: ms
+    accuracy_decimals: 0
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_overview
+      sorting_weight: 30
+    lambda: |-
+      return id(tof_board_test).get_cycle_duration_ms();
+
+  - platform: template
+    name: ${friendly_name} Update Skew
+    unit_of_measurement: ms
+    accuracy_decimals: 0
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_overview
+      sorting_weight: 40
+    lambda: |-
+      return id(tof_board_test).get_update_skew_ms();
+
+  - platform: template
+    name: ${friendly_name} Distance Span
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_overview
+      sorting_weight: 50
+    lambda: |-
+      return id(tof_board_test).get_distance_span_mm();
+
+  - platform: template
+    name: ${friendly_name} Sensor 1 Distance
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    update_interval: 250ms
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_live
+      sorting_weight: 10
+    lambda: |-
+      return id(tof_board_test).get_distance_mm(0);
+
+  - platform: template
+    name: ${friendly_name} Sensor 2 Distance
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    update_interval: 250ms
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_live
+      sorting_weight: 20
+    lambda: |-
+      return id(tof_board_test).get_distance_mm(1);
+
+  - platform: template
+    name: ${friendly_name} Sensor 3 Distance
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    update_interval: 250ms
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_live
+      sorting_weight: 30
+    lambda: |-
+      return id(tof_board_test).get_distance_mm(2);
+
+  - platform: template
+    name: ${friendly_name} Sensor 4 Distance
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    update_interval: 250ms
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_live
+      sorting_weight: 40
+    lambda: |-
+      return id(tof_board_test).get_distance_mm(3);
+
+  - platform: template
+    name: ${friendly_name} Sensor 5 Distance
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    update_interval: 250ms
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_live
+      sorting_weight: 50
+    lambda: |-
+      return id(tof_board_test).get_distance_mm(4);
+
+  - platform: template
+    name: ${friendly_name} Sensor 6 Distance
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    update_interval: 250ms
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_live
+      sorting_weight: 60
+    lambda: |-
+      return id(tof_board_test).get_distance_mm(5);
+
+  - platform: template
+    name: ${friendly_name} Sensor 1 Read Time
+    unit_of_measurement: ms
+    accuracy_decimals: 0
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_timing
+      sorting_weight: 10
+    lambda: |-
+      return id(tof_board_test).get_read_duration_ms(0);
+
+  - platform: template
+    name: ${friendly_name} Sensor 2 Read Time
+    unit_of_measurement: ms
+    accuracy_decimals: 0
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_timing
+      sorting_weight: 20
+    lambda: |-
+      return id(tof_board_test).get_read_duration_ms(1);
+
+  - platform: template
+    name: ${friendly_name} Sensor 3 Read Time
+    unit_of_measurement: ms
+    accuracy_decimals: 0
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_timing
+      sorting_weight: 30
+    lambda: |-
+      return id(tof_board_test).get_read_duration_ms(2);
+
+  - platform: template
+    name: ${friendly_name} Sensor 4 Read Time
+    unit_of_measurement: ms
+    accuracy_decimals: 0
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_timing
+      sorting_weight: 40
+    lambda: |-
+      return id(tof_board_test).get_read_duration_ms(3);
+
+  - platform: template
+    name: ${friendly_name} Sensor 5 Read Time
+    unit_of_measurement: ms
+    accuracy_decimals: 0
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_timing
+      sorting_weight: 50
+    lambda: |-
+      return id(tof_board_test).get_read_duration_ms(4);
+
+  - platform: template
+    name: ${friendly_name} Sensor 6 Read Time
+    unit_of_measurement: ms
+    accuracy_decimals: 0
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_timing
+      sorting_weight: 60
+    lambda: |-
+      return id(tof_board_test).get_read_duration_ms(5);
+
+  - platform: template
+    name: ${friendly_name} Sensor 1 Sample Age
+    unit_of_measurement: ms
+    accuracy_decimals: 0
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_timing
+      sorting_weight: 110
+    lambda: |-
+      return id(tof_board_test).get_age_ms(0);
+
+  - platform: template
+    name: ${friendly_name} Sensor 2 Sample Age
+    unit_of_measurement: ms
+    accuracy_decimals: 0
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_timing
+      sorting_weight: 120
+    lambda: |-
+      return id(tof_board_test).get_age_ms(1);
+
+  - platform: template
+    name: ${friendly_name} Sensor 3 Sample Age
+    unit_of_measurement: ms
+    accuracy_decimals: 0
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_timing
+      sorting_weight: 130
+    lambda: |-
+      return id(tof_board_test).get_age_ms(2);
+
+  - platform: template
+    name: ${friendly_name} Sensor 4 Sample Age
+    unit_of_measurement: ms
+    accuracy_decimals: 0
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_timing
+      sorting_weight: 140
+    lambda: |-
+      return id(tof_board_test).get_age_ms(3);
+
+  - platform: template
+    name: ${friendly_name} Sensor 5 Sample Age
+    unit_of_measurement: ms
+    accuracy_decimals: 0
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_timing
+      sorting_weight: 150
+    lambda: |-
+      return id(tof_board_test).get_age_ms(4);
+
+  - platform: template
+    name: ${friendly_name} Sensor 6 Sample Age
+    unit_of_measurement: ms
+    accuracy_decimals: 0
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_timing
+      sorting_weight: 160
+    lambda: |-
+      return id(tof_board_test).get_age_ms(5);
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: ${friendly_name} IP Address
+      web_server:
+        sorting_group_id: web_group_overview
+        sorting_weight: 60
+    ssid:
+      name: ${friendly_name} WiFi SSID
+      web_server:
+        sorting_group_id: web_group_overview
+        sorting_weight: 70
+
+  - platform: template
+    name: ${friendly_name} Bring-up Guide
+    entity_category: diagnostic
+    update_interval: never
+    web_server:
+      sorting_group_id: web_group_overview
+      sorting_weight: 80
+    lambda: |-
+      return {"Expected XSHUT map: U3=GPIO16, U4=GPIO17, U5=GPIO18, U6=GPIO19, U7=GPIO23, U8=GPIO25."};
+
+  - platform: template
+    name: ${friendly_name} Discovery Map
+    entity_category: diagnostic
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_overview
+      sorting_weight: 90
+    lambda: |-
+      return {id(tof_board_test).get_discovery_map()};
+
+  - platform: template
+    name: ${friendly_name} Candidate Trace
+    entity_category: diagnostic
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_overview
+      sorting_weight: 95
+    lambda: |-
+      return {id(tof_board_test).get_candidate_trace()};
+
+  - platform: template
+    name: ${friendly_name} Test Summary
+    entity_category: diagnostic
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_overview
+      sorting_weight: 100
+    lambda: |-
+      return {id(tof_board_test).get_summary()};
+
+  - platform: template
+    name: ${friendly_name} Sensor 1 Status
+    entity_category: diagnostic
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 10
+    lambda: |-
+      return {id(tof_board_test).get_status_text(0)};
+
+  - platform: template
+    name: ${friendly_name} Sensor 2 Status
+    entity_category: diagnostic
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 20
+    lambda: |-
+      return {id(tof_board_test).get_status_text(1)};
+
+  - platform: template
+    name: ${friendly_name} Sensor 3 Status
+    entity_category: diagnostic
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 30
+    lambda: |-
+      return {id(tof_board_test).get_status_text(2)};
+
+  - platform: template
+    name: ${friendly_name} Sensor 4 Status
+    entity_category: diagnostic
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 40
+    lambda: |-
+      return {id(tof_board_test).get_status_text(3)};
+
+  - platform: template
+    name: ${friendly_name} Sensor 5 Status
+    entity_category: diagnostic
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 50
+    lambda: |-
+      return {id(tof_board_test).get_status_text(4)};
+
+  - platform: template
+    name: ${friendly_name} Sensor 6 Status
+    entity_category: diagnostic
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 60
+    lambda: |-
+      return {id(tof_board_test).get_status_text(5)};
+
+  - platform: template
+    name: ${friendly_name} Sensor 1 Source
+    entity_category: diagnostic
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 110
+    lambda: |-
+      return {id(tof_board_test).get_source_label(0)};
+
+  - platform: template
+    name: ${friendly_name} Sensor 2 Source
+    entity_category: diagnostic
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 120
+    lambda: |-
+      return {id(tof_board_test).get_source_label(1)};
+
+  - platform: template
+    name: ${friendly_name} Sensor 3 Source
+    entity_category: diagnostic
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 130
+    lambda: |-
+      return {id(tof_board_test).get_source_label(2)};
+
+  - platform: template
+    name: ${friendly_name} Sensor 4 Source
+    entity_category: diagnostic
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 140
+    lambda: |-
+      return {id(tof_board_test).get_source_label(3)};
+
+  - platform: template
+    name: ${friendly_name} Sensor 5 Source
+    entity_category: diagnostic
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 150
+    lambda: |-
+      return {id(tof_board_test).get_source_label(4)};
+
+  - platform: template
+    name: ${friendly_name} Sensor 6 Source
+    entity_category: diagnostic
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 160
+    lambda: |-
+      return {id(tof_board_test).get_source_label(5)};
+
+  - platform: template
+    name: ${friendly_name} Sensor 1 Address
+    entity_category: diagnostic
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 210
+    lambda: |-
+      return {id(tof_board_test).get_address_hex(0)};
+
+  - platform: template
+    name: ${friendly_name} Sensor 2 Address
+    entity_category: diagnostic
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 220
+    lambda: |-
+      return {id(tof_board_test).get_address_hex(1)};
+
+  - platform: template
+    name: ${friendly_name} Sensor 3 Address
+    entity_category: diagnostic
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 230
+    lambda: |-
+      return {id(tof_board_test).get_address_hex(2)};
+
+  - platform: template
+    name: ${friendly_name} Sensor 4 Address
+    entity_category: diagnostic
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 240
+    lambda: |-
+      return {id(tof_board_test).get_address_hex(3)};
+
+  - platform: template
+    name: ${friendly_name} Sensor 5 Address
+    entity_category: diagnostic
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 250
+    lambda: |-
+      return {id(tof_board_test).get_address_hex(4)};
+
+  - platform: template
+    name: ${friendly_name} Sensor 6 Address
+    entity_category: diagnostic
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 260
+    lambda: |-
+      return {id(tof_board_test).get_address_hex(5)};
