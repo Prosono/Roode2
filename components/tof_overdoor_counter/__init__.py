@@ -24,6 +24,7 @@ CONF_MIN_VALID_SENSORS = "min_valid_sensors"
 CONF_MODE = "mode"
 CONF_POST_ADDRESS_DELAY = "post_address_delay"
 CONF_RELEASE_DELTA = "release_delta"
+CONF_SAMPLING = "sampling"
 CONF_SEQUENCE_TIMEOUT = "sequence_timeout"
 CONF_STANDING_TIMEOUT = "standing_timeout"
 CONF_TIMING_BUDGET = "timing_budget"
@@ -70,6 +71,7 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_TIMING_BUDGET, default="33ms"): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_INTERMEASUREMENT, default="33ms"): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_INIT_RETRIES, default=3): cv.int_range(min=1, max=5),
+            cv.Optional(CONF_SAMPLING, default=2): cv.int_range(min=1, max=8),
             cv.Optional(CONF_TRIGGER_DELTA, default="350mm"): cv.distance,
             cv.Optional(CONF_RELEASE_DELTA, default="220mm"): cv.distance,
             cv.Optional(CONF_BASELINE_TOLERANCE, default="80mm"): cv.distance,
@@ -110,6 +112,7 @@ async def to_code(config):
     cg.add(var.set_timing_budget_ms(config[CONF_TIMING_BUDGET]))
     cg.add(var.set_intermeasurement_ms(config[CONF_INTERMEASUREMENT]))
     cg.add(var.set_init_retries(config[CONF_INIT_RETRIES]))
+    cg.add(var.set_sampling_size(config[CONF_SAMPLING]))
     cg.add(var.set_trigger_delta_mm(config[CONF_TRIGGER_DELTA]))
     cg.add(var.set_release_delta_mm(config[CONF_RELEASE_DELTA]))
     cg.add(var.set_baseline_tolerance_mm(config[CONF_BASELINE_TOLERANCE]))

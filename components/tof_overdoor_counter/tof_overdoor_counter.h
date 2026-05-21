@@ -104,6 +104,7 @@ class TofOverdoorCounter : public PollingComponent {
   void set_timing_budget_ms(uint16_t timing_budget_ms) { this->timing_budget_ms_ = timing_budget_ms; }
   void set_intermeasurement_ms(uint16_t intermeasurement_ms) { this->intermeasurement_ms_ = intermeasurement_ms; }
   void set_init_retries(uint8_t init_retries) { this->init_retries_ = init_retries; }
+  void set_sampling_size(uint8_t sampling_size) { this->sampling_size_ = sampling_size; }
   void set_trigger_delta_mm(uint16_t trigger_delta_mm) { this->trigger_threshold_mm_ = trigger_delta_mm; }
   void set_release_delta_mm(uint16_t release_delta_mm) { this->clear_threshold_mm_ = release_delta_mm; }
   void set_sequence_timeout_ms(uint32_t sequence_timeout_ms) { this->detection_timeout_ms_ = sequence_timeout_ms; }
@@ -206,6 +207,8 @@ class TofOverdoorCounter : public PollingComponent {
     bool blocked{false};
     bool stale{true};
     uint16_t raw_distance{0};
+    uint16_t sampled_distance{0};
+    bool has_sampled_distance{false};
     float filtered_distance{NAN};
     float baseline{NAN};
     float noise{NAN};
@@ -224,6 +227,7 @@ class TofOverdoorCounter : public PollingComponent {
     float calibration_min{NAN};
     float calibration_max{NAN};
     uint16_t calibration_samples{0};
+    std::vector<uint16_t> samples;
     std::string source_label;
     std::string sensor_label;
   };
@@ -242,6 +246,7 @@ class TofOverdoorCounter : public PollingComponent {
   uint16_t timing_budget_ms_{33};
   uint16_t intermeasurement_ms_{33};
   uint8_t init_retries_{3};
+  uint8_t sampling_size_{2};
   uint16_t trigger_threshold_mm_{320};
   uint16_t clear_threshold_mm_{180};
   uint16_t baseline_tolerance_mm_{80};
@@ -304,6 +309,8 @@ class TofOverdoorCounter : public PollingComponent {
   bool start_all_ranging_();
   bool read_channel_(Channel &channel);
   bool restart_ranging_(Channel &channel);
+  void update_channel_sampling_(Channel &channel, uint16_t distance);
+  float channel_logic_distance_(const Channel &channel) const;
   void init_preferences_();
   void load_persisted_state_();
   uint32_t preference_key_() const;

@@ -170,6 +170,7 @@ void TofOverdoorCounter::dump_config() {
   ESP_LOGCONFIG(TAG, "  Distance Mode: %s", distance_mode_name(this->distance_mode_));
   ESP_LOGCONFIG(TAG, "  Timing Budget: %u ms", this->timing_budget_ms_);
   ESP_LOGCONFIG(TAG, "  Intermeasurement: %u ms", this->intermeasurement_ms_);
+  ESP_LOGCONFIG(TAG, "  Sampling: %u", this->sampling_size_);
   ESP_LOGCONFIG(TAG, "  Trigger Threshold: %u mm", this->trigger_threshold_mm_);
   ESP_LOGCONFIG(TAG, "  Clear Threshold: %u mm", this->clear_threshold_mm_);
   ESP_LOGCONFIG(TAG, "  Baseline Tolerance: %u mm", this->baseline_tolerance_mm_);
@@ -406,10 +407,12 @@ bool TofOverdoorCounter::read_channel_(Channel &channel) {
   }
 
   channel.raw_distance = distance;
+  this->update_channel_sampling_(channel, distance);
+  const float sampled_distance = this->channel_logic_distance_(channel);
   channel.filtered_distance =
-      std::isnan(channel.filtered_distance) ? static_cast<float>(distance)
+      std::isnan(channel.filtered_distance) ? sampled_distance
                                             : (channel.filtered_distance * (1.0f - FILTER_ALPHA)) +
-                                                  (static_cast<float>(distance) * FILTER_ALPHA);
+                                                  (sampled_distance * FILTER_ALPHA);
   channel.has_reading = true;
   channel.last_error = 0;
   channel.consecutive_errors = 0;
@@ -417,6 +420,32 @@ bool TofOverdoorCounter::read_channel_(Channel &channel) {
   channel.last_good_read_ms = channel.last_update_ms;
   channel.last_read_duration_ms = millis() - started;
   return true;
+}
+
+void TofOverdoorCounter::update_channel_sampling_(Channel &channel, uint16_t distance) {
+  channel.samples.insert(channel.samples.begin(), distance);
+  if (channel.samples.size() > this->sampling_size_) {
+    channel.samples.pop_back();
+  }
+
+  if (channel.samples.empty()) {
+    channel.has_sampled_distance = false;
+    channel.sampled_distance = 0;
+    return;
+  }
+
+  channel.sampled_distance = *std::min_element(channel.samples.begin(), channel.samples.end());
+  channel.has_sampled_distance = true;
+}
+
+float TofOverdoorCounter::channel_logic_distance_(const Channel &channel) const {
+  if (channel.has_sampled_distance) {
+    return static_cast<float>(channel.sampled_distance);
+  }
+  if (channel.has_reading) {
+    return static_cast<float>(channel.raw_distance);
+  }
+  return NAN;
 }
 
 bool TofOverdoorCounter::restart_ranging_(Channel &channel) {
@@ -527,6 +556,7 @@ void TofOverdoorCounter::apply_calibration_defaults_() {
   this->i2c_frequency_ = sanitize_persisted<uint32_t>(this->i2c_frequency_, 100000, 400000, 400000);
   this->timing_budget_ms_ = sanitize_persisted<uint16_t>(this->timing_budget_ms_, 20, 1000, 33);
   this->intermeasurement_ms_ = sanitize_persisted<uint16_t>(this->intermeasurement_ms_, 20, 5000, 33);
+  this->sampling_size_ = sanitize_persisted<uint8_t>(this->sampling_size_, 1, 8, 2);
   this->trigger_threshold_mm_ = sanitize_persisted<uint16_t>(this->trigger_threshold_mm_, 40, 3000, 320);
   this->clear_threshold_mm_ = sanitize_persisted<uint16_t>(this->clear_threshold_mm_, 20, 2500, 180);
   this->baseline_tolerance_mm_ = sanitize_persisted<uint16_t>(this->baseline_tolerance_mm_, 10, 500, 80);
@@ -676,6 +706,9 @@ void TofOverdoorCounter::recalibrate() {
     channel.active_candidate_since_ms = 0;
     channel.clear_candidate_since_ms = 0;
     channel.active_since_ms = 0;
+    channel.samples.clear();
+    channel.has_sampled_distance = false;
+    channel.sampled_distance = 0;
     channel.calibration_sum = 0.0f;
     channel.calibration_sq_sum = 0.0f;
     channel.calibration_min = NAN;
@@ -728,8 +761,7 @@ void TofOverdoorCounter::process_calibration_() {
       continue;
     }
 
-    const float sample =
-        !std::isnan(channel.filtered_distance) ? channel.filtered_distance : static_cast<float>(channel.raw_distance);
+    const float sample = this->channel_logic_distance_(channel);
 
     if (!channel.has_reading || channel.stale || channel.consecutive_errors >= 3 || std::isnan(sample)) {
       continue;
@@ -768,8 +800,7 @@ void TofOverdoorCounter::process_calibration_() {
     if (!channel.initialized) {
       continue;
     }
-    const float sample =
-        !std::isnan(channel.filtered_distance) ? channel.filtered_distance : static_cast<float>(channel.raw_distance);
+    const float sample = this->channel_logic_distance_(channel);
     if (!channel.has_reading || channel.stale || channel.consecutive_errors >= 3 ||
         std::isnan(sample) || sample < this->minimum_clear_distance_mm_) {
       continue;
@@ -865,7 +896,9 @@ void TofOverdoorCounter::update_sensor_states_() {
   const uint32_t now = millis();
 
   for (auto &channel : this->channels_) {
-    if (!channel.initialized || !channel.has_reading || !channel.calibrated || std::isnan(channel.filtered_distance) ||
+    const float logic_distance = this->channel_logic_distance_(channel);
+
+    if (!channel.initialized || !channel.has_reading || !channel.calibrated || std::isnan(logic_distance) ||
         std::isnan(channel.baseline)) {
       channel.active = false;
       channel.blocked = false;
@@ -875,7 +908,7 @@ void TofOverdoorCounter::update_sensor_states_() {
       continue;
     }
 
-    const float drop = channel.baseline - channel.filtered_distance;
+    const float drop = channel.baseline - logic_distance;
 
     if (!channel.active) {
       if (drop >= static_cast<float>(this->trigger_threshold_mm_)) {
@@ -917,19 +950,19 @@ void TofOverdoorCounter::apply_idle_baseline_tracking_() {
   }
 
   for (auto &channel : this->channels_) {
+    const float logic_distance = this->channel_logic_distance_(channel);
     if (!channel.initialized || !channel.has_reading || !channel.calibrated || channel.active || channel.blocked ||
-        std::isnan(channel.filtered_distance) || std::isnan(channel.baseline)) {
+        std::isnan(logic_distance) || std::isnan(channel.baseline)) {
       continue;
     }
 
-    const float delta = fabsf(channel.filtered_distance - channel.baseline);
+    const float delta = fabsf(logic_distance - channel.baseline);
     if (delta > static_cast<float>(this->baseline_tolerance_mm_)) {
       continue;
     }
 
-    channel.baseline =
-        (channel.baseline * (1.0f - BASELINE_TRACK_ALPHA)) + (channel.filtered_distance * BASELINE_TRACK_ALPHA);
-    const float deviation = fabsf(channel.filtered_distance - channel.baseline);
+    channel.baseline = (channel.baseline * (1.0f - BASELINE_TRACK_ALPHA)) + (logic_distance * BASELINE_TRACK_ALPHA);
+    const float deviation = fabsf(logic_distance - channel.baseline);
     channel.noise = std::isnan(channel.noise) ? deviation
                                               : (channel.noise * (1.0f - NOISE_TRACK_ALPHA)) +
                                                     (deviation * NOISE_TRACK_ALPHA);
@@ -1352,10 +1385,11 @@ bool TofOverdoorCounter::group_is_active_(SensorGroup group) const {
 float TofOverdoorCounter::group_distance_internal_(SensorGroup group) const {
   float nearest = NAN;
   for (const auto &channel : this->channels_) {
-    if (!channel.initialized || !channel.has_reading || channel.group != group || std::isnan(channel.filtered_distance)) {
+    const float logic_distance = this->channel_logic_distance_(channel);
+    if (!channel.initialized || !channel.has_reading || channel.group != group || std::isnan(logic_distance)) {
       continue;
     }
-    nearest = std::isnan(nearest) ? channel.filtered_distance : std::min(nearest, channel.filtered_distance);
+    nearest = std::isnan(nearest) ? logic_distance : std::min(nearest, logic_distance);
   }
   return nearest;
 }
@@ -1376,11 +1410,12 @@ float TofOverdoorCounter::group_baseline_internal_(SensorGroup group) const {
 float TofOverdoorCounter::group_drop_internal_(SensorGroup group) const {
   float drop = NAN;
   for (const auto &channel : this->channels_) {
+    const float logic_distance = this->channel_logic_distance_(channel);
     if (!channel.initialized || !channel.calibrated || channel.group != group || std::isnan(channel.baseline) ||
-        std::isnan(channel.filtered_distance)) {
+        std::isnan(logic_distance)) {
       continue;
     }
-    const float sensor_drop = channel.baseline - channel.filtered_distance;
+    const float sensor_drop = channel.baseline - logic_distance;
     drop = std::isnan(drop) ? sensor_drop : std::max(drop, sensor_drop);
   }
   return drop;
@@ -1496,10 +1531,11 @@ float TofOverdoorCounter::get_update_skew_ms() const {
 float TofOverdoorCounter::get_nearest_distance_mm() const {
   float nearest = NAN;
   for (const auto &channel : this->channels_) {
-    if (!channel.initialized || !channel.has_reading || std::isnan(channel.filtered_distance)) {
+    const float logic_distance = this->channel_logic_distance_(channel);
+    if (!channel.initialized || !channel.has_reading || std::isnan(logic_distance)) {
       continue;
     }
-    nearest = std::isnan(nearest) ? channel.filtered_distance : std::min(nearest, channel.filtered_distance);
+    nearest = std::isnan(nearest) ? logic_distance : std::min(nearest, logic_distance);
   }
   return nearest;
 }
@@ -1508,10 +1544,11 @@ float TofOverdoorCounter::get_average_distance_mm() const {
   float total = 0.0f;
   uint8_t count = 0;
   for (const auto &channel : this->channels_) {
-    if (!channel.initialized || !channel.has_reading || std::isnan(channel.filtered_distance)) {
+    const float logic_distance = this->channel_logic_distance_(channel);
+    if (!channel.initialized || !channel.has_reading || std::isnan(logic_distance)) {
       continue;
     }
-    total += channel.filtered_distance;
+    total += logic_distance;
     count++;
   }
   return count == 0 ? NAN : total / static_cast<float>(count);
@@ -1521,11 +1558,12 @@ float TofOverdoorCounter::get_distance_span_mm() const {
   float min_distance = NAN;
   float max_distance = NAN;
   for (const auto &channel : this->channels_) {
-    if (!channel.initialized || !channel.has_reading || std::isnan(channel.filtered_distance)) {
+    const float logic_distance = this->channel_logic_distance_(channel);
+    if (!channel.initialized || !channel.has_reading || std::isnan(logic_distance)) {
       continue;
     }
-    min_distance = std::isnan(min_distance) ? channel.filtered_distance : std::min(min_distance, channel.filtered_distance);
-    max_distance = std::isnan(max_distance) ? channel.filtered_distance : std::max(max_distance, channel.filtered_distance);
+    min_distance = std::isnan(min_distance) ? logic_distance : std::min(min_distance, logic_distance);
+    max_distance = std::isnan(max_distance) ? logic_distance : std::max(max_distance, logic_distance);
   }
   if (std::isnan(min_distance) || std::isnan(max_distance)) {
     return NAN;
@@ -1533,7 +1571,12 @@ float TofOverdoorCounter::get_distance_span_mm() const {
   return max_distance - min_distance;
 }
 
-float TofOverdoorCounter::get_distance_mm(size_t index) const { return this->get_filtered_distance_mm(index); }
+float TofOverdoorCounter::get_distance_mm(size_t index) const {
+  if (index >= this->channels_.size() || !this->channels_[index].initialized || !this->channels_[index].has_reading) {
+    return NAN;
+  }
+  return this->channel_logic_distance_(this->channels_[index]);
+}
 
 float TofOverdoorCounter::get_raw_distance_mm(size_t index) const {
   if (index >= this->channels_.size() || !this->channels_[index].initialized || !this->channels_[index].has_reading) {
@@ -1562,10 +1605,11 @@ float TofOverdoorCounter::get_delta_mm(size_t index) const {
     return NAN;
   }
   const auto &channel = this->channels_[index];
-  if (!channel.initialized || std::isnan(channel.baseline) || std::isnan(channel.filtered_distance)) {
+  const float logic_distance = this->channel_logic_distance_(channel);
+  if (!channel.initialized || std::isnan(channel.baseline) || std::isnan(logic_distance)) {
     return NAN;
   }
-  return channel.baseline - channel.filtered_distance;
+  return channel.baseline - logic_distance;
 }
 
 float TofOverdoorCounter::get_noise_mm(size_t index) const {

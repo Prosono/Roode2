@@ -87,6 +87,7 @@ tof_overdoor_counter:
   timing_budget: 33ms
   intermeasurement_period: 33ms
   init_retries: 3
+  sampling: 2
   update_interval: 10ms
   base_address: 0x30
   trigger_delta: 320mm
