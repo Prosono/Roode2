@@ -272,6 +272,7 @@ class TofOverdoorCounter : public PollingComponent {
   uint8_t event_sensor_mask_{0};
   uint8_t event_peak_active_count_{0};
   uint8_t event_peak_group_counts_[2] = {0, 0};
+  uint32_t event_group_confirmed_ms_[2] = {0, 0};
   uint32_t calibration_started_ms_{0};
   uint32_t calibration_clear_since_ms_{0};
   uint32_t event_started_ms_{0};

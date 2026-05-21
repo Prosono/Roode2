@@ -12,6 +12,7 @@ static const char *const TAG = "tof_overdoor_counter";
 constexpr uint8_t PERSISTED_STATE_VERSION = 3;
 constexpr uint32_t STALE_READING_MS = 450;
 constexpr uint32_t CALIBRATION_CLEAR_SETTLE_MS = 120;
+constexpr uint32_t GROUP_SIMULTANEOUS_WINDOW_MS = 35;
 constexpr float FILTER_ALPHA = 0.42f;
 constexpr float BASELINE_TRACK_ALPHA = 0.015f;
 constexpr float NOISE_TRACK_ALPHA = 0.08f;
@@ -995,6 +996,8 @@ void TofOverdoorCounter::clear_event_tracking_() {
   this->event_peak_active_count_ = 0;
   this->event_peak_group_counts_[0] = 0;
   this->event_peak_group_counts_[1] = 0;
+  this->event_group_confirmed_ms_[GROUP_OUT] = 0;
+  this->event_group_confirmed_ms_[GROUP_IN] = 0;
   for (auto &channel : this->channels_) {
     channel.first_trigger_in_event_ms = 0;
   }
@@ -1049,6 +1052,8 @@ SensorGroup TofOverdoorCounter::determine_first_group_from_current_state_() cons
 SensorGroup TofOverdoorCounter::resolve_event_first_group_() const {
   const uint32_t out_ts = this->first_trigger_ts_for_group_(GROUP_OUT);
   const uint32_t in_ts = this->first_trigger_ts_for_group_(GROUP_IN);
+  const uint32_t out_confirmed_ts = this->event_group_confirmed_ms_[GROUP_OUT];
+  const uint32_t in_confirmed_ts = this->event_group_confirmed_ms_[GROUP_IN];
 
   if (out_ts != 0 && in_ts == 0) {
     return GROUP_OUT;
@@ -1057,11 +1062,29 @@ SensorGroup TofOverdoorCounter::resolve_event_first_group_() const {
     return GROUP_IN;
   }
   if (out_ts != 0 && in_ts != 0) {
-    if (out_ts < in_ts) {
+    const uint32_t delta = out_ts > in_ts ? (out_ts - in_ts) : (in_ts - out_ts);
+    if (delta > GROUP_SIMULTANEOUS_WINDOW_MS) {
+      if (out_ts < in_ts) {
+        return GROUP_OUT;
+      }
+      if (in_ts < out_ts) {
+        return GROUP_IN;
+      }
+    }
+
+    if (out_confirmed_ts != 0 && in_confirmed_ts == 0) {
       return GROUP_OUT;
     }
-    if (in_ts < out_ts) {
+    if (in_confirmed_ts != 0 && out_confirmed_ts == 0) {
       return GROUP_IN;
+    }
+    if (out_confirmed_ts != 0 && in_confirmed_ts != 0) {
+      if (out_confirmed_ts < in_confirmed_ts) {
+        return GROUP_OUT;
+      }
+      if (in_confirmed_ts < out_confirmed_ts) {
+        return GROUP_IN;
+      }
     }
   }
 
@@ -1157,6 +1180,12 @@ void TofOverdoorCounter::update_detection_state_machine_() {
   this->event_peak_active_count_ = std::max(this->event_peak_active_count_, active_count);
   this->event_peak_group_counts_[GROUP_OUT] = std::max(this->event_peak_group_counts_[GROUP_OUT], active_out);
   this->event_peak_group_counts_[GROUP_IN] = std::max(this->event_peak_group_counts_[GROUP_IN], active_in);
+  if (active_out >= 2 && this->event_group_confirmed_ms_[GROUP_OUT] == 0) {
+    this->event_group_confirmed_ms_[GROUP_OUT] = now;
+  }
+  if (active_in >= 2 && this->event_group_confirmed_ms_[GROUP_IN] == 0) {
+    this->event_group_confirmed_ms_[GROUP_IN] = now;
+  }
 
   if (this->event_first_group_ == GROUP_NONE) {
     this->event_first_group_ = this->determine_first_group_from_current_state_();
