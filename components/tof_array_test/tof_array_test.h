@@ -75,12 +75,17 @@ class TofArrayTest : public PollingComponent {
     bool initialized{false};
     bool ranging_started{false};
     bool has_reading{false};
+    bool default_timing_fallback{false};
     uint16_t last_distance{0};
+    uint16_t sensor_id{0};
+    uint8_t boot_state{0};
+    uint8_t address_register{0};
     int last_error{0};
     uint8_t consecutive_errors{0};
     uint32_t last_update_ms{0};
     uint32_t last_good_read_ms{0};
     uint32_t last_read_duration_ms{0};
+    std::string last_stage{"idle"};
     std::string source_label;
   };
 
@@ -113,6 +118,10 @@ class TofArrayTest : public PollingComponent {
   bool probe_default_sensor_();
   bool wait_for_boot_(VL53L1X_ULD &sensor);
   bool set_temp_address_(VL53L1X_ULD &sensor, uint8_t address);
+  bool write_register_address_(uint8_t address, uint16_t register_address, uint8_t *wire_rc = nullptr);
+  bool read_register8_(uint8_t address, uint16_t register_address, uint8_t &value, uint8_t *wire_rc = nullptr);
+  bool read_register16_(uint8_t address, uint16_t register_address, uint16_t &value, uint8_t *wire_rc = nullptr);
+  bool capture_identity_(Channel &channel);
   bool configure_sensor_(Channel &channel);
   bool start_all_ranging_();
   bool read_channel_(Channel &channel);

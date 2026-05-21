@@ -47,8 +47,8 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_POST_ADDRESS_DELAY, default="30ms"): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_DISTANCE_MODE, default=DISTANCE_MODE_LONG): cv.enum(DISTANCE_MODES, lower=True),
             cv.Optional(CONF_TIMING_BUDGET, default="33ms"): cv.positive_time_period_milliseconds,
-            cv.Optional(CONF_INTERMEASUREMENT_PERIOD, default="33ms"): cv.positive_time_period_milliseconds,
-            cv.Optional(CONF_INIT_RETRIES, default=2): cv.int_range(min=1, max=5),
+            cv.Optional(CONF_INTERMEASUREMENT_PERIOD, default="37ms"): cv.positive_time_period_milliseconds,
+            cv.Optional(CONF_INIT_RETRIES, default=3): cv.int_range(min=1, max=5),
             cv.Required(CONF_XSHUT_PINS): cv.ensure_list(pins.gpio_output_pin_schema),
             cv.Optional(CONF_ROI, default={}): cv.Schema(
                 {

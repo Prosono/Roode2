@@ -162,12 +162,111 @@ bool TofArrayTest::set_temp_address_(VL53L1X_ULD &sensor, uint8_t address) {
   return true;
 }
 
+bool TofArrayTest::write_register_address_(uint8_t address, uint16_t register_address, uint8_t *wire_rc) {
+  Wire.beginTransmission(address);
+  Wire.write(static_cast<uint8_t>(register_address >> 8));
+  Wire.write(static_cast<uint8_t>(register_address & 0xFF));
+  const uint8_t rc = Wire.endTransmission(false);
+  if (wire_rc != nullptr) {
+    *wire_rc = rc;
+  }
+  return rc == 0;
+}
+
+bool TofArrayTest::read_register8_(uint8_t address, uint16_t register_address, uint8_t &value, uint8_t *wire_rc) {
+  uint8_t rc = 0;
+  if (!this->write_register_address_(address, register_address, &rc)) {
+    if (wire_rc != nullptr) {
+      *wire_rc = rc;
+    }
+    return false;
+  }
+
+  const auto count = Wire.requestFrom(static_cast<int>(address), 1);
+  if (count != 1) {
+    if (wire_rc != nullptr) {
+      *wire_rc = rc;
+    }
+    return false;
+  }
+
+  value = Wire.read();
+  if (wire_rc != nullptr) {
+    *wire_rc = rc;
+  }
+  return true;
+}
+
+bool TofArrayTest::read_register16_(uint8_t address, uint16_t register_address, uint16_t &value, uint8_t *wire_rc) {
+  uint8_t rc = 0;
+  if (!this->write_register_address_(address, register_address, &rc)) {
+    if (wire_rc != nullptr) {
+      *wire_rc = rc;
+    }
+    return false;
+  }
+
+  const auto count = Wire.requestFrom(static_cast<int>(address), 2);
+  if (count != 2) {
+    if (wire_rc != nullptr) {
+      *wire_rc = rc;
+    }
+    return false;
+  }
+
+  value = static_cast<uint16_t>(Wire.read()) << 8;
+  value |= Wire.read();
+  if (wire_rc != nullptr) {
+    *wire_rc = rc;
+  }
+  return true;
+}
+
+bool TofArrayTest::capture_identity_(Channel &channel) {
+  channel.last_stage = "identity";
+  uint8_t rc = 0;
+  uint16_t sensor_id = 0;
+  uint8_t boot_state = 0;
+  uint8_t address_register = 0;
+
+  const bool id_ok = this->read_register16_(channel.address, VL53L1_IDENTIFICATION__MODEL_ID, sensor_id, &rc);
+  const bool boot_ok = this->read_register8_(channel.address, VL53L1_FIRMWARE__SYSTEM_STATUS, boot_state, &rc);
+  const bool address_ok =
+      this->read_register8_(channel.address, VL53L1_I2C_SLAVE__DEVICE_ADDRESS, address_register, &rc);
+
+  if (id_ok) {
+    channel.sensor_id = sensor_id;
+  }
+  if (boot_ok) {
+    channel.boot_state = boot_state;
+  }
+  if (address_ok) {
+    channel.address_register = address_register;
+  }
+
+  if (!id_ok || !boot_ok || !address_ok) {
+    ESP_LOGW(TAG,
+             "Identity capture incomplete for %s at 0x%02X (id_ok=%s, boot_ok=%s, addr_ok=%s, wire_rc=%u, id=0x%04X, "
+             "fw=0x%02X, addr_reg=0x%02X)",
+             channel.source_label.c_str(), channel.address, YESNO(id_ok), YESNO(boot_ok), YESNO(address_ok), rc,
+             channel.sensor_id, channel.boot_state, channel.address_register);
+    return false;
+  }
+
+  ESP_LOGD(TAG, "Identity for %s at 0x%02X -> id=0x%04X fw=0x%02X addr_reg=0x%02X", channel.source_label.c_str(),
+           channel.address, channel.sensor_id, channel.boot_state, channel.address_register);
+  return true;
+}
+
 bool TofArrayTest::configure_sensor_(Channel &channel) {
   auto &sensor = *channel.sensor;
+  channel.default_timing_fallback = false;
+  channel.last_stage = "boot_wait";
   if (!this->wait_for_boot_(sensor)) {
     channel.last_error = VL53L1_ERROR_TIME_OUT;
     return false;
   }
+  this->capture_identity_(channel);
 
   VL53L1_Error status = VL53L1_ERROR_NONE;
   const uint8_t retries = std::max<uint8_t>(1, this->init_retries_);
@@ -182,6 +281,7 @@ bool TofArrayTest::configure_sensor_(Channel &channel) {
       }
     }
 
+    channel.last_stage = "init";
     status = sensor.Init();
     if (status == VL53L1_ERROR_NONE) {
       break;
@@ -198,13 +298,17 @@ bool TofArrayTest::configure_sensor_(Channel &channel) {
              channel.address, static_cast<unsigned>(retries), status);
     return false;
   }
+  channel.last_stage = "identity_post_init";
+  this->capture_identity_(channel);
 
+  channel.last_stage = "set_roi";
   status = sensor.SetROI(this->roi_.width, this->roi_.height);
   if (status != VL53L1_ERROR_NONE) {
     channel.last_error = status;
     ESP_LOGE(TAG, "SetROI failed for %s at 0x%02X, error=%d", channel.source_label.c_str(), channel.address, status);
     return false;
   }
+  channel.last_stage = "set_roi_center";
   status = sensor.SetROICenter(this->roi_.center);
   if (status != VL53L1_ERROR_NONE) {
     channel.last_error = status;
@@ -212,38 +316,62 @@ bool TofArrayTest::configure_sensor_(Channel &channel) {
              status);
     return false;
   }
-  const EDistanceMode sensor_distance_mode =
-      this->distance_mode_ == DISTANCE_MODE_SHORT ? EDistanceMode::Short : EDistanceMode::Long;
-  status = sensor.SetDistanceMode(sensor_distance_mode);
-  if (status != VL53L1_ERROR_NONE) {
-    channel.last_error = status;
-    ESP_LOGE(TAG, "SetDistanceMode failed for %s at 0x%02X, error=%d", channel.source_label.c_str(), channel.address,
-             status);
-    return false;
+
+  if (this->distance_mode_ == DISTANCE_MODE_SHORT) {
+    channel.last_stage = "set_distance_mode_short";
+    status = sensor.SetDistanceMode(EDistanceMode::Short);
+    if (status != VL53L1_ERROR_NONE) {
+      channel.last_error = status;
+      ESP_LOGE(TAG, "SetDistanceMode(short) failed for %s at 0x%02X, error=%d", channel.source_label.c_str(),
+               channel.address, status);
+      return false;
+    }
+  } else {
+    channel.last_stage = "set_distance_mode_long_default";
+    ESP_LOGD(TAG, "Keeping default long distance mode for %s at 0x%02X", channel.source_label.c_str(),
+             channel.address);
   }
   const uint16_t min_timing_budget = this->distance_mode_ == DISTANCE_MODE_SHORT ? 20 : 33;
   const uint16_t timing_budget_ms = std::max<uint16_t>(this->timing_budget_ms_, min_timing_budget);
-  const uint16_t intermeasurement_ms = std::max<uint16_t>(this->intermeasurement_ms_, timing_budget_ms);
+  const uint16_t intermeasurement_ms = std::max<uint16_t>(this->intermeasurement_ms_, timing_budget_ms + 4);
 
+  channel.last_stage = "set_timing_budget";
   status = sensor.SetTimingBudgetInMs(timing_budget_ms);
   if (status != VL53L1_ERROR_NONE) {
-    channel.last_error = status;
-    ESP_LOGE(TAG, "SetTimingBudgetInMs failed for %s at 0x%02X, error=%d", channel.source_label.c_str(),
-             channel.address, status);
-    return false;
-  }
-  status = sensor.SetInterMeasurementInMs(intermeasurement_ms);
-  if (status != VL53L1_ERROR_NONE) {
-    channel.last_error = status;
-    ESP_LOGE(TAG, "SetInterMeasurementInMs failed for %s at 0x%02X, error=%d", channel.source_label.c_str(),
-             channel.address, status);
-    return false;
+    if (this->distance_mode_ == DISTANCE_MODE_LONG) {
+      ESP_LOGW(TAG,
+               "SetTimingBudgetInMs failed for %s at 0x%02X, error=%d. Falling back to default long-mode timing.",
+               channel.source_label.c_str(), channel.address, status);
+      channel.default_timing_fallback = true;
+    } else {
+      channel.last_error = status;
+      ESP_LOGE(TAG, "SetTimingBudgetInMs failed for %s at 0x%02X, error=%d", channel.source_label.c_str(),
+               channel.address, status);
+      return false;
+    }
+  } else {
+    channel.last_stage = "set_intermeasurement";
+    status = sensor.SetInterMeasurementInMs(intermeasurement_ms);
+    if (status != VL53L1_ERROR_NONE) {
+      if (this->distance_mode_ == DISTANCE_MODE_LONG) {
+        ESP_LOGW(TAG,
+                 "SetInterMeasurementInMs failed for %s at 0x%02X, error=%d. Falling back to default long-mode timing.",
+                 channel.source_label.c_str(), channel.address, status);
+        channel.default_timing_fallback = true;
+      } else {
+        channel.last_error = status;
+        ESP_LOGE(TAG, "SetInterMeasurementInMs failed for %s at 0x%02X, error=%d", channel.source_label.c_str(),
+                 channel.address, status);
+        return false;
+      }
+    }
   }
 
   channel.initialized = true;
   channel.ranging_started = false;
   channel.last_error = 0;
   channel.consecutive_errors = 0;
+  channel.last_stage = channel.default_timing_fallback ? "configured_default_timing" : "configured";
   return true;
 }
 
@@ -418,16 +546,31 @@ void TofArrayTest::rediscover() {
     }
 
     delay(this->post_address_delay_ms_);
+    this->capture_identity_(channel);
 
     if (this->configure_sensor_(channel)) {
       ESP_LOGI(TAG, "Discovered sensor on GPIO%u at 0x%02X", this->xshut_pin_numbers_[index], channel.address);
-      char addr[8];
+      char addr[16];
+      char id[16];
       snprintf(addr, sizeof(addr), "0x%02X", channel.address);
-      this->candidate_trace_.push_back(label + ": OK -> " + std::string(addr));
+      snprintf(id, sizeof(id), "0x%04X", channel.sensor_id);
+      std::string trace = label + ": OK -> " + std::string(addr) + " id " + id;
+      if (channel.default_timing_fallback) {
+        trace += " (default timing)";
+      }
+      this->candidate_trace_.push_back(trace);
       this->channels_.push_back(std::move(channel));
     } else {
       ESP_LOGW(TAG, "Sensor on GPIO%u responded, but initialization failed", this->xshut_pin_numbers_[index]);
-      this->candidate_trace_.push_back(label + ": configure failed err " + std::to_string(channel.last_error));
+      char id[16];
+      char addr_reg[16];
+      char fw_status[16];
+      snprintf(id, sizeof(id), "0x%04X", channel.sensor_id);
+      snprintf(addr_reg, sizeof(addr_reg), "0x%02X", channel.address_register);
+      snprintf(fw_status, sizeof(fw_status), "0x%02X", channel.boot_state);
+      this->candidate_trace_.push_back(label + ": configure failed at " + channel.last_stage + " err " +
+                                       std::to_string(channel.last_error) + " id " + id + " fw " + fw_status +
+                                       " addr_reg " + addr_reg);
       this->set_xshut_(index, false);
       this->recover_wire_();
     }
@@ -528,6 +671,9 @@ std::string TofArrayTest::status_text_for_(const Channel &channel) const {
   }
   if (!channel.has_reading) {
     return "Waiting for first sample";
+  }
+  if (channel.default_timing_fallback) {
+    return "OK (default timing)";
   }
   return "OK";
 }

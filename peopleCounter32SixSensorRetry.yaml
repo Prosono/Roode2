@@ -68,14 +68,14 @@ tof_array_test:
   id: tof_board_test
   sda: 21
   scl: 22
-  frequency: 400kHz
+  frequency: 100kHz
   timeout: 1500ms
-  wake_delay: 60ms
-  post_address_delay: 80ms
+  wake_delay: 80ms
+  post_address_delay: 120ms
   distance_mode: long
   timing_budget: 33ms
-  intermeasurement_period: 33ms
-  init_retries: 3
+  intermeasurement_period: 37ms
+  init_retries: 4
   update_interval: 10ms
   base_address: 0x30
   roi:
