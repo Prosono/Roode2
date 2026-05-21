@@ -331,12 +331,14 @@ class TofOverdoorCounter : public PollingComponent {
   uint8_t active_sensor_count_() const;
   uint8_t active_sensor_count_for_group_(SensorGroup group) const;
   uint8_t triggered_sensor_count_for_group_(SensorGroup group) const;
+  uint32_t first_trigger_ts_for_group_(SensorGroup group) const;
   bool group_is_active_(SensorGroup group) const;
   float group_distance_internal_(SensorGroup group) const;
   float group_baseline_internal_(SensorGroup group) const;
   float group_drop_internal_(SensorGroup group) const;
   SensorGroup group_for_index_(size_t index) const;
   SensorGroup determine_first_group_from_current_state_() const;
+  SensorGroup resolve_event_first_group_() const;
   SensorGroup map_physical_group_to_direction_(SensorGroup physical_group) const;
   std::string direction_text_for_group_(SensorGroup physical_group, bool unsure) const;
   std::string system_status_text_(SystemStatus status) const;

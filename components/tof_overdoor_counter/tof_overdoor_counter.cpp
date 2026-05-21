@@ -1003,8 +1003,6 @@ void TofOverdoorCounter::clear_event_tracking_() {
 SensorGroup TofOverdoorCounter::determine_first_group_from_current_state_() const {
   uint32_t out_ts = 0;
   uint32_t in_ts = 0;
-  float out_drop = -1.0f;
-  float in_drop = -1.0f;
 
   for (size_t index = 0; index < this->channels_.size(); index++) {
     const auto &channel = this->channels_[index];
@@ -1015,17 +1013,9 @@ SensorGroup TofOverdoorCounter::determine_first_group_from_current_state_() cons
       if (out_ts == 0 || (channel.active_since_ms != 0 && channel.active_since_ms < out_ts)) {
         out_ts = channel.active_since_ms != 0 ? channel.active_since_ms : millis();
       }
-      const auto drop = this->get_delta_mm(index);
-      if (!std::isnan(drop)) {
-        out_drop = std::max(out_drop, drop);
-      }
     } else if (channel.group == GROUP_IN) {
       if (in_ts == 0 || (channel.active_since_ms != 0 && channel.active_since_ms < in_ts)) {
         in_ts = channel.active_since_ms != 0 ? channel.active_since_ms : millis();
-      }
-      const auto drop = this->get_delta_mm(index);
-      if (!std::isnan(drop)) {
-        in_drop = std::max(in_drop, drop);
       }
     }
   }
@@ -1045,13 +1035,44 @@ SensorGroup TofOverdoorCounter::determine_first_group_from_current_state_() cons
     }
   }
 
-  if (out_drop > in_drop && out_drop >= 0.0f) {
+  const uint8_t active_out = this->active_sensor_count_for_group_(GROUP_OUT);
+  const uint8_t active_in = this->active_sensor_count_for_group_(GROUP_IN);
+  if (active_out > active_in) {
     return GROUP_OUT;
   }
-  if (in_drop > out_drop && in_drop >= 0.0f) {
+  if (active_in > active_out) {
     return GROUP_IN;
   }
   return GROUP_NONE;
+}
+
+SensorGroup TofOverdoorCounter::resolve_event_first_group_() const {
+  const uint32_t out_ts = this->first_trigger_ts_for_group_(GROUP_OUT);
+  const uint32_t in_ts = this->first_trigger_ts_for_group_(GROUP_IN);
+
+  if (out_ts != 0 && in_ts == 0) {
+    return GROUP_OUT;
+  }
+  if (in_ts != 0 && out_ts == 0) {
+    return GROUP_IN;
+  }
+  if (out_ts != 0 && in_ts != 0) {
+    if (out_ts < in_ts) {
+      return GROUP_OUT;
+    }
+    if (in_ts < out_ts) {
+      return GROUP_IN;
+    }
+  }
+
+  if (this->event_peak_group_counts_[GROUP_OUT] > this->event_peak_group_counts_[GROUP_IN]) {
+    return GROUP_OUT;
+  }
+  if (this->event_peak_group_counts_[GROUP_IN] > this->event_peak_group_counts_[GROUP_OUT]) {
+    return GROUP_IN;
+  }
+
+  return this->event_first_group_;
 }
 
 SensorGroup TofOverdoorCounter::map_physical_group_to_direction_(SensorGroup physical_group) const {
@@ -1140,6 +1161,10 @@ void TofOverdoorCounter::update_detection_state_machine_() {
   if (this->event_first_group_ == GROUP_NONE) {
     this->event_first_group_ = this->determine_first_group_from_current_state_();
   }
+  const SensorGroup resolved_first_group = this->resolve_event_first_group_();
+  if (resolved_first_group != GROUP_NONE) {
+    this->event_first_group_ = resolved_first_group;
+  }
   if (this->event_first_group_ != GROUP_NONE) {
     const SensorGroup other_group = this->event_first_group_ == GROUP_OUT ? GROUP_IN : GROUP_OUT;
     if (this->triggered_sensor_count_for_group_(other_group) > 0) {
@@ -1218,21 +1243,22 @@ void TofOverdoorCounter::finalize_event_(bool timed_out) {
   const bool both_groups_seen = out_triggered > 0 && in_triggered > 0;
   const uint8_t healthy = std::max<uint8_t>(2, this->healthy_sensor_count_());
   const uint8_t required = std::min<uint8_t>(std::max<uint8_t>(2, this->min_valid_sensors_), healthy);
+  const SensorGroup resolved_first_group = this->resolve_event_first_group_();
 
   DetectionOutcome outcome = OUTCOME_NONE;
   std::string reason = "Detection cancelled";
 
-  if (both_groups_seen && this->event_first_group_ != GROUP_NONE && distinct_triggered >= required) {
-    const SensorGroup direction_group = this->map_physical_group_to_direction_(this->event_first_group_);
+  if (both_groups_seen && resolved_first_group != GROUP_NONE && distinct_triggered >= required) {
+    const SensorGroup direction_group = this->map_physical_group_to_direction_(resolved_first_group);
     outcome = direction_group == GROUP_IN ? OUTCOME_IN : OUTCOME_OUT;
     reason = "Detection approved: " + std::to_string(distinct_triggered) + "/" + std::to_string(healthy) +
-             " sensors triggered, " + std::string(group_name(this->event_first_group_)) + " group first";
-  } else if (this->event_first_group_ != GROUP_NONE && distinct_triggered >= 2) {
-    const SensorGroup direction_group = this->map_physical_group_to_direction_(this->event_first_group_);
+             " sensors triggered, " + std::string(group_name(resolved_first_group)) + " group first";
+  } else if (resolved_first_group != GROUP_NONE && distinct_triggered >= 2) {
+    const SensorGroup direction_group = this->map_physical_group_to_direction_(resolved_first_group);
     outcome = direction_group == GROUP_IN ? OUTCOME_UNSURE_IN : OUTCOME_UNSURE_OUT;
     reason = "Unsure detection: only " + std::to_string(distinct_triggered) +
-             " sensors triggered, " + std::string(group_name(this->event_first_group_)) + " group first";
-  } else if (timed_out && this->event_first_group_ != GROUP_NONE) {
+             " sensors triggered, " + std::string(group_name(resolved_first_group)) + " group first";
+  } else if (timed_out && resolved_first_group != GROUP_NONE) {
     reason = "Timed out before enough sensors agreed";
   } else if (this->person_standing_in_door_) {
     reason = "Doorway stayed occupied too long";
@@ -1376,6 +1402,19 @@ uint8_t TofOverdoorCounter::triggered_sensor_count_for_group_(SensorGroup group)
     }
   }
   return count;
+}
+
+uint32_t TofOverdoorCounter::first_trigger_ts_for_group_(SensorGroup group) const {
+  uint32_t earliest = 0;
+  for (const auto &channel : this->channels_) {
+    if (!channel.initialized || channel.group != group || channel.first_trigger_in_event_ms == 0) {
+      continue;
+    }
+    if (earliest == 0 || channel.first_trigger_in_event_ms < earliest) {
+      earliest = channel.first_trigger_in_event_ms;
+    }
+  }
+  return earliest;
 }
 
 bool TofOverdoorCounter::group_is_active_(SensorGroup group) const {
