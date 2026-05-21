@@ -995,6 +995,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
     let refreshTimer = null;
     let busy = false;
     let lastOnline = true;
+    let settingsDirty = false;
 
     const rememberedTheme = localStorage.getItem('roode-overdoor-theme');
     if (rememberedTheme) {
@@ -1133,6 +1134,12 @@ const char OVERDOOR_UI_HTML[] = R"html(
       if (node && Number.isFinite(Number(value))) {
         node.value = Math.round(Number(value));
       }
+    }
+
+    function shouldSyncSettingsFromState(force = false) {
+      if (force) return true;
+      if (settingsDirty) return false;
+      return !settingsForm.contains(document.activeElement);
     }
 
     function updateHistory(state) {
@@ -1281,7 +1288,8 @@ const char OVERDOOR_UI_HTML[] = R"html(
       `).join('');
     }
 
-    function renderState(state) {
+    function renderState(state, options = {}) {
+      const forceSettingsSync = !!options.forceSettingsSync;
       pageTitle.textContent = state.title || 'Roode Overdoor Counter';
       pageSubtitle.textContent = state.subtitle || 'Local ESP-based counting with four ToF sensors.';
       counterLabel.textContent = state.label || 'Front door counter';
@@ -1323,16 +1331,18 @@ const char OVERDOOR_UI_HTML[] = R"html(
       updateMetric('summary-copy', state.summary || 'No summary yet.');
       document.getElementById('event-log-copy').textContent = state.event_log || 'No events yet.';
 
-      setNumber('setting-trigger', state.trigger_threshold);
-      setNumber('setting-clear', state.clear_threshold);
-      setNumber('setting-baseline', state.baseline_tolerance);
-      setNumber('setting-debounce', state.debounce_ms);
-      setNumber('setting-timeout', state.detection_timeout_ms);
-      setNumber('setting-cooldown', state.cooldown_ms);
-      setNumber('setting-min-valid', state.min_valid_sensors);
-      setNumber('setting-max-people', state.max_people_inside);
-      setCheckbox('setting-invert', state.invert_direction);
-      setCheckbox('setting-autosave', state.auto_save_enabled);
+      if (shouldSyncSettingsFromState(forceSettingsSync)) {
+        setNumber('setting-trigger', state.trigger_threshold);
+        setNumber('setting-clear', state.clear_threshold);
+        setNumber('setting-baseline', state.baseline_tolerance);
+        setNumber('setting-debounce', state.debounce_ms);
+        setNumber('setting-timeout', state.detection_timeout_ms);
+        setNumber('setting-cooldown', state.cooldown_ms);
+        setNumber('setting-min-valid', state.min_valid_sensors);
+        setNumber('setting-max-people', state.max_people_inside);
+        setCheckbox('setting-invert', state.invert_direction);
+        setCheckbox('setting-autosave', state.auto_save_enabled);
+      }
 
       renderGroups(state);
       renderSensors(state);
@@ -1364,7 +1374,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
         connectionPill.textContent = payload.connection_text || 'Connected to device';
         connectionCopy.textContent = 'Online';
         lastSync.textContent = new Date().toLocaleTimeString();
-        renderState(payload);
+        renderState(payload, { forceSettingsSync: force && !settingsDirty });
         lastOnline = true;
       } catch (error) {
         connectionPill.textContent = 'Connection lost. Retrying.';
@@ -1409,6 +1419,14 @@ const char OVERDOOR_UI_HTML[] = R"html(
       }
     });
 
+    Array.from(settingsForm.querySelectorAll('input')).forEach((input) => {
+      const markDirty = () => {
+        settingsDirty = true;
+      };
+      input.addEventListener('input', markDirty);
+      input.addEventListener('change', markDirty);
+    });
+
     settingsForm.addEventListener('submit', async (event) => {
       event.preventDefault();
       if (busy) return;
@@ -1428,6 +1446,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
         params.set('invert_direction', document.getElementById('setting-invert').checked ? '1' : '0');
         params.set('auto_save_enabled', document.getElementById('setting-autosave').checked ? '1' : '0');
         const result = await postParams(params);
+        settingsDirty = false;
         showToast(result.message || 'Settings saved');
         await refresh(true);
       } catch (error) {

@@ -131,6 +131,7 @@ void TofOverdoorCounter::update() {
 
   if (any_failure) {
     this->recover_wire_();
+    this->start_all_ranging_();
   }
 
   this->update_sensor_health_();
@@ -327,17 +328,43 @@ bool TofOverdoorCounter::configure_sensor_(Channel &channel) {
     return false;
   }
 
-  status = sensor.StartRanging();
-  if (status != VL53L1_ERROR_NONE) {
-    channel.last_error = status;
-    channel.ranging_started = false;
-    return false;
-  }
-
   channel.initialized = true;
-  channel.ranging_started = true;
+  channel.ranging_started = false;
   channel.last_error = 0;
   return true;
+}
+
+bool TofOverdoorCounter::start_all_ranging_() {
+  uint8_t started_count = 0;
+
+  for (auto &channel : this->channels_) {
+    if (!channel.initialized || !channel.sensor) {
+      continue;
+    }
+
+    auto &sensor = *channel.sensor;
+    if (channel.ranging_started) {
+      sensor.StopRanging();
+      delay(1);
+    }
+
+    const auto status = sensor.StartRanging();
+    if (status != VL53L1_ERROR_NONE) {
+      channel.last_error = status;
+      channel.ranging_started = false;
+      ESP_LOGW(TAG, "Failed to start ranging on %s (err %d)", channel.source_label.c_str(), status);
+      continue;
+    }
+
+    channel.ranging_started = true;
+    channel.last_error = 0;
+    started_count++;
+    delayMicroseconds(250);
+    App.feed_wdt();
+  }
+
+  ESP_LOGI(TAG, "Started continuous ranging on %u sensors in a synchronized batch", static_cast<unsigned>(started_count));
+  return started_count >= this->min_valid_sensors_;
 }
 
 bool TofOverdoorCounter::read_channel_(Channel &channel) {
@@ -618,6 +645,8 @@ void TofOverdoorCounter::rediscover() {
     next_address++;
     this->recover_wire_();
   }
+
+  this->start_all_ranging_();
 
   this->last_discovery_ms_ = millis();
   this->load_persisted_state_();

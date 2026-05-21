@@ -301,6 +301,7 @@ class TofOverdoorCounter : public PollingComponent {
   bool wait_for_boot_(VL53L1X_ULD &sensor);
   bool set_temp_address_(VL53L1X_ULD &sensor, uint8_t address);
   bool configure_sensor_(Channel &channel);
+  bool start_all_ranging_();
   bool read_channel_(Channel &channel);
   bool restart_ranging_(Channel &channel);
   void init_preferences_();
