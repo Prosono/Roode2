@@ -19,12 +19,9 @@ esphome:
   on_boot:
     priority: -100
     then:
-      - text_sensor.template.publish:
-          id: aggregate_last_event
-          state: Booting
-      - text_sensor.template.publish:
-          id: aggregate_last_reason
-          state: Waiting for Roode sensors
+      - lambda: |-
+          id(aggregate_last_event).publish_state("Booting");
+          id(aggregate_last_reason).publish_state("Waiting for Roode sensors");
 
 esp32:
   board: esp32dev
@@ -116,25 +113,16 @@ script:
   - id: publish_aggregate_state
     mode: restart
     then:
-      - sensor.template.publish:
-          id: people_inside_sensor
-          state: !lambda "return id(people_inside);"
-      - sensor.template.publish:
-          id: confirmed_in_sensor
-          state: !lambda "return id(confirmed_in);"
-      - sensor.template.publish:
-          id: confirmed_out_sensor
-          state: !lambda "return id(confirmed_out);"
-      - sensor.template.publish:
-          id: rejected_events_sensor
-          state: !lambda "return id(rejected_events);"
-      - text_sensor.template.publish:
-          id: aggregate_vote_window
-          state: !lambda |-
-            char buffer[96];
-            snprintf(buffer, sizeof(buffer), "IN mask=0x%02X OUT mask=0x%02X | %s",
-                     id(in_vote_mask), id(out_vote_mask), id(last_vote_summary).c_str());
-            return std::string(buffer);
+      - lambda: |-
+          id(people_inside_sensor).publish_state(id(people_inside));
+          id(confirmed_in_sensor).publish_state(id(confirmed_in));
+          id(confirmed_out_sensor).publish_state(id(confirmed_out));
+          id(rejected_events_sensor).publish_state(id(rejected_events));
+
+          char buffer[96];
+          snprintf(buffer, sizeof(buffer), "IN mask=0x%02X OUT mask=0x%02X | %s",
+                   id(in_vote_mask), id(out_vote_mask), id(last_vote_summary).c_str());
+          id(aggregate_vote_window).publish_state(std::string(buffer));
 
   - id: register_roode_vote
     mode: queued
