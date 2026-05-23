@@ -1613,11 +1613,13 @@ class TofOverdoorUi::Handler : public AsyncWebHandler {
   }
 
   void handle_compact_(AsyncWebServerRequest *request) {
-    request->send(200, "text/plain; charset=utf-8", this->parent_->counter_->get_compact_state_text().c_str());
+    const std::string body = this->parent_->counter_->get_compact_state_text();
+    request->send(200, "text/plain; charset=utf-8", body.c_str());
   }
 
   void handle_trace_(AsyncWebServerRequest *request) {
-    request->send(200, "text/plain; charset=utf-8", this->parent_->counter_->get_trace_log_text().c_str());
+    const std::string body = this->parent_->counter_->get_trace_log_text();
+    request->send(200, "text/plain; charset=utf-8", body.c_str());
   }
 
   void handle_action_(AsyncWebServerRequest *request) {
