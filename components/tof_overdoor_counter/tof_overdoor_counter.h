@@ -65,7 +65,7 @@ class TofOverdoorCounter : public PollingComponent {
  public:
   static constexpr size_t SENSOR_COUNT = 4;
   static constexpr size_t EVENT_LOG_SIZE = 12;
-  static constexpr size_t HISTORY_SIZE = 48;
+  static constexpr size_t HISTORY_SIZE = 512;
   static constexpr size_t EVENT_EDGE_SIZE = 20;
 
   struct PersistedCalibration {
@@ -185,6 +185,7 @@ class TofOverdoorCounter : public PollingComponent {
   void reset_unsure_in();
   void reset_unsure_out();
   void reset_all_counters();
+  void reset_trace_buffer();
   void persist_runtime_state();
 
   float get_discovered_sensor_count() const;
@@ -244,6 +245,8 @@ class TofOverdoorCounter : public PollingComponent {
   std::string get_last_reason_text() const;
   std::string get_passage_state_text() const;
   std::string get_debug_snapshot_text() const;
+  std::string get_compact_state_text() const;
+  std::string get_trace_log_text() const;
   std::string get_blocked_sensor_text() const;
   std::string get_summary() const;
   std::string get_discovery_map() const;
@@ -310,6 +313,7 @@ class TofOverdoorCounter : public PollingComponent {
     uint8_t active_mask{0};
     uint8_t rising_mask{0};
     uint8_t falling_mask{0};
+    uint8_t passage_state{PASSAGE_IDLE};
   };
 
   struct EventEdge {

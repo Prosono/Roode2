@@ -13,6 +13,7 @@ constexpr uint8_t PERSISTED_STATE_VERSION = 4;
 constexpr uint32_t STALE_READING_MS = 450;
 constexpr uint32_t COLD_BOOT_SETTLE_MS = 250;
 constexpr uint32_t CALIBRATION_CLEAR_SETTLE_MS = 120;
+constexpr uint32_t TRACE_SAMPLE_INTERVAL_MS = 25;
 constexpr float FILTER_ALPHA = 0.65f;
 constexpr float BASELINE_TRACK_ALPHA = 0.015f;
 constexpr float NOISE_TRACK_ALPHA = 0.08f;
@@ -901,6 +902,15 @@ void TofOverdoorCounter::reset_all_counters() {
   this->state_dirty_ = true;
 }
 
+void TofOverdoorCounter::reset_trace_buffer() {
+  this->history_head_ = 0;
+  this->history_count_ = 0;
+  this->event_log_count_ = 0;
+  std::fill(std::begin(this->history_), std::end(this->history_), HistorySample{});
+  std::fill(std::begin(this->event_log_), std::end(this->event_log_), std::string{});
+  this->last_reason_ = "Trace buffer reset";
+}
+
 void TofOverdoorCounter::process_calibration_() {
   const uint32_t now = millis();
   uint8_t healthy_sensors = 0;
@@ -1648,9 +1658,24 @@ void TofOverdoorCounter::finalize_event_(bool timed_out) {
 }
 
 void TofOverdoorCounter::record_history_snapshot_(uint32_t now) {
+  bool has_edge = false;
+  for (const auto &channel : this->channels_) {
+    if (channel.rising_edge || channel.falling_edge) {
+      has_edge = true;
+      break;
+    }
+  }
+  if (!has_edge && this->history_count_ > 0) {
+    const auto &previous = this->history_[(this->history_head_ + HISTORY_SIZE - 1) % HISTORY_SIZE];
+    if ((now - previous.timestamp_ms) < TRACE_SAMPLE_INTERVAL_MS) {
+      return;
+    }
+  }
+
   auto &snapshot = this->history_[this->history_head_];
   snapshot = HistorySample{};
   snapshot.timestamp_ms = now;
+  snapshot.passage_state = this->passage_state_;
 
   for (size_t index = 0; index < this->channels_.size() && index < SENSOR_COUNT; index++) {
     const auto &channel = this->channels_[index];
@@ -2391,6 +2416,83 @@ std::string TofOverdoorCounter::get_debug_snapshot_text() const {
     oss << " " << this->channels_[index].sensor_label << "[raw=" << snapshot.raw_distance[index]
         << ",filtered=" << snapshot.filtered_distance[index]
         << ",status=" << range_status_name(snapshot.range_status[index]) << "]";
+  }
+  return oss.str();
+}
+
+std::string TofOverdoorCounter::get_compact_state_text() const {
+  std::ostringstream oss;
+  oss << "status=" << this->system_status_text_(this->system_status_)
+      << "\tphase=" << this->phase_text_
+      << "\tstate=" << this->passage_state_text_(this->passage_state_)
+      << "\tpresence=" << (this->get_presence_state() > 0.5f ? "1" : "0")
+      << "\tlast_direction=" << this->last_direction_
+      << "\tin=" << this->confirmed_in_count_
+      << "\tout=" << this->confirmed_out_count_
+      << "\tunsure_in=" << this->unsure_in_count_
+      << "\tunsure_out=" << this->unsure_out_count_
+      << "\tconfidence=" << static_cast<unsigned>(this->last_confidence_)
+      << "\treason=" << this->last_reason_;
+
+  for (size_t index = 0; index < this->channels_.size() && index < SENSOR_COUNT; index++) {
+    const auto &channel = this->channels_[index];
+    const float logic_distance = this->channel_logic_distance_(channel);
+    oss << "\t" << channel.sensor_label << "_raw=" << channel.raw_distance
+        << "\t" << channel.sensor_label << "_filtered=";
+    if (std::isnan(logic_distance)) {
+      oss << "nan";
+    } else {
+      oss << static_cast<int>(logic_distance);
+    }
+    oss << "\t" << channel.sensor_label << "_drop=";
+    if (std::isnan(channel.baseline) || std::isnan(logic_distance)) {
+      oss << "nan";
+    } else {
+      oss << static_cast<int>(channel.baseline - logic_distance);
+    }
+    oss << "\t" << channel.sensor_label << "_active=" << (channel.active ? "1" : "0")
+        << "\t" << channel.sensor_label << "_status=" << range_status_name(channel.range_status);
+  }
+  return oss.str();
+}
+
+std::string TofOverdoorCounter::get_trace_log_text() const {
+  std::ostringstream oss;
+  oss << "# Roode compact trace\n";
+  oss << "# " << this->get_compact_state_text() << "\n";
+  oss << "# event_log_begin\n" << this->get_event_log() << "\n# event_log_end\n";
+  oss << "t_ms\tstate\tactive\trising\tfalling";
+  for (size_t index = 0; index < this->channels_.size() && index < SENSOR_COUNT; index++) {
+    const auto &channel = this->channels_[index];
+    oss << "\t" << channel.sensor_label << "_raw"
+        << "\t" << channel.sensor_label << "_filtered"
+        << "\t" << channel.sensor_label << "_drop"
+        << "\t" << channel.sensor_label << "_status";
+  }
+  oss << "\n";
+
+  const uint32_t count = std::min<uint32_t>(this->history_count_, HISTORY_SIZE);
+  for (uint32_t offset = 0; offset < count; offset++) {
+    const uint32_t index = (this->history_head_ + HISTORY_SIZE - count + offset) % HISTORY_SIZE;
+    const auto &snapshot = this->history_[index];
+    oss << snapshot.timestamp_ms << "\t" << this->passage_state_text_(static_cast<PassageState>(snapshot.passage_state))
+        << "\t" << this->sensor_mask_text_(snapshot.active_mask)
+        << "\t" << this->sensor_mask_text_(snapshot.rising_mask)
+        << "\t" << this->sensor_mask_text_(snapshot.falling_mask);
+
+    for (size_t sensor_index = 0; sensor_index < this->channels_.size() && sensor_index < SENSOR_COUNT; sensor_index++) {
+      const auto &channel = this->channels_[sensor_index];
+      const int filtered = snapshot.filtered_distance[sensor_index] == 0 ? -1 : snapshot.filtered_distance[sensor_index];
+      int drop = -9999;
+      if (!std::isnan(channel.baseline) && filtered >= 0) {
+        drop = static_cast<int>(channel.baseline) - filtered;
+      }
+      oss << "\t" << snapshot.raw_distance[sensor_index]
+          << "\t" << filtered
+          << "\t" << drop
+          << "\t" << range_status_name(snapshot.range_status[sensor_index]);
+    }
+    oss << "\n";
   }
   return oss.str();
 }

@@ -1486,7 +1486,8 @@ class TofOverdoorUi::Handler : public AsyncWebHandler {
     char url_buf[AsyncWebServerRequest::URL_BUF_SIZE];
     auto url = request->url_to(url_buf);
     auto method = request->method();
-    if (method == HTTP_GET && (url == "/" || url == "/tof-overdoor-ui/state")) {
+    if (method == HTTP_GET && (url == "/" || url == "/tof-overdoor-ui/state" || url == "/tof-overdoor-ui/compact" ||
+                               url == "/tof-overdoor-ui/trace")) {
       return true;
     }
     if (method == HTTP_POST && url == "/tof-overdoor-ui/action") {
@@ -1505,6 +1506,14 @@ class TofOverdoorUi::Handler : public AsyncWebHandler {
     }
     if (request->method() == HTTP_GET && url == "/tof-overdoor-ui/state") {
       this->handle_state_(request);
+      return;
+    }
+    if (request->method() == HTTP_GET && url == "/tof-overdoor-ui/compact") {
+      this->handle_compact_(request);
+      return;
+    }
+    if (request->method() == HTTP_GET && url == "/tof-overdoor-ui/trace") {
+      this->handle_trace_(request);
       return;
     }
     if (request->method() == HTTP_POST && url == "/tof-overdoor-ui/action") {
@@ -1603,6 +1612,14 @@ class TofOverdoorUi::Handler : public AsyncWebHandler {
     request->send(200, "application/json", json.c_str());
   }
 
+  void handle_compact_(AsyncWebServerRequest *request) {
+    request->send(200, "text/plain; charset=utf-8", this->parent_->counter_->get_compact_state_text().c_str());
+  }
+
+  void handle_trace_(AsyncWebServerRequest *request) {
+    request->send(200, "text/plain; charset=utf-8", this->parent_->counter_->get_trace_log_text().c_str());
+  }
+
   void handle_action_(AsyncWebServerRequest *request) {
     auto *counter = this->parent_->counter_;
     const auto action = request->arg("action");
@@ -1630,6 +1647,9 @@ class TofOverdoorUi::Handler : public AsyncWebHandler {
       counter->reset_all_counters();
       counter->persist_runtime_state();
       message = "All counters reset.";
+    } else if (action == "reset_trace") {
+      counter->reset_trace_buffer();
+      message = "Trace buffer reset.";
     } else if (action == "restart") {
       message = "Restarting ESP.";
       auto response = json::build_json([&message](JsonObject root) {
