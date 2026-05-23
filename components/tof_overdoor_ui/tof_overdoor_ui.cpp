@@ -18,7 +18,7 @@ static const char *const TAG = "tof_overdoor_ui";
 namespace {
 
 const char *const SENSOR_CARD_LABELS[] = {"U3", "U4", "U7", "U8"};
-const char *const SENSOR_GROUP_LABELS[] = {"OUT group", "IN group", "OUT group", "IN group"};
+const char *const SENSOR_GROUP_LABELS[] = {"Independent vote", "Independent vote", "Independent vote", "Independent vote"};
 
 int parse_int_arg(AsyncWebServerRequest *request, const char *name, int fallback) {
   if (!request->hasArg(name)) {
@@ -734,11 +734,11 @@ const char OVERDOOR_UI_HTML[] = R"html(
           </article>
           <article class="hero-tip">
             <strong>2</strong>
-            <p>OUT means the right sensor column U3/U7. IN means the left sensor column U4/U8.</p>
+            <p>Each sensor now runs its own two-zone Roode path and votes IN or OUT.</p>
           </article>
           <article class="hero-tip">
             <strong>3</strong>
-            <p>A clean pass should trigger one group first, then the other, before the doorway clears again.</p>
+            <p>A clean count needs at least two sensors to vote the same direction.</p>
           </article>
         </div>
       </section>
@@ -758,7 +758,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
           </div>
           <div class="aside-note">
             <strong>What to watch first</strong>
-            <p>Start with the live groups, then the event reason, and finally the per-sensor cards if one side looks suspicious or noisy.</p>
+            <p>Start with the event reason, then the vote zones and per-sensor cards if one sensor looks suspicious or noisy.</p>
           </div>
         </section>
       </aside>
@@ -835,11 +835,11 @@ const char OVERDOOR_UI_HTML[] = R"html(
           <div class="diag-head">
             <div>
               <p class="eyebrow">Live doorway view</p>
-              <h2>OUT and IN sensor groups</h2>
+              <h2>OUT and IN vote zones</h2>
             </div>
             <div class="pill" id="standing-pill">Doorway clear</div>
           </div>
-          <p class="settings-copy" id="doorway-copy">U3/U7 are one doorway-depth column. U4/U8 are the other. The first column to trigger decides the direction candidate.</p>
+          <p class="settings-copy" id="doorway-copy">Every physical sensor alternates between an OUT ROI and an IN ROI. Two matching sensor votes are required before the counter increments.</p>
           <div class="door-grid" id="group-grid"></div>
         </section>
 
@@ -1097,14 +1097,11 @@ const char OVERDOOR_UI_HTML[] = R"html(
       if (state.system_status === 'Blocked') {
         return 'At least one sensor has stayed active too long, or someone is standing in the doorway. The counter waits for the opening to clear before it trusts a new event.';
       }
-      if (phase.includes('out group triggered first')) {
-        return 'OUT triggered first. If IN follows and enough sensors agree before the timeout, this becomes a valid OUT candidate unless direction is inverted.';
+      if (phase.includes('waiting for 2 sensors')) {
+        return 'One or more sensors has produced a direction vote. The counter is waiting for a second matching vote before it counts.';
       }
-      if (phase.includes('in group triggered first')) {
-        return 'IN triggered first. If OUT follows and enough sensors agree before the timeout, this becomes a valid IN candidate unless direction is inverted.';
-      }
-      if (phase.includes('detect')) {
-        return 'The state machine is actively evaluating a pass and waiting to see whether enough sensors agree.';
+      if (phase.includes('per-sensor')) {
+        return 'Each physical sensor is watching its own OUT and IN zones and will vote only after a complete Roode path.';
       }
       if (phase.includes('cooldown')) {
         return 'A short cooldown is active to keep one pass from being counted twice.';
@@ -1114,7 +1111,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
 
     function groupDescription(group, active) {
       if (active) {
-        return `${group.label} currently sees something closer than its usual baseline.`;
+        return `${group.label} currently sees something closer than the trigger threshold.`;
       }
       return `${group.label} looks clear right now.`;
     }
@@ -1469,7 +1466,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
 std::string default_subtitle(const tof_overdoor_counter::TofOverdoorCounter *counter) {
   return counter->is_monitor_mode()
              ? "Live monitor for four working ToF sensors, focused on baselines, agreement, and placement stability."
-             : "Local four-sensor people counter with OUT = U3/U7 and IN = U4/U8, including calibration, confidence, and event reasoning.";
+             : "Local four-sensor people counter where each ToF sensor votes independently, and two matching votes confirm IN or OUT.";
 }
 
 const char *sensor_group_label_for_index(size_t index) {
@@ -1582,8 +1579,8 @@ class TofOverdoorUi::Handler : public AsyncWebHandler {
       for (size_t group_index = 0; group_index < 2; group_index++) {
         auto group = groups.add<JsonObject>();
         group["label"] = counter->get_group_label(group_index);
-        group["description"] = group_index == 0 ? "Right sensor column used for OUT-first detection." :
-                                                    "Left sensor column used for IN-first detection.";
+        group["description"] = group_index == 0 ? "Nearest OUT ROI across all four physical sensors." :
+                                                    "Nearest IN ROI across all four physical sensors.";
         group["active"] = counter->get_row_active_state(group_index) > 0.5f;
         group["distance"] = counter->get_row_distance_mm(group_index);
         group["baseline"] = counter->get_row_baseline_mm(group_index);

@@ -19,6 +19,12 @@ constexpr float BASELINE_TRACK_ALPHA = 0.015f;
 constexpr float NOISE_TRACK_ALPHA = 0.08f;
 constexpr uint16_t MIN_VALID_DISTANCE_MM = 30;
 constexpr uint16_t MAX_VALID_DISTANCE_MM = 4000;
+constexpr uint8_t ROODE_ZONE_WIDTH = 8;
+constexpr uint8_t ROODE_ZONE_HEIGHT = 16;
+constexpr uint8_t ROODE_OUT_ZONE_CENTER = 167;
+constexpr uint8_t ROODE_IN_ZONE_CENTER = 231;
+constexpr uint8_t ROODE_NOBODY = 0;
+constexpr uint8_t ROODE_SOMEONE = 1;
 constexpr uint8_t GROUP_STATE_NONE = 0;
 constexpr uint8_t GROUP_STATE_OUT_ONLY = 1;
 constexpr uint8_t GROUP_STATE_IN_ONLY = 2;
@@ -40,11 +46,8 @@ const char *sensor_name_for_pin(uint8_t pin_number) {
 }
 
 SensorGroup group_for_pin(uint8_t pin_number) {
-  // Physical layout from top to bottom is:
-  //   left column:  U8, broken U6, U4
-  //   right column: U7, broken U5, U3
-  // Direction must be inferred from the two doorway-depth columns, not from
-  // top/bottom rows. U5/U6 are intentionally excluded.
+  // Legacy physical grouping kept for old row entities. Direction is now
+  // decided per physical sensor from its two Roode ROI zones, then voted 2-of-4.
   switch (pin_number) {
     case 16:
     case 23:
@@ -70,6 +73,14 @@ const char *group_name(SensorGroup group) {
 
 const char *group_debug_name(SensorGroup group) {
   return group == GROUP_NONE ? "none" : group_name(group);
+}
+
+const char *zone_name(uint8_t zone_index) {
+  return zone_index == ZONE_OUT ? "OUT-zone" : "IN-zone";
+}
+
+uint8_t roi_center_for_zone(uint8_t zone_index) {
+  return zone_index == ZONE_OUT ? ROODE_OUT_ZONE_CENTER : ROODE_IN_ZONE_CENTER;
 }
 
 SensorGroup group_from_state_code(uint8_t state_code) {
@@ -370,14 +381,8 @@ bool TofOverdoorCounter::configure_sensor_(Channel &channel) {
     return false;
   }
 
-  status = sensor.SetROI(16, 16);
-  if (status != VL53L1_ERROR_NONE) {
-    channel.last_error = status;
-    return false;
-  }
-  status = sensor.SetROICenter(199);
-  if (status != VL53L1_ERROR_NONE) {
-    channel.last_error = status;
+  channel.current_zone = ZONE_OUT;
+  if (!this->set_channel_roi_(channel, channel.current_zone)) {
     return false;
   }
   const EDistanceMode sensor_distance_mode =
@@ -422,6 +427,12 @@ bool TofOverdoorCounter::start_all_ranging_() {
       delay(1);
     }
 
+    channel.current_zone = ZONE_OUT;
+    if (!this->set_channel_roi_(channel, channel.current_zone)) {
+      ESP_LOGW(TAG, "Failed to select initial ROI on %s (err %d)", channel.source_label.c_str(), channel.last_error);
+      continue;
+    }
+
     const auto status = sensor.StartRanging();
     if (status != VL53L1_ERROR_NONE) {
       channel.last_error = status;
@@ -462,6 +473,9 @@ bool TofOverdoorCounter::read_channel_(Channel &channel) {
     return true;
   }
 
+  const uint8_t zone_index = channel.current_zone >= SENSOR_ZONE_COUNT ? ZONE_OUT : channel.current_zone;
+  auto &zone = channel.zones[zone_index];
+
   VL53L1X_Result_t result{};
   status = sensor.GetResult(&result);
   if (status != VL53L1_ERROR_NONE) {
@@ -479,44 +493,56 @@ bool TofOverdoorCounter::read_channel_(Channel &channel) {
     return false;
   }
 
+  const uint32_t now = millis();
+  zone.raw_distance = result.Distance;
+  zone.range_status = result.Status;
+  zone.last_update_ms = now;
+
   channel.raw_distance = result.Distance;
   channel.range_status = result.Status;
   channel.signal_per_spad = result.SigPerSPAD;
   channel.ambient_rate = result.Ambient;
   channel.spad_count = result.NumSPADs;
-  channel.last_update_ms = millis();
+  channel.last_update_ms = now;
 
   if (!this->range_result_is_valid_(result)) {
-    channel.valid_measurement = false;
-    channel.sample_rejected = true;
-    channel.consecutive_invalid++;
+    zone.valid_measurement = false;
+    zone.sample_rejected = true;
+    zone.consecutive_invalid++;
     channel.last_error = 0;
     channel.consecutive_errors = 0;
     channel.last_read_duration_ms = millis() - started;
+    this->refresh_channel_aggregate_from_zones_(channel);
+    if (!this->switch_channel_zone_(channel)) {
+      return false;
+    }
     if (this->debug_logging_) {
-      ESP_LOGD(TAG, "%s rejected range sample distance=%u status=%s signal=%u ambient=%u spads=%u",
-               channel.sensor_label.c_str(), result.Distance, range_status_name(result.Status), result.SigPerSPAD,
-               result.Ambient, result.NumSPADs);
+      ESP_LOGD(TAG, "%s %s rejected range sample distance=%u status=%s signal=%u ambient=%u spads=%u",
+               channel.sensor_label.c_str(), zone_name(zone_index), result.Distance, range_status_name(result.Status),
+               result.SigPerSPAD, result.Ambient, result.NumSPADs);
     }
     return true;
   }
 
-  this->update_channel_sampling_(channel, result.Distance);
-  const float sampled_distance = channel.has_sampled_distance ? static_cast<float>(channel.sampled_distance)
-                                                              : static_cast<float>(result.Distance);
-  channel.filtered_distance =
-      std::isnan(channel.filtered_distance) ? sampled_distance
-                                            : (channel.filtered_distance * (1.0f - FILTER_ALPHA)) +
-                                                  (sampled_distance * FILTER_ALPHA);
-  channel.median_distance = sampled_distance;
-  channel.has_reading = true;
-  channel.valid_measurement = true;
-  channel.sample_rejected = false;
+  this->update_zone_sampling_(zone, result.Distance);
+  const float sampled_distance = zone.has_sampled_distance ? static_cast<float>(zone.sampled_distance)
+                                                           : static_cast<float>(result.Distance);
+  zone.filtered_distance =
+      std::isnan(zone.filtered_distance) ? sampled_distance
+                                         : (zone.filtered_distance * (1.0f - FILTER_ALPHA)) +
+                                               (sampled_distance * FILTER_ALPHA);
+  zone.has_reading = true;
+  zone.valid_measurement = true;
+  zone.sample_rejected = false;
+  zone.consecutive_invalid = 0;
+  zone.last_good_read_ms = now;
   channel.last_error = 0;
   channel.consecutive_errors = 0;
-  channel.consecutive_invalid = 0;
-  channel.last_good_read_ms = channel.last_update_ms;
   channel.last_read_duration_ms = millis() - started;
+  this->refresh_channel_aggregate_from_zones_(channel);
+  if (!this->switch_channel_zone_(channel)) {
+    return false;
+  }
   return true;
 }
 
@@ -545,7 +571,98 @@ void TofOverdoorCounter::update_channel_sampling_(Channel &channel, uint16_t dis
   channel.has_sampled_distance = true;
 }
 
+void TofOverdoorCounter::update_zone_sampling_(ZoneState &zone, uint16_t distance) {
+  zone.samples.insert(zone.samples.begin(), distance);
+  if (zone.samples.size() > this->sampling_size_) {
+    zone.samples.pop_back();
+  }
+
+  if (zone.samples.empty()) {
+    zone.has_sampled_distance = false;
+    zone.sampled_distance = 0;
+    return;
+  }
+
+  std::vector<uint16_t> sorted = zone.samples;
+  std::sort(sorted.begin(), sorted.end());
+  zone.sampled_distance = sorted[sorted.size() / 2];
+  zone.has_sampled_distance = true;
+}
+
+float TofOverdoorCounter::zone_logic_distance_(const ZoneState &zone) const {
+  if (!std::isnan(zone.filtered_distance)) {
+    return zone.filtered_distance;
+  }
+  if (zone.has_sampled_distance) {
+    return static_cast<float>(zone.sampled_distance);
+  }
+  if (zone.has_reading) {
+    return static_cast<float>(zone.raw_distance);
+  }
+  return NAN;
+}
+
+void TofOverdoorCounter::refresh_channel_aggregate_from_zones_(Channel &channel) {
+  bool any_reading = false;
+  bool any_valid = false;
+  float nearest = NAN;
+  uint16_t nearest_raw = 0;
+  uint8_t nearest_status = channel.range_status;
+  uint32_t last_update = 0;
+  uint32_t last_good = 0;
+  uint8_t worst_invalid = 0;
+
+  for (const auto &zone : channel.zones) {
+    if (zone.has_reading) {
+      any_reading = true;
+      last_update = std::max(last_update, zone.last_update_ms);
+    }
+    if (zone.valid_measurement) {
+      any_valid = true;
+      last_good = std::max(last_good, zone.last_good_read_ms);
+    }
+    worst_invalid = std::max(worst_invalid, zone.consecutive_invalid);
+
+    const float distance = this->zone_logic_distance_(zone);
+    if (!zone.has_reading || std::isnan(distance)) {
+      continue;
+    }
+    if (std::isnan(nearest) || distance < nearest) {
+      nearest = distance;
+      nearest_raw = zone.raw_distance;
+      nearest_status = zone.range_status;
+    }
+  }
+
+  channel.has_reading = any_reading;
+  channel.valid_measurement = any_valid;
+  channel.sample_rejected = any_reading && !any_valid;
+  channel.consecutive_invalid = any_valid ? 0 : worst_invalid;
+  channel.last_update_ms = last_update == 0 ? channel.last_update_ms : last_update;
+  channel.last_good_read_ms = last_good == 0 ? channel.last_good_read_ms : last_good;
+
+  if (!std::isnan(nearest)) {
+    channel.raw_distance = nearest_raw;
+    channel.filtered_distance = nearest;
+    channel.median_distance = nearest;
+    channel.sampled_distance = static_cast<uint16_t>(nearest);
+    channel.has_sampled_distance = true;
+    channel.range_status = nearest_status;
+  }
+}
+
 float TofOverdoorCounter::channel_logic_distance_(const Channel &channel) const {
+  float nearest = NAN;
+  for (const auto &zone : channel.zones) {
+    const float distance = this->zone_logic_distance_(zone);
+    if (!zone.has_reading || std::isnan(distance)) {
+      continue;
+    }
+    nearest = std::isnan(nearest) ? distance : std::min(nearest, distance);
+  }
+  if (!std::isnan(nearest)) {
+    return nearest;
+  }
   if (!std::isnan(channel.filtered_distance)) {
     return channel.filtered_distance;
   }
@@ -558,6 +675,57 @@ float TofOverdoorCounter::channel_logic_distance_(const Channel &channel) const 
   return NAN;
 }
 
+uint16_t TofOverdoorCounter::effective_clear_threshold_mm_() const {
+  const uint32_t clear_distance = this->clear_threshold_mm_ <= this->trigger_threshold_mm_
+                                      ? static_cast<uint32_t>(this->trigger_threshold_mm_) + this->clear_threshold_mm_
+                                      : this->clear_threshold_mm_;
+  return static_cast<uint16_t>(std::min<uint32_t>(clear_distance, MAX_VALID_DISTANCE_MM));
+}
+
+bool TofOverdoorCounter::set_channel_roi_(Channel &channel, uint8_t zone_index) {
+  if (!channel.sensor) {
+    channel.last_error = VL53L1_ERROR_CONTROL_INTERFACE;
+    return false;
+  }
+  auto &sensor = *channel.sensor;
+  auto status = sensor.SetROI(ROODE_ZONE_WIDTH, ROODE_ZONE_HEIGHT);
+  if (status != VL53L1_ERROR_NONE) {
+    channel.last_error = status;
+    return false;
+  }
+  status = sensor.SetROICenter(roi_center_for_zone(zone_index));
+  if (status != VL53L1_ERROR_NONE) {
+    channel.last_error = status;
+    return false;
+  }
+  channel.current_zone = zone_index;
+  return true;
+}
+
+bool TofOverdoorCounter::switch_channel_zone_(Channel &channel) {
+  if (!channel.sensor) {
+    channel.ranging_started = false;
+    return false;
+  }
+
+  auto &sensor = *channel.sensor;
+  const uint8_t next_zone = channel.current_zone == ZONE_OUT ? ZONE_IN : ZONE_OUT;
+  sensor.StopRanging();
+  delayMicroseconds(250);
+  if (!this->set_channel_roi_(channel, next_zone)) {
+    channel.ranging_started = false;
+    return false;
+  }
+  const auto status = sensor.StartRanging();
+  if (status != VL53L1_ERROR_NONE) {
+    channel.last_error = status;
+    channel.ranging_started = false;
+    return false;
+  }
+  channel.ranging_started = true;
+  return true;
+}
+
 bool TofOverdoorCounter::restart_ranging_(Channel &channel) {
   if (!channel.sensor) {
     channel.ranging_started = false;
@@ -567,6 +735,10 @@ bool TofOverdoorCounter::restart_ranging_(Channel &channel) {
   auto &sensor = *channel.sensor;
   sensor.StopRanging();
   delay(2);
+  if (!this->set_channel_roi_(channel, channel.current_zone >= SENSOR_ZONE_COUNT ? ZONE_OUT : channel.current_zone)) {
+    channel.ranging_started = false;
+    return false;
+  }
   const auto status = sensor.StartRanging();
   if (status != VL53L1_ERROR_NONE) {
     channel.last_error = status;
@@ -667,7 +839,7 @@ void TofOverdoorCounter::load_persisted_state_() {
   this->unsure_in_count_ = state.unsure_in;
   this->unsure_out_count_ = state.unsure_out;
   this->trigger_threshold_mm_ = sanitize_persisted<uint16_t>(state.trigger_threshold_mm, 40, 3000, 320);
-  this->clear_threshold_mm_ = sanitize_persisted<uint16_t>(state.clear_threshold_mm, 20, 2500, 180);
+  this->clear_threshold_mm_ = sanitize_persisted<uint16_t>(state.clear_threshold_mm, 20, 4000, 500);
   this->baseline_tolerance_mm_ = sanitize_persisted<uint16_t>(state.baseline_tolerance_mm, 10, 500, 80);
   this->minimum_clear_distance_mm_ = sanitize_persisted<uint16_t>(state.minimum_clear_distance_mm, 100, 4000, 600);
   this->debounce_ms_ = sanitize_persisted<uint16_t>(state.debounce_ms, 5, 5000, 45);
@@ -685,8 +857,8 @@ void TofOverdoorCounter::load_persisted_state_() {
   this->invert_direction_ = state.invert_direction != 0;
   this->debug_logging_ = state.debug_logging != 0;
 
-  if (this->clear_threshold_mm_ >= this->trigger_threshold_mm_) {
-    this->clear_threshold_mm_ = std::max<uint16_t>(20, this->trigger_threshold_mm_ / 2);
+  if (this->clear_threshold_mm_ <= this->trigger_threshold_mm_) {
+    this->clear_threshold_mm_ = this->effective_clear_threshold_mm_();
   }
   this->apply_calibration_defaults_();
 
@@ -708,7 +880,7 @@ void TofOverdoorCounter::apply_calibration_defaults_() {
   this->intermeasurement_ms_ = sanitize_persisted<uint16_t>(this->intermeasurement_ms_, 20, 5000, 33);
   this->sampling_size_ = sanitize_persisted<uint8_t>(this->sampling_size_, 1, 8, 3);
   this->trigger_threshold_mm_ = sanitize_persisted<uint16_t>(this->trigger_threshold_mm_, 40, 3000, 320);
-  this->clear_threshold_mm_ = sanitize_persisted<uint16_t>(this->clear_threshold_mm_, 20, 2500, 180);
+  this->clear_threshold_mm_ = sanitize_persisted<uint16_t>(this->clear_threshold_mm_, 20, 4000, 500);
   this->baseline_tolerance_mm_ = sanitize_persisted<uint16_t>(this->baseline_tolerance_mm_, 10, 500, 80);
   this->minimum_clear_distance_mm_ = sanitize_persisted<uint16_t>(this->minimum_clear_distance_mm_, 100, 4000, 600);
   this->debounce_ms_ = sanitize_persisted<uint32_t>(this->debounce_ms_, 5, 5000, 45);
@@ -730,8 +902,8 @@ void TofOverdoorCounter::apply_calibration_defaults_() {
   if (this->intermeasurement_ms_ < this->timing_budget_ms_) {
     this->intermeasurement_ms_ = this->timing_budget_ms_;
   }
-  if (this->clear_threshold_mm_ >= this->trigger_threshold_mm_) {
-    this->clear_threshold_mm_ = std::max<uint16_t>(20, this->trigger_threshold_mm_ / 2);
+  if (this->clear_threshold_mm_ <= this->trigger_threshold_mm_) {
+    this->clear_threshold_mm_ = this->effective_clear_threshold_mm_();
   }
 }
 
@@ -792,7 +964,7 @@ void TofOverdoorCounter::rediscover() {
     channel.address = next_address;
     channel.group = group_for_pin(channel.pin_number);
     channel.sensor_label = sensor_name_for_pin(channel.pin_number);
-    channel.source_label = channel.sensor_label + std::string(" / ") + group_name(channel.group) + " / GPIO" +
+    channel.source_label = channel.sensor_label + std::string(" / independent vote / GPIO") +
                            std::to_string(channel.pin_number);
 
     this->set_xshut_(index, true);
@@ -882,6 +1054,10 @@ void TofOverdoorCounter::recalibrate() {
     channel.calibration_min = NAN;
     channel.calibration_max = NAN;
     channel.calibration_samples = 0;
+    this->reset_channel_path_tracker_(channel);
+    for (auto &zone : channel.zones) {
+      zone = ZoneState{};
+    }
   }
 
   ESP_LOGI(TAG, "Calibration requested - waiting for a stable and empty doorway");
@@ -1071,63 +1247,129 @@ void TofOverdoorCounter::process_calibration_() {
 
 void TofOverdoorCounter::update_sensor_states_() {
   const uint32_t now = millis();
+  const uint16_t trigger_distance = this->trigger_threshold_mm_;
+  const uint16_t clear_distance = this->effective_clear_threshold_mm_();
 
   for (auto &channel : this->channels_) {
+    const bool was_active = channel.active;
+    const uint32_t previous_active_since = channel.active_since_ms;
     channel.rising_edge = false;
     channel.falling_edge = false;
-    const float logic_distance = this->channel_logic_distance_(channel);
 
-    if (!channel.initialized || !channel.has_reading || !channel.calibrated || std::isnan(logic_distance) ||
-        std::isnan(channel.baseline) || channel.stale || channel.consecutive_invalid >= 3) {
+    if (!channel.initialized || !channel.has_reading || channel.stale || channel.consecutive_invalid >= 3) {
+      for (auto &zone : channel.zones) {
+        zone.rising_edge = false;
+        zone.falling_edge = false;
+        zone.active = false;
+        zone.blocked = false;
+        zone.active_candidate_since_ms = 0;
+        zone.clear_candidate_since_ms = 0;
+        zone.active_since_ms = 0;
+        zone.active_duration_ms = 0;
+      }
       channel.active = false;
       channel.blocked = false;
       channel.active_candidate_since_ms = 0;
       channel.clear_candidate_since_ms = 0;
       channel.active_since_ms = 0;
+      if (was_active) {
+        channel.falling_edge = true;
+        channel.last_falling_ms = now;
+      }
       continue;
     }
 
-    const float drop = channel.baseline - logic_distance;
+    for (auto &zone : channel.zones) {
+      zone.rising_edge = false;
+      zone.falling_edge = false;
+      const float distance = this->zone_logic_distance_(zone);
+      const bool zone_stale = zone.last_good_read_ms == 0 || (now - zone.last_good_read_ms) > STALE_READING_MS;
 
-    if (!channel.active) {
-      if (drop >= static_cast<float>(this->trigger_threshold_mm_)) {
-        if (channel.active_candidate_since_ms == 0) {
-          channel.active_candidate_since_ms = now;
-        } else if ((now - channel.active_candidate_since_ms) >= this->debounce_ms_) {
-          channel.active = true;
-          channel.active_since_ms = channel.active_candidate_since_ms;
-          channel.last_rising_ms = channel.active_since_ms;
-          channel.active_duration_ms = 0;
-          channel.rising_edge = true;
-          channel.clear_candidate_since_ms = 0;
+      if (!zone.has_reading || zone_stale || zone.consecutive_invalid >= 3 || std::isnan(distance)) {
+        if (zone.active) {
+          zone.falling_edge = true;
+          zone.last_falling_ms = now;
         }
-      } else {
-        channel.active_candidate_since_ms = 0;
+        zone.active = false;
+        zone.blocked = false;
+        zone.active_candidate_since_ms = 0;
+        zone.clear_candidate_since_ms = 0;
+        zone.active_since_ms = 0;
+        zone.active_duration_ms = 0;
+        continue;
       }
-    } else {
-      if (drop <= static_cast<float>(this->clear_threshold_mm_)) {
-        if (channel.clear_candidate_since_ms == 0) {
-          channel.clear_candidate_since_ms = now;
-        } else if ((now - channel.clear_candidate_since_ms) >= this->debounce_ms_) {
-          channel.active = false;
-          channel.blocked = false;
-          channel.last_falling_ms = now;
-          channel.active_duration_ms = channel.active_since_ms == 0 ? 0 : now - channel.active_since_ms;
-          channel.falling_edge = true;
-          channel.active_candidate_since_ms = 0;
-          channel.clear_candidate_since_ms = 0;
-          channel.active_since_ms = 0;
+
+      if (!zone.active) {
+        if (distance <= static_cast<float>(trigger_distance)) {
+          if (zone.active_candidate_since_ms == 0) {
+            zone.active_candidate_since_ms = now;
+          } else if ((now - zone.active_candidate_since_ms) >= this->debounce_ms_) {
+            zone.active = true;
+            zone.active_since_ms = zone.active_candidate_since_ms;
+            zone.last_rising_ms = zone.active_since_ms;
+            zone.active_duration_ms = 0;
+            zone.rising_edge = true;
+            zone.clear_candidate_since_ms = 0;
+          }
+        } else {
+          zone.active_candidate_since_ms = 0;
         }
       } else {
-        channel.clear_candidate_since_ms = 0;
+        if (distance >= static_cast<float>(clear_distance)) {
+          if (zone.clear_candidate_since_ms == 0) {
+            zone.clear_candidate_since_ms = now;
+          } else if ((now - zone.clear_candidate_since_ms) >= this->debounce_ms_) {
+            zone.active = false;
+            zone.blocked = false;
+            zone.last_falling_ms = now;
+            zone.active_duration_ms = zone.active_since_ms == 0 ? 0 : now - zone.active_since_ms;
+            zone.falling_edge = true;
+            zone.active_candidate_since_ms = 0;
+            zone.clear_candidate_since_ms = 0;
+            zone.active_since_ms = 0;
+          }
+        } else {
+          zone.clear_candidate_since_ms = 0;
+        }
+      }
+
+      if (zone.active && zone.active_since_ms != 0 && (now - zone.active_since_ms) >= this->blocked_timeout_ms_) {
+        zone.blocked = true;
+      }
+      if (zone.active && zone.active_since_ms != 0) {
+        zone.active_duration_ms = now - zone.active_since_ms;
       }
     }
 
-    if (channel.active && channel.active_since_ms != 0 && (now - channel.active_since_ms) >= this->blocked_timeout_ms_) {
-      channel.blocked = true;
+    channel.active = false;
+    channel.blocked = false;
+    channel.active_since_ms = 0;
+    channel.active_duration_ms = 0;
+    for (const auto &zone : channel.zones) {
+      if (!zone.active) {
+        continue;
+      }
+      channel.active = true;
+      channel.blocked = channel.blocked || zone.blocked;
+      if (channel.active_since_ms == 0 || (zone.active_since_ms != 0 && zone.active_since_ms < channel.active_since_ms)) {
+        channel.active_since_ms = zone.active_since_ms;
+      }
     }
+
     if (channel.active && channel.active_since_ms != 0) {
       channel.active_duration_ms = now - channel.active_since_ms;
+    }
+    if (!was_active && channel.active) {
+      channel.rising_edge = true;
+      channel.last_rising_ms = channel.active_since_ms != 0 ? channel.active_since_ms : now;
+      channel.active_candidate_since_ms = channel.last_rising_ms;
+      channel.clear_candidate_since_ms = 0;
+    } else if (was_active && !channel.active) {
+      channel.falling_edge = true;
+      channel.last_falling_ms = now;
+      channel.active_duration_ms = previous_active_since == 0 ? 0 : now - previous_active_since;
+      channel.active_candidate_since_ms = 0;
+      channel.clear_candidate_since_ms = 0;
     }
   }
 }
@@ -1193,12 +1435,17 @@ void TofOverdoorCounter::clear_event_tracking_() {
   this->event_first_edge_ms_ = 0;
   this->event_last_edge_ms_ = 0;
   this->event_edge_count_ = 0;
+  this->sensor_vote_count_ = 0;
   this->event_path_size_ = 0;
   this->event_last_state_code_ = GROUP_STATE_NONE;
   std::fill(std::begin(this->event_path_), std::end(this->event_path_), GROUP_STATE_NONE);
   std::fill(std::begin(this->event_edges_), std::end(this->event_edges_), EventEdge{});
+  std::fill(std::begin(this->sensor_votes_), std::end(this->sensor_votes_), SensorVote{});
   for (auto &channel : this->channels_) {
     channel.first_trigger_in_event_ms = 0;
+    channel.pending_vote = GROUP_NONE;
+    channel.pending_vote_ms = 0;
+    channel.pending_vote_path.clear();
   }
 }
 
@@ -1353,6 +1600,213 @@ std::string TofOverdoorCounter::passage_state_text_(PassageState state) const {
   }
 }
 
+void TofOverdoorCounter::reset_channel_path_tracker_(Channel &channel) {
+  channel.roode_path[0] = 0;
+  channel.roode_path[1] = 0;
+  channel.roode_path[2] = 0;
+  channel.roode_path[3] = 0;
+  channel.roode_path_filling_size = 1;
+  channel.roode_previous_status[ZONE_OUT] = ROODE_NOBODY;
+  channel.roode_previous_status[ZONE_IN] = ROODE_NOBODY;
+  channel.roode_event_started_ms = 0;
+  channel.roode_last_activity_ms = 0;
+  channel.pending_vote = GROUP_NONE;
+  channel.pending_vote_ms = 0;
+  channel.pending_vote_path.clear();
+  channel.last_path_text = "CLEAR";
+}
+
+std::string TofOverdoorCounter::roode_path_text_(const Channel &channel) const {
+  std::ostringstream oss;
+  oss << "0";
+  for (uint8_t index = 1; index < channel.roode_path_filling_size && index < 4; index++) {
+    oss << "->" << static_cast<unsigned>(channel.roode_path[index]);
+  }
+  if (channel.roode_previous_status[ZONE_OUT] == ROODE_NOBODY &&
+      channel.roode_previous_status[ZONE_IN] == ROODE_NOBODY &&
+      (channel.roode_path_filling_size == 1 || channel.roode_path[channel.roode_path_filling_size - 1] != 0)) {
+    oss << "->0";
+  }
+  return oss.str();
+}
+
+void TofOverdoorCounter::update_channel_path_tracker_(Channel &channel, size_t index, uint32_t now) {
+  if (!channel.initialized || index >= SENSOR_COUNT) {
+    return;
+  }
+
+  if (channel.roode_event_started_ms != 0 && (now - channel.roode_event_started_ms) > this->detection_timeout_ms_) {
+    channel.last_vote_text = "timeout path " + this->roode_path_text_(channel);
+    this->reset_channel_path_tracker_(channel);
+    return;
+  }
+
+  for (uint8_t zone_index = 0; zone_index < SENSOR_ZONE_COUNT; zone_index++) {
+    const auto &zone = channel.zones[zone_index];
+    if (!zone.rising_edge && !zone.falling_edge) {
+      continue;
+    }
+
+    const uint8_t current_status = zone.active ? ROODE_SOMEONE : ROODE_NOBODY;
+    if (current_status == channel.roode_previous_status[zone_index]) {
+      continue;
+    }
+
+    uint8_t all_zones_status = 0;
+    if (zone_index == ZONE_OUT) {
+      if (current_status == ROODE_SOMEONE) {
+        all_zones_status += 1;
+      }
+      if (channel.roode_previous_status[ZONE_IN] == ROODE_SOMEONE) {
+        all_zones_status += 2;
+      }
+    } else {
+      if (current_status == ROODE_SOMEONE) {
+        all_zones_status += 2;
+      }
+      if (channel.roode_previous_status[ZONE_OUT] == ROODE_SOMEONE) {
+        all_zones_status += 1;
+      }
+    }
+
+    channel.roode_previous_status[zone_index] = current_status;
+    channel.roode_last_activity_ms = now;
+    if (current_status == ROODE_SOMEONE && channel.roode_event_started_ms == 0) {
+      channel.roode_event_started_ms = zone.last_rising_ms != 0 ? zone.last_rising_ms : now;
+      channel.roode_path[0] = 0;
+      channel.roode_path_filling_size = 1;
+    }
+
+    if (channel.roode_path_filling_size < 4) {
+      channel.roode_path_filling_size++;
+    }
+
+    if (channel.roode_previous_status[ZONE_OUT] == ROODE_NOBODY &&
+        channel.roode_previous_status[ZONE_IN] == ROODE_NOBODY) {
+      const std::string path = this->roode_path_text_(channel);
+      const uint32_t duration = channel.roode_event_started_ms == 0 ? 0 : now - channel.roode_event_started_ms;
+      SensorGroup vote = GROUP_NONE;
+
+      // Same shape as Lyr3x/Roode: 0,1,3,2,0 means OUT-zone first;
+      // 0,2,3,1,0 means IN-zone first. We do this inside each physical sensor.
+      if (channel.roode_path_filling_size == 4 &&
+          channel.roode_path[1] == 1 && channel.roode_path[2] == 3 && channel.roode_path[3] == 2) {
+        vote = GROUP_OUT;
+      } else if (channel.roode_path_filling_size == 4 &&
+                 channel.roode_path[1] == 2 && channel.roode_path[2] == 3 && channel.roode_path[3] == 1) {
+        vote = GROUP_IN;
+      }
+
+      if (vote != GROUP_NONE && duration >= this->min_active_duration_ms_) {
+        const std::string vote_text = std::string(group_name(vote)) + " path " + path + " duration " +
+                                      std::to_string(duration) + "ms";
+        channel.pending_vote = vote;
+        channel.pending_vote_ms = now;
+        channel.pending_vote_path = path;
+        channel.last_vote_text = vote_text;
+        if (this->debug_logging_) {
+          ESP_LOGD(TAG, "%s per-sensor vote %s (%s)", channel.sensor_label.c_str(), group_name(vote),
+                   channel.last_vote_text.c_str());
+        }
+        this->reset_channel_path_tracker_(channel);
+        channel.pending_vote = vote;
+        channel.pending_vote_ms = now;
+        channel.pending_vote_path = path;
+        channel.last_vote_text = vote_text;
+      } else {
+        channel.last_vote_text = "rejected path " + path + " duration " + std::to_string(duration) + "ms";
+        if (this->debug_logging_) {
+          ESP_LOGD(TAG, "%s per-sensor path rejected (%s)", channel.sensor_label.c_str(),
+                   channel.last_vote_text.c_str());
+        }
+        this->reset_channel_path_tracker_(channel);
+      }
+      channel.last_path_text = path;
+    } else {
+      if (channel.roode_path_filling_size > 0) {
+        channel.roode_path[channel.roode_path_filling_size - 1] = all_zones_status;
+      }
+      channel.last_path_text = this->roode_path_text_(channel);
+    }
+  }
+}
+
+void TofOverdoorCounter::clear_sensor_vote_window_() {
+  this->sensor_vote_count_ = 0;
+  std::fill(std::begin(this->sensor_votes_), std::end(this->sensor_votes_), SensorVote{});
+}
+
+void TofOverdoorCounter::collect_pending_sensor_votes_(uint32_t now) {
+  for (size_t index = 0; index < this->channels_.size() && index < SENSOR_COUNT; index++) {
+    auto &channel = this->channels_[index];
+    if (channel.pending_vote == GROUP_NONE) {
+      continue;
+    }
+
+    bool replaced_existing = false;
+    for (uint8_t vote_index = 0; vote_index < this->sensor_vote_count_; vote_index++) {
+      if (this->sensor_votes_[vote_index].sensor_index == index) {
+        auto &vote = this->sensor_votes_[vote_index];
+        vote.timestamp_ms = channel.pending_vote_ms == 0 ? now : channel.pending_vote_ms;
+        vote.direction = channel.pending_vote;
+        vote.sensor_label = channel.sensor_label;
+        vote.path_text = channel.pending_vote_path;
+        vote.reason = channel.last_vote_text;
+        replaced_existing = true;
+        break;
+      }
+    }
+
+    if (!replaced_existing && this->sensor_vote_count_ < SENSOR_COUNT) {
+      auto &vote = this->sensor_votes_[this->sensor_vote_count_++];
+      vote.timestamp_ms = channel.pending_vote_ms == 0 ? now : channel.pending_vote_ms;
+      vote.sensor_index = static_cast<uint8_t>(index);
+      vote.direction = channel.pending_vote;
+      vote.sensor_label = channel.sensor_label;
+      vote.path_text = channel.pending_vote_path;
+      vote.reason = channel.last_vote_text;
+    }
+
+    channel.pending_vote = GROUP_NONE;
+    channel.pending_vote_ms = 0;
+    channel.pending_vote_path.clear();
+  }
+
+  if (this->sensor_vote_count_ == 0) {
+    return;
+  }
+
+  uint8_t write_index = 0;
+  for (uint8_t read_index = 0; read_index < this->sensor_vote_count_; read_index++) {
+    const auto &vote = this->sensor_votes_[read_index];
+    if (vote.timestamp_ms != 0 && (now - vote.timestamp_ms) <= this->detection_timeout_ms_) {
+      if (write_index != read_index) {
+        this->sensor_votes_[write_index] = vote;
+      }
+      write_index++;
+    }
+  }
+  for (uint8_t index = write_index; index < SENSOR_COUNT; index++) {
+    this->sensor_votes_[index] = SensorVote{};
+  }
+  this->sensor_vote_count_ = write_index;
+}
+
+std::string TofOverdoorCounter::sensor_vote_text_() const {
+  if (this->sensor_vote_count_ == 0) {
+    return "none";
+  }
+  std::ostringstream oss;
+  for (uint8_t index = 0; index < this->sensor_vote_count_; index++) {
+    if (index > 0) {
+      oss << " ";
+    }
+    const auto &vote = this->sensor_votes_[index];
+    oss << vote.sensor_label << "=" << group_name(vote.direction) << "(" << vote.path_text << ")";
+  }
+  return oss.str();
+}
+
 void TofOverdoorCounter::update_detection_state_machine_() {
   const uint32_t now = millis();
 
@@ -1364,8 +1818,16 @@ void TofOverdoorCounter::update_detection_state_machine_() {
     return;
   }
 
+  for (size_t index = 0; index < this->channels_.size() && index < SENSOR_COUNT; index++) {
+    this->update_channel_path_tracker_(this->channels_[index], index, now);
+  }
+
   if (this->cooldown_until_ms_ != 0 && now < this->cooldown_until_ms_) {
     this->phase_text_ = "Cooldown after last detection";
+    this->clear_sensor_vote_window_();
+    for (auto &channel : this->channels_) {
+      this->reset_channel_path_tracker_(channel);
+    }
     return;
   }
   if (this->cooldown_until_ms_ != 0 && now >= this->cooldown_until_ms_) {
@@ -1373,149 +1835,122 @@ void TofOverdoorCounter::update_detection_state_machine_() {
   }
 
   const uint8_t active_count = this->active_sensor_count_();
-  const uint8_t active_out = this->active_sensor_count_for_group_(GROUP_OUT);
-  const uint8_t active_in = this->active_sensor_count_for_group_(GROUP_IN);
-  const uint8_t current_state_code = this->current_group_state_code_(active_out, active_in);
-  uint8_t active_mask = 0;
-  for (size_t index = 0; index < this->channels_.size(); index++) {
-    if (this->channels_[index].initialized && this->channels_[index].active) {
-      active_mask |= (1U << index);
+  if (active_count > 0) {
+    if (!this->event_active_) {
+      this->event_active_ = true;
+      this->event_started_ms_ = now;
+      this->event_last_activity_ms_ = now;
+      this->event_peak_active_count_ = active_count;
+      this->update_passage_state_(PASSAGE_POSSIBLE);
+    } else {
+      this->event_last_activity_ms_ = now;
+      this->event_peak_active_count_ = std::max(this->event_peak_active_count_, active_count);
+      this->update_passage_state_(active_count >= 2 ? PASSAGE_OCCUPIED : PASSAGE_POSSIBLE);
     }
   }
 
-  // A pass is evaluated as a whole event: rising/falling edges, group order, and the compressed
-  // group path are kept until the doorway clears, then finalize_event_ decides whether to count.
-  if (!this->event_active_) {
-    if (current_state_code == GROUP_STATE_NONE) {
-      this->person_standing_in_door_ = false;
-      this->standing_clear_since_ms_ = 0;
-      this->phase_text_ = "Ready";
-      this->update_passage_state_(PASSAGE_IDLE);
-      return;
-    }
+  this->collect_pending_sensor_votes_(now);
 
+  if (this->sensor_vote_count_ > 0 && !this->event_active_) {
     this->event_active_ = true;
-    uint32_t first_active_ts = now;
-    for (const auto &channel : this->channels_) {
-      if (!channel.initialized || !channel.active || channel.active_since_ms == 0) {
-        continue;
-      }
-      first_active_ts = std::min(first_active_ts, channel.active_since_ms);
-    }
-    this->event_started_ms_ = first_active_ts;
+    this->event_started_ms_ = this->sensor_votes_[0].timestamp_ms;
     this->event_last_activity_ms_ = now;
-    this->event_first_edge_ms_ = first_active_ts;
-    this->event_last_edge_ms_ = now;
-    this->event_first_group_ = this->determine_first_group_from_current_state_();
-    this->event_second_group_ = GROUP_NONE;
-    this->event_direction_group_ = GROUP_NONE;
-    this->event_sensor_mask_ = 0;
-    this->event_rising_mask_ = 0;
-    this->event_falling_mask_ = 0;
-    this->event_peak_active_count_ = 0;
-    this->event_peak_group_counts_[0] = 0;
-    this->event_peak_group_counts_[1] = 0;
-    this->person_standing_in_door_ = false;
-    this->update_passage_state_(PASSAGE_POSSIBLE);
-    this->append_event_path_state_(current_state_code, now);
-  } else if (current_state_code != this->event_last_state_code_) {
-    this->append_event_path_state_(current_state_code, now);
-  }
-
-  for (size_t index = 0; index < this->channels_.size(); index++) {
-    auto &channel = this->channels_[index];
-    if (!channel.initialized || !channel.active) {
-      continue;
-    }
-    if ((this->event_sensor_mask_ & (1U << index)) == 0) {
-      this->event_sensor_mask_ |= (1U << index);
-      channel.first_trigger_in_event_ms = channel.active_since_ms != 0 ? channel.active_since_ms : now;
-    }
-    if (channel.rising_edge) {
-      this->event_rising_mask_ |= (1U << index);
-      this->record_event_edge_(index, channel, true, channel.last_rising_ms != 0 ? channel.last_rising_ms : now,
-                               active_mask);
-    }
-  }
-  for (size_t index = 0; index < this->channels_.size(); index++) {
-    const auto &channel = this->channels_[index];
-    if (!channel.initialized || !channel.falling_edge) {
-      continue;
-    }
-    this->event_falling_mask_ |= (1U << index);
-    this->record_event_edge_(index, channel, false, channel.last_falling_ms != 0 ? channel.last_falling_ms : now,
-                             active_mask);
-  }
-
-  this->event_peak_active_count_ = std::max(this->event_peak_active_count_, active_count);
-  this->event_peak_group_counts_[GROUP_OUT] = std::max(this->event_peak_group_counts_[GROUP_OUT], active_out);
-  this->event_peak_group_counts_[GROUP_IN] = std::max(this->event_peak_group_counts_[GROUP_IN], active_in);
-  if (active_out >= 2 && this->event_group_confirmed_ms_[GROUP_OUT] == 0) {
-    this->event_group_confirmed_ms_[GROUP_OUT] = now;
-  }
-  if (active_in >= 2 && this->event_group_confirmed_ms_[GROUP_IN] == 0) {
-    this->event_group_confirmed_ms_[GROUP_IN] = now;
-  }
-
-  if (this->event_first_group_ == GROUP_NONE) {
-    this->event_first_group_ = this->determine_first_group_from_current_state_();
-  }
-  const SensorGroup resolved_first_group = this->resolve_event_first_group_();
-  if (resolved_first_group != GROUP_NONE) {
-    this->event_first_group_ = resolved_first_group;
-  }
-  if (this->event_first_group_ != GROUP_NONE) {
-    const SensorGroup other_group = this->event_first_group_ == GROUP_OUT ? GROUP_IN : GROUP_OUT;
-    if (this->triggered_sensor_count_for_group_(other_group) > 0) {
-      this->event_second_group_ = other_group;
-    }
-  }
-  if (active_count >= 2 || current_state_code == GROUP_STATE_BOTH) {
-    this->update_passage_state_(PASSAGE_OCCUPIED);
-  }
-  if (this->event_first_group_ != GROUP_NONE && this->event_second_group_ != GROUP_NONE) {
+    this->event_peak_active_count_ = std::max<uint8_t>(this->event_peak_active_count_, active_count);
     this->update_passage_state_(PASSAGE_SEQUENCE);
   }
-  if (this->event_first_group_ != GROUP_NONE && this->event_second_group_ != GROUP_NONE &&
-      this->event_direction_group_ == GROUP_NONE) {
-    this->event_direction_group_ = this->map_physical_group_to_direction_(this->event_first_group_);
-    this->event_direction_decided_ms_ = now;
-    this->update_passage_state_(PASSAGE_DIRECTION_DECIDED);
+
+  uint8_t physical_in_votes = 0;
+  uint8_t physical_out_votes = 0;
+  uint8_t vote_mask = 0;
+  for (uint8_t index = 0; index < this->sensor_vote_count_; index++) {
+    const auto &vote = this->sensor_votes_[index];
+    if (vote.direction == GROUP_IN) {
+      physical_in_votes++;
+    } else if (vote.direction == GROUP_OUT) {
+      physical_out_votes++;
+    }
+    vote_mask |= (1U << vote.sensor_index);
   }
 
-  if (current_state_code == GROUP_STATE_NONE) {
-    this->finalize_event_(false);
+  const uint8_t healthy = std::max<uint8_t>(2, this->healthy_sensor_count_());
+  const uint8_t required = std::min<uint8_t>(std::max<uint8_t>(2, this->min_event_sensors_), healthy);
+  const uint8_t logical_in_votes = this->invert_direction_ ? physical_out_votes : physical_in_votes;
+  const uint8_t logical_out_votes = this->invert_direction_ ? physical_in_votes : physical_out_votes;
+
+  if (logical_in_votes >= required || logical_out_votes >= required) {
+    DetectionOutcome outcome = OUTCOME_NONE;
+    std::string reason;
+
+    if (logical_in_votes >= required && logical_out_votes >= required) {
+      reason = "Detection cancelled: conflicting per-sensor votes (" + this->sensor_vote_text_() + ")";
+    } else if (logical_in_votes >= required) {
+      outcome = OUTCOME_IN;
+      reason = "Detection approved: " + std::to_string(logical_in_votes) + "/" + std::to_string(healthy) +
+               " sensors voted IN (" + this->sensor_vote_text_() + ")";
+    } else {
+      outcome = OUTCOME_OUT;
+      reason = "Detection approved: " + std::to_string(logical_out_votes) + "/" + std::to_string(healthy) +
+               " sensors voted OUT (" + this->sensor_vote_text_() + ")";
+    }
+
+    const uint8_t agreeing_votes = std::max(logical_in_votes, logical_out_votes);
+    uint8_t confidence = outcome == OUTCOME_NONE
+                             ? 0
+                             : clamp_quality(55.0f + (static_cast<float>(agreeing_votes) * 12.0f) +
+                                             (static_cast<float>(popcount_u8(vote_mask)) * 5.0f));
+
+    this->event_sensor_mask_ = vote_mask;
+    this->update_passage_state_(outcome == OUTCOME_NONE ? PASSAGE_CANCELLED : PASSAGE_COMPLETED);
+    this->register_detection_(outcome, confidence, reason);
+    this->cooldown_until_ms_ = now + this->cooldown_ms_;
+    this->person_standing_in_door_ = false;
+    this->clear_event_tracking_();
+    for (auto &channel : this->channels_) {
+      this->reset_channel_path_tracker_(channel);
+    }
+    this->phase_text_ = outcome == OUTCOME_NONE ? "Detection cancelled" : "Detection recorded";
     return;
   }
 
-  const bool stalled = this->event_last_activity_ms_ != 0 && (now - this->event_last_activity_ms_) >= this->detection_timeout_ms_;
-  const bool standing = (now - this->event_started_ms_) >= this->standing_timeout_ms_;
-  if (stalled || standing) {
+  const bool vote_window_timed_out =
+      this->event_active_ && this->event_started_ms_ != 0 && (now - this->event_started_ms_) >= this->detection_timeout_ms_;
+  const bool standing =
+      active_count > 0 && this->event_started_ms_ != 0 && (now - this->event_started_ms_) >= this->standing_timeout_ms_;
+
+  if (vote_window_timed_out && active_count == 0) {
+    std::string reason = "Detection cancelled: fewer than " + std::to_string(required) +
+                         " sensors agreed before timeout (votes " + this->sensor_vote_text_() + ")";
+    this->update_passage_state_(PASSAGE_TIMEOUT);
+    this->register_detection_(OUTCOME_NONE, 0, reason);
+    this->cooldown_until_ms_ = now + this->cooldown_ms_;
+    this->person_standing_in_door_ = false;
+    this->clear_event_tracking_();
+    this->phase_text_ = "Detection cancelled";
+    return;
+  }
+
+  if (standing) {
     this->person_standing_in_door_ = true;
-    this->standing_clear_since_ms_ = 0;
-    this->update_passage_state_(stalled ? PASSAGE_TIMEOUT : PASSAGE_OCCUPIED);
-  }
-
-  if (this->person_standing_in_door_) {
     this->phase_text_ = "Person standing in doorway";
+    this->update_passage_state_(PASSAGE_OCCUPIED);
     return;
   }
 
-  switch (current_state_code) {
-    case GROUP_STATE_OUT_ONLY:
-      this->phase_text_ = "OUT side active";
-      break;
-    case GROUP_STATE_IN_ONLY:
-      this->phase_text_ = "IN side active";
-      break;
-    case GROUP_STATE_BOTH:
-      this->phase_text_ = "Both sides active";
-      break;
-    case GROUP_STATE_NONE:
-    default:
-      this->phase_text_ = "Watching trigger order";
-      break;
+  if (active_count == 0 && this->sensor_vote_count_ == 0) {
+    this->person_standing_in_door_ = false;
+    this->standing_clear_since_ms_ = 0;
+    this->event_active_ = false;
+    this->event_started_ms_ = 0;
+    this->event_last_activity_ms_ = 0;
+    this->event_peak_active_count_ = 0;
+    this->phase_text_ = "Ready - waiting for per-sensor Roode paths";
+    this->update_passage_state_(PASSAGE_IDLE);
+    return;
   }
+
+  this->phase_text_ = "Waiting for 2 sensors to agree (" + std::to_string(logical_in_votes) + " IN, " +
+                      std::to_string(logical_out_votes) + " OUT)";
+  this->update_passage_state_(this->sensor_vote_count_ > 0 ? PASSAGE_SEQUENCE : PASSAGE_POSSIBLE);
 }
 
 void TofOverdoorCounter::register_detection_(DetectionOutcome outcome, uint8_t confidence, const std::string &reason) {
@@ -1824,7 +2259,21 @@ void TofOverdoorCounter::debug_log_sample_(uint32_t now) {
       oss << static_cast<int>(channel.baseline - logic_distance);
     }
     oss << ",active=" << (channel.active ? "1" : "0") << ",status=" << range_status_name(channel.range_status)
-        << "}";
+        << ",out_zone=";
+    const float out_zone = this->zone_logic_distance_(channel.zones[ZONE_OUT]);
+    if (std::isnan(out_zone)) {
+      oss << "nan";
+    } else {
+      oss << static_cast<int>(out_zone);
+    }
+    oss << "/" << (channel.zones[ZONE_OUT].active ? "1" : "0") << ",in_zone=";
+    const float in_zone = this->zone_logic_distance_(channel.zones[ZONE_IN]);
+    if (std::isnan(in_zone)) {
+      oss << "nan";
+    } else {
+      oss << static_cast<int>(in_zone);
+    }
+    oss << "/" << (channel.zones[ZONE_IN].active ? "1" : "0") << ",vote=" << channel.last_vote_text << "}";
   }
   ESP_LOGD(TAG, "%s", oss.str().c_str());
 }
@@ -1936,8 +2385,12 @@ uint8_t TofOverdoorCounter::active_sensor_count_() const {
 
 uint8_t TofOverdoorCounter::active_sensor_count_for_group_(SensorGroup group) const {
   uint8_t count = 0;
+  if (group == GROUP_NONE) {
+    return count;
+  }
+  const uint8_t zone_index = group == GROUP_OUT ? ZONE_OUT : ZONE_IN;
   for (const auto &channel : this->channels_) {
-    if (channel.initialized && channel.group == group && channel.active) {
+    if (channel.initialized && channel.zones[zone_index].active) {
       count++;
     }
   }
@@ -2036,9 +2489,14 @@ SensorGroup TofOverdoorCounter::first_group_from_path_() const {
 
 float TofOverdoorCounter::group_distance_internal_(SensorGroup group) const {
   float nearest = NAN;
+  if (group == GROUP_NONE) {
+    return nearest;
+  }
+  const uint8_t zone_index = group == GROUP_OUT ? ZONE_OUT : ZONE_IN;
   for (const auto &channel : this->channels_) {
-    const float logic_distance = this->channel_logic_distance_(channel);
-    if (!channel.initialized || !channel.has_reading || channel.group != group || std::isnan(logic_distance)) {
+    const auto &zone = channel.zones[zone_index];
+    const float logic_distance = this->zone_logic_distance_(zone);
+    if (!channel.initialized || !zone.has_reading || std::isnan(logic_distance)) {
       continue;
     }
     nearest = std::isnan(nearest) ? logic_distance : std::min(nearest, logic_distance);
@@ -2050,7 +2508,7 @@ float TofOverdoorCounter::group_baseline_internal_(SensorGroup group) const {
   float total = 0.0f;
   uint8_t count = 0;
   for (const auto &channel : this->channels_) {
-    if (!channel.initialized || !channel.calibrated || channel.group != group || std::isnan(channel.baseline)) {
+    if (!channel.initialized || !channel.calibrated || std::isnan(channel.baseline)) {
       continue;
     }
     total += channel.baseline;
@@ -2061,9 +2519,14 @@ float TofOverdoorCounter::group_baseline_internal_(SensorGroup group) const {
 
 float TofOverdoorCounter::group_drop_internal_(SensorGroup group) const {
   float drop = NAN;
+  if (group == GROUP_NONE) {
+    return drop;
+  }
+  const uint8_t zone_index = group == GROUP_OUT ? ZONE_OUT : ZONE_IN;
   for (const auto &channel : this->channels_) {
-    const float logic_distance = this->channel_logic_distance_(channel);
-    if (!channel.initialized || !channel.calibrated || channel.group != group || std::isnan(channel.baseline) ||
+    const auto &zone = channel.zones[zone_index];
+    const float logic_distance = this->zone_logic_distance_(zone);
+    if (!channel.initialized || !channel.calibrated || std::isnan(channel.baseline) ||
         std::isnan(logic_distance)) {
       continue;
     }
@@ -2436,7 +2899,7 @@ float TofOverdoorCounter::get_direction_window_value() const { return static_cas
 std::string TofOverdoorCounter::get_mode_text() const { return this->mode_ == OperatingMode::COUNT ? "Count" : "Monitor"; }
 
 std::string TofOverdoorCounter::get_group_label(size_t group_index) const {
-  return group_index == 0 ? "OUT group (U3/U7)" : "IN group (U4/U8)";
+  return group_index == 0 ? "OUT vote zones (all sensors)" : "IN vote zones (all sensors)";
 }
 
 std::string TofOverdoorCounter::get_status_text(size_t index) const {
@@ -2523,6 +2986,24 @@ std::string TofOverdoorCounter::get_compact_state_text() const {
     }
     oss << "\t" << channel.sensor_label << "_active=" << (channel.active ? "1" : "0")
         << "\t" << channel.sensor_label << "_status=" << range_status_name(channel.range_status);
+    const float out_zone = this->zone_logic_distance_(channel.zones[ZONE_OUT]);
+    const float in_zone = this->zone_logic_distance_(channel.zones[ZONE_IN]);
+    oss << "\t" << channel.sensor_label << "_out_zone=";
+    if (std::isnan(out_zone)) {
+      oss << "nan";
+    } else {
+      oss << static_cast<int>(out_zone);
+    }
+    oss << "\t" << channel.sensor_label << "_out_active=" << (channel.zones[ZONE_OUT].active ? "1" : "0")
+        << "\t" << channel.sensor_label << "_in_zone=";
+    if (std::isnan(in_zone)) {
+      oss << "nan";
+    } else {
+      oss << static_cast<int>(in_zone);
+    }
+    oss << "\t" << channel.sensor_label << "_in_active=" << (channel.zones[ZONE_IN].active ? "1" : "0")
+        << "\t" << channel.sensor_label << "_vote=" << channel.last_vote_text
+        << "\t" << channel.sensor_label << "_path=" << channel.last_path_text;
   }
   return oss.str();
 }
@@ -2590,7 +3071,7 @@ std::string TofOverdoorCounter::get_discovery_map() const {
       oss << " | ";
     }
     const auto &channel = this->channels_[i];
-    oss << channel.sensor_label << "=" << group_name(channel.group);
+    oss << channel.sensor_label << "=independent";
     if (channel.initialized) {
       char buffer[8];
       snprintf(buffer, sizeof(buffer), "0x%02X", channel.address);

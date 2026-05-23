@@ -59,7 +59,7 @@ web_server:
       name: Counting
       sorting_weight: 30
     - id: web_group_rows
-      name: Group Activity
+      name: Vote Zone Activity
       sorting_weight: 40
     - id: web_group_sensors
       name: Sensor Distances
@@ -92,7 +92,7 @@ tof_overdoor_counter:
   update_interval: 10ms
   base_address: 0x30
   trigger_delta: 320mm
-  release_delta: 180mm
+  release_delta: 500mm
   baseline_tolerance: 80mm
   debounce: 45ms
   sequence_timeout: 1600ms
@@ -269,7 +269,7 @@ number:
     unit_of_measurement: mm
     mode: box
     min_value: 40
-    max_value: 900
+    max_value: 1800
     step: 10
     update_interval: 2s
     web_server:
