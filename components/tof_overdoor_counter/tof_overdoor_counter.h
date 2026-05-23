@@ -457,6 +457,7 @@ class TofOverdoorCounter : public PollingComponent {
   uint8_t current_group_state_code_(uint8_t active_out, uint8_t active_in) const;
   void append_event_path_state_(uint8_t state_code, uint32_t now);
   std::string event_path_text_() const;
+  SensorGroup first_group_from_path_() const;
   float group_distance_internal_(SensorGroup group) const;
   float group_baseline_internal_(SensorGroup group) const;
   float group_drop_internal_(SensorGroup group) const;
@@ -472,6 +473,7 @@ class TofOverdoorCounter : public PollingComponent {
   std::string format_uptime_(uint32_t ms) const;
   std::string sensor_mask_text_(uint8_t mask) const;
   std::string event_edge_text_() const;
+  std::string event_timing_text_(SensorGroup resolved_first_group) const;
   void log_event_(const std::string &message);
   void register_detection_(DetectionOutcome outcome, uint8_t confidence, const std::string &reason);
   void restore_persisted_calibration_(Channel &channel, size_t index, const PersistedCalibration &persisted);

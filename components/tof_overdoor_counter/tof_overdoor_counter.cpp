@@ -40,13 +40,16 @@ const char *sensor_name_for_pin(uint8_t pin_number) {
 }
 
 SensorGroup group_for_pin(uint8_t pin_number) {
-  // The enclosure has two vertical working pairs: U3/U4 on one doorway side and U7/U8 on the other.
-  // U5/U6 are the broken middle pair and are intentionally not part of this four-sensor component.
+  // Physical layout from top to bottom is:
+  //   left column:  U8, broken U6, U4
+  //   right column: U7, broken U5, U3
+  // Direction must be inferred from the two doorway-depth columns, not from
+  // top/bottom rows. U5/U6 are intentionally excluded.
   switch (pin_number) {
     case 16:
-    case 17:
-      return GROUP_OUT;
     case 23:
+      return GROUP_OUT;
+    case 17:
     case 25:
       return GROUP_IN;
     default:
@@ -63,6 +66,20 @@ const char *group_name(SensorGroup group) {
     default:
       return "Unknown";
   }
+}
+
+const char *group_debug_name(SensorGroup group) {
+  return group == GROUP_NONE ? "none" : group_name(group);
+}
+
+SensorGroup group_from_state_code(uint8_t state_code) {
+  if (state_code == GROUP_STATE_OUT_ONLY) {
+    return GROUP_OUT;
+  }
+  if (state_code == GROUP_STATE_IN_ONLY) {
+    return GROUP_IN;
+  }
+  return GROUP_NONE;
 }
 
 const char *group_state_name(uint8_t state_code) {
@@ -1236,6 +1253,15 @@ SensorGroup TofOverdoorCounter::resolve_event_first_group_() const {
   const uint32_t in_ts = this->first_trigger_ts_for_group_(GROUP_IN);
   const uint32_t out_confirmed_ts = this->event_group_confirmed_ms_[GROUP_OUT];
   const uint32_t in_confirmed_ts = this->event_group_confirmed_ms_[GROUP_IN];
+  const SensorGroup path_first_group = this->first_group_from_path_();
+
+  // If the compressed path starts as OUT-only or IN-only, that is the clearest
+  // physical ordering signal. Do not let a later two-sensor confirmation on the
+  // other side rewrite the event; that produced misleading logs like
+  // "IN side first, path CLEAR->OUT->BOTH->CLEAR".
+  if (path_first_group != GROUP_NONE) {
+    return path_first_group;
+  }
 
   if (out_ts != 0 && in_ts == 0) {
     return GROUP_OUT;
@@ -1546,8 +1572,6 @@ void TofOverdoorCounter::finalize_event_(bool timed_out) {
   uint8_t first_state = GROUP_STATE_NONE;
   uint8_t last_state = GROUP_STATE_NONE;
   bool saw_both_state = false;
-  bool saw_out_only = false;
-  bool saw_in_only = false;
   bool saw_same_side_after_both = false;
   bool saw_opposite_side_after_both = false;
 
@@ -1560,7 +1584,6 @@ void TofOverdoorCounter::finalize_event_(bool timed_out) {
     if (state == GROUP_STATE_BOTH) {
       saw_both_state = true;
     } else if (state == GROUP_STATE_OUT_ONLY) {
-      saw_out_only = true;
       if (saw_both_state && resolved_first_group == GROUP_OUT) {
         saw_same_side_after_both = true;
       }
@@ -1568,7 +1591,6 @@ void TofOverdoorCounter::finalize_event_(bool timed_out) {
         saw_opposite_side_after_both = true;
       }
     } else if (state == GROUP_STATE_IN_ONLY) {
-      saw_in_only = true;
       if (saw_both_state && resolved_first_group == GROUP_IN) {
         saw_same_side_after_both = true;
       }
@@ -1587,10 +1609,16 @@ void TofOverdoorCounter::finalize_event_(bool timed_out) {
 
   const bool fast_cross_path = (resolved_first_group == GROUP_OUT && first_state == GROUP_STATE_OUT_ONLY && last_state == GROUP_STATE_IN_ONLY) ||
                                (resolved_first_group == GROUP_IN && first_state == GROUP_STATE_IN_ONLY && last_state == GROUP_STATE_OUT_ONLY);
+  const bool clean_one_sided_start =
+      (resolved_first_group == GROUP_OUT && first_state == GROUP_STATE_OUT_ONLY) ||
+      (resolved_first_group == GROUP_IN && first_state == GROUP_STATE_IN_ONLY);
+  const bool overlap_after_clean_start = clean_one_sided_start && saw_both_state;
+  const bool direction_shape_is_clear = path_crossed_doorway || fast_cross_path || overlap_after_clean_start;
+  const bool ambiguous_both_start = first_state == GROUP_STATE_BOTH;
   const bool ordered_two_group_sequence = resolved_first_group != GROUP_NONE && this->event_second_group_ != GROUP_NONE &&
                                           this->event_second_group_ != resolved_first_group;
   const bool valid_crossing = both_groups_seen && ordered_two_group_sequence && distinct_triggered >= required &&
-                              long_enough && (path_crossed_doorway || saw_both_state || fast_cross_path);
+                              long_enough && direction_shape_is_clear && !ambiguous_both_start;
   const bool backed_out_after_both = saw_same_side_after_both && !saw_opposite_side_after_both;
 
   DetectionOutcome outcome = OUTCOME_NONE;
@@ -1604,13 +1632,15 @@ void TofOverdoorCounter::finalize_event_(bool timed_out) {
     outcome = direction_group == GROUP_IN ? OUTCOME_IN : OUTCOME_OUT;
     reason = "Detection approved: " + std::to_string(distinct_triggered) + "/" + std::to_string(healthy) +
              " sensors triggered, " + std::string(group_name(resolved_first_group)) +
-             " side first, path " + this->event_path_text_() + ", edges " + this->event_edge_text_();
+             " side first, path " + this->event_path_text_() + ", " +
+             this->event_timing_text_(resolved_first_group) + ", edges " + this->event_edge_text_();
   } else if (resolved_first_group != GROUP_NONE && both_groups_seen && distinct_triggered >= 2 && long_enough) {
     const SensorGroup direction_group = this->map_physical_group_to_direction_(resolved_first_group);
     outcome = direction_group == GROUP_IN ? OUTCOME_UNSURE_IN : OUTCOME_UNSURE_OUT;
     reason = "Unsure detection: " + std::to_string(distinct_triggered) + "/" + std::to_string(healthy) +
              " sensors triggered, " + std::string(group_name(resolved_first_group)) +
-             " side first, path " + this->event_path_text_() + ", edges " + this->event_edge_text_();
+             " side first, path " + this->event_path_text_() + ", " +
+             this->event_timing_text_(resolved_first_group) + ", edges " + this->event_edge_text_();
   } else if (resolved_first_group != GROUP_NONE && !both_groups_seen) {
     reason = "Detection cancelled: only one physical side triggered (sensors " +
              this->sensor_mask_text_(this->event_sensor_mask_) + ", path " + this->event_path_text_() + ")";
@@ -1630,6 +1660,12 @@ void TofOverdoorCounter::finalize_event_(bool timed_out) {
     raw_confidence += saw_both_state ? 14.0f : 0.0f;
     raw_confidence += path_crossed_doorway ? 14.0f : 0.0f;
     raw_confidence += std::min<uint8_t>(20, this->event_peak_active_count_ * 5U);
+    if (!path_crossed_doorway && !fast_cross_path) {
+      raw_confidence -= 12.0f;
+    }
+    if (ambiguous_both_start) {
+      raw_confidence -= 30.0f;
+    }
     if (timed_out) {
       raw_confidence -= 15.0f;
     }
@@ -1987,6 +2023,17 @@ std::string TofOverdoorCounter::event_path_text_() const {
   return oss.str();
 }
 
+SensorGroup TofOverdoorCounter::first_group_from_path_() const {
+  if (this->event_path_size_ == 0) {
+    return GROUP_NONE;
+  }
+
+  // A BOTH-first path means the two physical sides overlapped before the state
+  // machine saw a clean side lead. Later one-sided states are useful for path
+  // shape, but they should not be rewritten as "first".
+  return group_from_state_code(this->event_path_[0]);
+}
+
 float TofOverdoorCounter::group_distance_internal_(SensorGroup group) const {
   float nearest = NAN;
   for (const auto &channel : this->channels_) {
@@ -2139,6 +2186,30 @@ std::string TofOverdoorCounter::event_edge_text_() const {
                             : "S?";
     oss << (edge.timestamp_ms - this->event_started_ms_) << "ms:" << label << (edge.rising ? "+" : "-");
   }
+  return oss.str();
+}
+
+std::string TofOverdoorCounter::event_timing_text_(SensorGroup resolved_first_group) const {
+  const uint32_t out_ts = this->first_trigger_ts_for_group_(GROUP_OUT);
+  const uint32_t in_ts = this->first_trigger_ts_for_group_(GROUP_IN);
+  const uint32_t out_confirmed_ts = this->event_group_confirmed_ms_[GROUP_OUT];
+  const uint32_t in_confirmed_ts = this->event_group_confirmed_ms_[GROUP_IN];
+  const SensorGroup path_first_group = this->first_group_from_path_();
+
+  auto relative_text = [this](uint32_t timestamp) -> std::string {
+    if (timestamp == 0 || this->event_started_ms_ == 0) {
+      return "n/a";
+    }
+    return std::to_string(timestamp - this->event_started_ms_) + "ms";
+  };
+
+  std::ostringstream oss;
+  oss << "timing first=" << group_debug_name(resolved_first_group)
+      << " path_first=" << group_debug_name(path_first_group)
+      << " edge_out=" << relative_text(out_ts)
+      << " edge_in=" << relative_text(in_ts)
+      << " pair_out=" << relative_text(out_confirmed_ts)
+      << " pair_in=" << relative_text(in_confirmed_ts);
   return oss.str();
 }
 
@@ -2365,7 +2436,7 @@ float TofOverdoorCounter::get_direction_window_value() const { return static_cas
 std::string TofOverdoorCounter::get_mode_text() const { return this->mode_ == OperatingMode::COUNT ? "Count" : "Monitor"; }
 
 std::string TofOverdoorCounter::get_group_label(size_t group_index) const {
-  return group_index == 0 ? "OUT group (U3/U4)" : "IN group (U7/U8)";
+  return group_index == 0 ? "OUT group (U3/U7)" : "IN group (U4/U8)";
 }
 
 std::string TofOverdoorCounter::get_status_text(size_t index) const {
