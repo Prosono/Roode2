@@ -9,14 +9,15 @@ namespace tof_overdoor_counter {
 namespace {
 
 static const char *const TAG = "tof_overdoor_counter";
-constexpr uint8_t PERSISTED_STATE_VERSION = 3;
+constexpr uint8_t PERSISTED_STATE_VERSION = 4;
 constexpr uint32_t STALE_READING_MS = 450;
 constexpr uint32_t COLD_BOOT_SETTLE_MS = 250;
 constexpr uint32_t CALIBRATION_CLEAR_SETTLE_MS = 120;
-constexpr uint32_t GROUP_SIMULTANEOUS_WINDOW_MS = 35;
-constexpr float FILTER_ALPHA = 0.42f;
+constexpr float FILTER_ALPHA = 0.65f;
 constexpr float BASELINE_TRACK_ALPHA = 0.015f;
 constexpr float NOISE_TRACK_ALPHA = 0.08f;
+constexpr uint16_t MIN_VALID_DISTANCE_MM = 30;
+constexpr uint16_t MAX_VALID_DISTANCE_MM = 4000;
 constexpr uint8_t GROUP_STATE_NONE = 0;
 constexpr uint8_t GROUP_STATE_OUT_ONLY = 1;
 constexpr uint8_t GROUP_STATE_IN_ONLY = 2;
@@ -38,11 +39,13 @@ const char *sensor_name_for_pin(uint8_t pin_number) {
 }
 
 SensorGroup group_for_pin(uint8_t pin_number) {
+  // The enclosure has two vertical working pairs: U3/U4 on one doorway side and U7/U8 on the other.
+  // U5/U6 are the broken middle pair and are intentionally not part of this four-sensor component.
   switch (pin_number) {
     case 16:
-    case 23:
-      return GROUP_OUT;
     case 17:
+      return GROUP_OUT;
+    case 23:
     case 25:
       return GROUP_IN;
     default:
@@ -72,6 +75,29 @@ const char *group_state_name(uint8_t state_code) {
     case GROUP_STATE_NONE:
     default:
       return "CLEAR";
+  }
+}
+
+const char *range_status_name(uint8_t status) {
+  switch (status) {
+    case RangeValid:
+      return "valid";
+    case SigmaFail:
+      return "sigma_fail";
+    case SignalFail:
+      return "signal_fail";
+    case MinRangeFail:
+      return "min_range_fail";
+    case PhaseOutOfLimit:
+      return "phase_limit";
+    case HardwareFail:
+      return "hardware_fail";
+    case RangeValidNoWrapCheck:
+      return "valid_no_wrap";
+    case WrapTargetFail:
+      return "wrap_fail";
+    default:
+      return "unknown";
   }
 }
 
@@ -165,6 +191,8 @@ void TofOverdoorCounter::update() {
   }
 
   this->update_sensor_states_();
+  this->record_history_snapshot_(millis());
+  this->debug_log_sample_(millis());
   this->apply_idle_baseline_tracking_();
   this->update_blocked_state_();
 
@@ -172,6 +200,7 @@ void TofOverdoorCounter::update() {
     this->update_detection_state_machine_();
   } else {
     this->clear_event_tracking_();
+    this->update_passage_state_(PASSAGE_IDLE);
     this->person_standing_in_door_ = false;
     this->phase_text_ = this->ready_for_counting_() ? "Monitoring live distances" : "Waiting for stable readings";
   }
@@ -201,10 +230,14 @@ void TofOverdoorCounter::dump_config() {
   ESP_LOGCONFIG(TAG, "  Cooldown: %u ms", this->cooldown_ms_);
   ESP_LOGCONFIG(TAG, "  Blocked Timeout: %u ms", this->blocked_timeout_ms_);
   ESP_LOGCONFIG(TAG, "  Standing Timeout: %u ms", this->standing_timeout_ms_);
+  ESP_LOGCONFIG(TAG, "  Min Event Sensors: %u", this->min_event_sensors_);
+  ESP_LOGCONFIG(TAG, "  Min Active Duration: %u ms", this->min_active_duration_ms_);
+  ESP_LOGCONFIG(TAG, "  Direction Window: %u ms", this->direction_window_ms_);
   ESP_LOGCONFIG(TAG, "  Calibration Samples: %u", this->calibration_samples_);
   ESP_LOGCONFIG(TAG, "  Min Valid Sensors: %u", this->min_valid_sensors_);
   ESP_LOGCONFIG(TAG, "  Max People Inside: %u", this->max_people_inside_);
   ESP_LOGCONFIG(TAG, "  Invert Direction: %s", this->invert_direction_ ? "YES" : "NO");
+  ESP_LOGCONFIG(TAG, "  Debug Logging: %s", this->debug_logging_ ? "YES" : "NO");
   for (size_t i = 0; i < this->channels_.size(); i++) {
     const auto &channel = this->channels_[i];
     ESP_LOGCONFIG(TAG, "  Slot %u -> %s, group=%s, initialized=%s, address=0x%02X",
@@ -411,8 +444,8 @@ bool TofOverdoorCounter::read_channel_(Channel &channel) {
     return true;
   }
 
-  uint16_t distance = 0;
-  status = sensor.GetDistanceInMm(&distance);
+  VL53L1X_Result_t result{};
+  status = sensor.GetResult(&result);
   if (status != VL53L1_ERROR_NONE) {
     channel.last_error = status;
     channel.consecutive_errors++;
@@ -428,20 +461,52 @@ bool TofOverdoorCounter::read_channel_(Channel &channel) {
     return false;
   }
 
-  channel.raw_distance = distance;
-  this->update_channel_sampling_(channel, distance);
-  const float sampled_distance = this->channel_logic_distance_(channel);
+  channel.raw_distance = result.Distance;
+  channel.range_status = result.Status;
+  channel.signal_per_spad = result.SigPerSPAD;
+  channel.ambient_rate = result.Ambient;
+  channel.spad_count = result.NumSPADs;
+  channel.last_update_ms = millis();
+
+  if (!this->range_result_is_valid_(result)) {
+    channel.valid_measurement = false;
+    channel.sample_rejected = true;
+    channel.consecutive_invalid++;
+    channel.last_error = 0;
+    channel.consecutive_errors = 0;
+    channel.last_read_duration_ms = millis() - started;
+    if (this->debug_logging_) {
+      ESP_LOGD(TAG, "%s rejected range sample distance=%u status=%s signal=%u ambient=%u spads=%u",
+               channel.sensor_label.c_str(), result.Distance, range_status_name(result.Status), result.SigPerSPAD,
+               result.Ambient, result.NumSPADs);
+    }
+    return true;
+  }
+
+  this->update_channel_sampling_(channel, result.Distance);
+  const float sampled_distance = channel.has_sampled_distance ? static_cast<float>(channel.sampled_distance)
+                                                              : static_cast<float>(result.Distance);
   channel.filtered_distance =
       std::isnan(channel.filtered_distance) ? sampled_distance
                                             : (channel.filtered_distance * (1.0f - FILTER_ALPHA)) +
                                                   (sampled_distance * FILTER_ALPHA);
+  channel.median_distance = sampled_distance;
   channel.has_reading = true;
+  channel.valid_measurement = true;
+  channel.sample_rejected = false;
   channel.last_error = 0;
   channel.consecutive_errors = 0;
-  channel.last_update_ms = millis();
+  channel.consecutive_invalid = 0;
   channel.last_good_read_ms = channel.last_update_ms;
   channel.last_read_duration_ms = millis() - started;
   return true;
+}
+
+bool TofOverdoorCounter::range_result_is_valid_(const VL53L1X_Result_t &result) const {
+  if (result.Distance < MIN_VALID_DISTANCE_MM || result.Distance > MAX_VALID_DISTANCE_MM) {
+    return false;
+  }
+  return result.Status == RangeValid || result.Status == RangeValidNoWrapCheck;
 }
 
 void TofOverdoorCounter::update_channel_sampling_(Channel &channel, uint16_t distance) {
@@ -456,11 +521,16 @@ void TofOverdoorCounter::update_channel_sampling_(Channel &channel, uint16_t dis
     return;
   }
 
-  channel.sampled_distance = *std::min_element(channel.samples.begin(), channel.samples.end());
+  std::vector<uint16_t> sorted = channel.samples;
+  std::sort(sorted.begin(), sorted.end());
+  channel.sampled_distance = sorted[sorted.size() / 2];
   channel.has_sampled_distance = true;
 }
 
 float TofOverdoorCounter::channel_logic_distance_(const Channel &channel) const {
+  if (!std::isnan(channel.filtered_distance)) {
+    return channel.filtered_distance;
+  }
   if (channel.has_sampled_distance) {
     return static_cast<float>(channel.sampled_distance);
   }
@@ -532,7 +602,43 @@ void TofOverdoorCounter::load_persisted_state_() {
   }
 
   PersistedState state{};
-  if (!this->persisted_state_pref_.load(&state) || state.version != PERSISTED_STATE_VERSION) {
+  bool loaded = this->persisted_state_pref_.load(&state) && state.version == PERSISTED_STATE_VERSION;
+
+  if (!loaded && global_preferences != nullptr) {
+    PersistedStateV3 legacy{};
+    auto legacy_pref = global_preferences->make_preference<PersistedStateV3>(this->preference_key_(), true);
+    if (legacy_pref.load(&legacy) && legacy.version == 3) {
+      state.version = PERSISTED_STATE_VERSION;
+      state.people_inside = legacy.people_inside;
+      state.confirmed_in = legacy.confirmed_in;
+      state.confirmed_out = legacy.confirmed_out;
+      state.unsure_in = legacy.unsure_in;
+      state.unsure_out = legacy.unsure_out;
+      state.trigger_threshold_mm = legacy.trigger_threshold_mm;
+      state.clear_threshold_mm = legacy.clear_threshold_mm;
+      state.baseline_tolerance_mm = legacy.baseline_tolerance_mm;
+      state.minimum_clear_distance_mm = legacy.minimum_clear_distance_mm;
+      state.debounce_ms = legacy.debounce_ms;
+      state.detection_timeout_ms = legacy.detection_timeout_ms;
+      state.cooldown_ms = legacy.cooldown_ms;
+      state.blocked_timeout_ms = legacy.blocked_timeout_ms;
+      state.standing_timeout_ms = legacy.standing_timeout_ms;
+      state.calibration_samples = legacy.calibration_samples;
+      state.max_people_inside = legacy.max_people_inside;
+      state.min_valid_sensors = legacy.min_valid_sensors;
+      state.auto_save_enabled = legacy.auto_save_enabled;
+      state.invert_direction = legacy.invert_direction;
+      for (size_t index = 0; index < SENSOR_COUNT; index++) {
+        state.calibrations[index] = legacy.calibrations[index];
+      }
+      loaded = true;
+      this->state_dirty_ = true;
+      ESP_LOGI(TAG, "Migrated saved counter state from version 3 to version %u",
+               static_cast<unsigned>(PERSISTED_STATE_VERSION));
+    }
+  }
+
+  if (!loaded) {
     this->apply_calibration_defaults_();
     return;
   }
@@ -551,11 +657,15 @@ void TofOverdoorCounter::load_persisted_state_() {
   this->cooldown_ms_ = sanitize_persisted<uint16_t>(state.cooldown_ms, 0, 20000, 500);
   this->blocked_timeout_ms_ = sanitize_persisted<uint16_t>(state.blocked_timeout_ms, 200, 60000, 1800);
   this->standing_timeout_ms_ = sanitize_persisted<uint16_t>(state.standing_timeout_ms, 200, 60000, 2200);
+  this->min_event_sensors_ = sanitize_persisted<uint16_t>(state.min_event_sensors, 2, SENSOR_COUNT, 2);
+  this->min_active_duration_ms_ = sanitize_persisted<uint16_t>(state.min_active_duration_ms, 0, 1000, 35);
+  this->direction_window_ms_ = sanitize_persisted<uint16_t>(state.direction_window_ms, 10, 1000, 90);
   this->calibration_samples_ = sanitize_persisted<uint16_t>(state.calibration_samples, 4, 128, 24);
   this->max_people_inside_ = sanitize_persisted<uint16_t>(state.max_people_inside, 1, 5000, 50);
   this->min_valid_sensors_ = sanitize_persisted<uint8_t>(state.min_valid_sensors, 2, SENSOR_COUNT, 3);
   this->auto_save_enabled_ = state.auto_save_enabled != 0;
   this->invert_direction_ = state.invert_direction != 0;
+  this->debug_logging_ = state.debug_logging != 0;
 
   if (this->clear_threshold_mm_ >= this->trigger_threshold_mm_) {
     this->clear_threshold_mm_ = std::max<uint16_t>(20, this->trigger_threshold_mm_ / 2);
@@ -578,7 +688,7 @@ void TofOverdoorCounter::apply_calibration_defaults_() {
   this->i2c_frequency_ = sanitize_persisted<uint32_t>(this->i2c_frequency_, 100000, 400000, 400000);
   this->timing_budget_ms_ = sanitize_persisted<uint16_t>(this->timing_budget_ms_, 20, 1000, 33);
   this->intermeasurement_ms_ = sanitize_persisted<uint16_t>(this->intermeasurement_ms_, 20, 5000, 33);
-  this->sampling_size_ = sanitize_persisted<uint8_t>(this->sampling_size_, 1, 8, 2);
+  this->sampling_size_ = sanitize_persisted<uint8_t>(this->sampling_size_, 1, 8, 3);
   this->trigger_threshold_mm_ = sanitize_persisted<uint16_t>(this->trigger_threshold_mm_, 40, 3000, 320);
   this->clear_threshold_mm_ = sanitize_persisted<uint16_t>(this->clear_threshold_mm_, 20, 2500, 180);
   this->baseline_tolerance_mm_ = sanitize_persisted<uint16_t>(this->baseline_tolerance_mm_, 10, 500, 80);
@@ -588,6 +698,9 @@ void TofOverdoorCounter::apply_calibration_defaults_() {
   this->cooldown_ms_ = sanitize_persisted<uint32_t>(this->cooldown_ms_, 0, 20000, 500);
   this->blocked_timeout_ms_ = sanitize_persisted<uint32_t>(this->blocked_timeout_ms_, 200, 60000, 1800);
   this->standing_timeout_ms_ = sanitize_persisted<uint32_t>(this->standing_timeout_ms_, 200, 60000, 2200);
+  this->min_event_sensors_ = sanitize_persisted<uint8_t>(this->min_event_sensors_, 2, SENSOR_COUNT, 2);
+  this->min_active_duration_ms_ = sanitize_persisted<uint32_t>(this->min_active_duration_ms_, 0, 1000, 35);
+  this->direction_window_ms_ = sanitize_persisted<uint32_t>(this->direction_window_ms_, 10, 1000, 90);
   this->calibration_samples_ = sanitize_persisted<uint16_t>(this->calibration_samples_, 4, 128, 24);
   this->max_people_inside_ = sanitize_persisted<uint16_t>(this->max_people_inside_, 1, 5000, 50);
   this->min_valid_sensors_ = sanitize_persisted<uint8_t>(this->min_valid_sensors_, 2, SENSOR_COUNT, 3);
@@ -625,11 +738,15 @@ void TofOverdoorCounter::persist_runtime_state() {
   state.cooldown_ms = static_cast<uint16_t>(this->cooldown_ms_);
   state.blocked_timeout_ms = static_cast<uint16_t>(this->blocked_timeout_ms_);
   state.standing_timeout_ms = static_cast<uint16_t>(this->standing_timeout_ms_);
+  state.min_event_sensors = this->min_event_sensors_;
+  state.min_active_duration_ms = static_cast<uint16_t>(this->min_active_duration_ms_);
+  state.direction_window_ms = static_cast<uint16_t>(this->direction_window_ms_);
   state.calibration_samples = this->calibration_samples_;
   state.max_people_inside = this->max_people_inside_;
   state.min_valid_sensors = this->min_valid_sensors_;
   state.auto_save_enabled = this->auto_save_enabled_ ? 1 : 0;
   state.invert_direction = this->invert_direction_ ? 1 : 0;
+  state.debug_logging = this->debug_logging_ ? 1 : 0;
   for (size_t index = 0; index < this->channels_.size() && index < SENSOR_COUNT; index++) {
     state.calibrations[index] = this->build_persisted_calibration_(this->channels_[index]);
   }
@@ -646,6 +763,7 @@ void TofOverdoorCounter::rediscover() {
   this->channels_.clear();
   this->channels_.resize(this->xshut_pins_.size());
   this->clear_event_tracking_();
+  this->update_passage_state_(PASSAGE_IDLE);
   this->set_all_xshut_(false);
   delay(this->wake_delay_ms_);
 
@@ -722,14 +840,22 @@ void TofOverdoorCounter::recalibrate() {
   this->blocked_sensor_text_ = "None";
   this->phase_text_ = "Waiting for clear doorway to calibrate";
   this->clear_event_tracking_();
+  this->update_passage_state_(PASSAGE_IDLE);
   this->cooldown_until_ms_ = 0;
 
   for (auto &channel : this->channels_) {
     channel.active = false;
     channel.blocked = false;
+    channel.valid_measurement = false;
+    channel.sample_rejected = false;
+    channel.rising_edge = false;
+    channel.falling_edge = false;
     channel.active_candidate_since_ms = 0;
     channel.clear_candidate_since_ms = 0;
     channel.active_since_ms = 0;
+    channel.last_rising_ms = 0;
+    channel.last_falling_ms = 0;
+    channel.active_duration_ms = 0;
     channel.samples.clear();
     channel.has_sampled_distance = false;
     channel.sampled_distance = 0;
@@ -920,10 +1046,12 @@ void TofOverdoorCounter::update_sensor_states_() {
   const uint32_t now = millis();
 
   for (auto &channel : this->channels_) {
+    channel.rising_edge = false;
+    channel.falling_edge = false;
     const float logic_distance = this->channel_logic_distance_(channel);
 
     if (!channel.initialized || !channel.has_reading || !channel.calibrated || std::isnan(logic_distance) ||
-        std::isnan(channel.baseline)) {
+        std::isnan(channel.baseline) || channel.stale || channel.consecutive_invalid >= 3) {
       channel.active = false;
       channel.blocked = false;
       channel.active_candidate_since_ms = 0;
@@ -941,6 +1069,9 @@ void TofOverdoorCounter::update_sensor_states_() {
         } else if ((now - channel.active_candidate_since_ms) >= this->debounce_ms_) {
           channel.active = true;
           channel.active_since_ms = channel.active_candidate_since_ms;
+          channel.last_rising_ms = channel.active_since_ms;
+          channel.active_duration_ms = 0;
+          channel.rising_edge = true;
           channel.clear_candidate_since_ms = 0;
         }
       } else {
@@ -953,6 +1084,9 @@ void TofOverdoorCounter::update_sensor_states_() {
         } else if ((now - channel.clear_candidate_since_ms) >= this->debounce_ms_) {
           channel.active = false;
           channel.blocked = false;
+          channel.last_falling_ms = now;
+          channel.active_duration_ms = channel.active_since_ms == 0 ? 0 : now - channel.active_since_ms;
+          channel.falling_edge = true;
           channel.active_candidate_since_ms = 0;
           channel.clear_candidate_since_ms = 0;
           channel.active_since_ms = 0;
@@ -964,6 +1098,9 @@ void TofOverdoorCounter::update_sensor_states_() {
 
     if (channel.active && channel.active_since_ms != 0 && (now - channel.active_since_ms) >= this->blocked_timeout_ms_) {
       channel.blocked = true;
+    }
+    if (channel.active && channel.active_since_ms != 0) {
+      channel.active_duration_ms = now - channel.active_since_ms;
     }
   }
 }
@@ -1016,15 +1153,23 @@ void TofOverdoorCounter::clear_event_tracking_() {
   this->standing_clear_since_ms_ = 0;
   this->event_first_group_ = GROUP_NONE;
   this->event_second_group_ = GROUP_NONE;
+  this->event_direction_group_ = GROUP_NONE;
   this->event_sensor_mask_ = 0;
+  this->event_rising_mask_ = 0;
+  this->event_falling_mask_ = 0;
   this->event_peak_active_count_ = 0;
   this->event_peak_group_counts_[0] = 0;
   this->event_peak_group_counts_[1] = 0;
   this->event_group_confirmed_ms_[GROUP_OUT] = 0;
   this->event_group_confirmed_ms_[GROUP_IN] = 0;
+  this->event_direction_decided_ms_ = 0;
+  this->event_first_edge_ms_ = 0;
+  this->event_last_edge_ms_ = 0;
+  this->event_edge_count_ = 0;
   this->event_path_size_ = 0;
   this->event_last_state_code_ = GROUP_STATE_NONE;
   std::fill(std::begin(this->event_path_), std::end(this->event_path_), GROUP_STATE_NONE);
+  std::fill(std::begin(this->event_edges_), std::end(this->event_edges_), EventEdge{});
   for (auto &channel : this->channels_) {
     channel.first_trigger_in_event_ms = 0;
   }
@@ -1090,7 +1235,7 @@ SensorGroup TofOverdoorCounter::resolve_event_first_group_() const {
   }
   if (out_ts != 0 && in_ts != 0) {
     const uint32_t delta = out_ts > in_ts ? (out_ts - in_ts) : (in_ts - out_ts);
-    if (delta > GROUP_SIMULTANEOUS_WINDOW_MS) {
+    if (delta > this->direction_window_ms_) {
       if (out_ts < in_ts) {
         return GROUP_OUT;
       }
@@ -1149,6 +1294,29 @@ std::string TofOverdoorCounter::direction_text_for_group_(SensorGroup physical_g
   return unsure ? "UNSURE" : "UNKNOWN";
 }
 
+std::string TofOverdoorCounter::passage_state_text_(PassageState state) const {
+  switch (state) {
+    case PASSAGE_IDLE:
+      return "idle";
+    case PASSAGE_POSSIBLE:
+      return "possible_passage";
+    case PASSAGE_OCCUPIED:
+      return "person_in_doorway";
+    case PASSAGE_SEQUENCE:
+      return "sequence_observed";
+    case PASSAGE_DIRECTION_DECIDED:
+      return "direction_decided";
+    case PASSAGE_COMPLETED:
+      return "passage_completed";
+    case PASSAGE_CANCELLED:
+      return "cancelled";
+    case PASSAGE_TIMEOUT:
+      return "timeout";
+    default:
+      return "unknown";
+  }
+}
+
 void TofOverdoorCounter::update_detection_state_machine_() {
   const uint32_t now = millis();
 
@@ -1156,6 +1324,7 @@ void TofOverdoorCounter::update_detection_state_machine_() {
     this->phase_text_ = "Waiting for stable calibration";
     this->clear_event_tracking_();
     this->person_standing_in_door_ = false;
+    this->update_passage_state_(PASSAGE_IDLE);
     return;
   }
 
@@ -1171,25 +1340,47 @@ void TofOverdoorCounter::update_detection_state_machine_() {
   const uint8_t active_out = this->active_sensor_count_for_group_(GROUP_OUT);
   const uint8_t active_in = this->active_sensor_count_for_group_(GROUP_IN);
   const uint8_t current_state_code = this->current_group_state_code_(active_out, active_in);
+  uint8_t active_mask = 0;
+  for (size_t index = 0; index < this->channels_.size(); index++) {
+    if (this->channels_[index].initialized && this->channels_[index].active) {
+      active_mask |= (1U << index);
+    }
+  }
 
+  // A pass is evaluated as a whole event: rising/falling edges, group order, and the compressed
+  // group path are kept until the doorway clears, then finalize_event_ decides whether to count.
   if (!this->event_active_) {
     if (current_state_code == GROUP_STATE_NONE) {
       this->person_standing_in_door_ = false;
       this->standing_clear_since_ms_ = 0;
       this->phase_text_ = "Ready";
+      this->update_passage_state_(PASSAGE_IDLE);
       return;
     }
 
     this->event_active_ = true;
-    this->event_started_ms_ = now;
+    uint32_t first_active_ts = now;
+    for (const auto &channel : this->channels_) {
+      if (!channel.initialized || !channel.active || channel.active_since_ms == 0) {
+        continue;
+      }
+      first_active_ts = std::min(first_active_ts, channel.active_since_ms);
+    }
+    this->event_started_ms_ = first_active_ts;
     this->event_last_activity_ms_ = now;
+    this->event_first_edge_ms_ = first_active_ts;
+    this->event_last_edge_ms_ = now;
     this->event_first_group_ = this->determine_first_group_from_current_state_();
     this->event_second_group_ = GROUP_NONE;
+    this->event_direction_group_ = GROUP_NONE;
     this->event_sensor_mask_ = 0;
+    this->event_rising_mask_ = 0;
+    this->event_falling_mask_ = 0;
     this->event_peak_active_count_ = 0;
     this->event_peak_group_counts_[0] = 0;
     this->event_peak_group_counts_[1] = 0;
     this->person_standing_in_door_ = false;
+    this->update_passage_state_(PASSAGE_POSSIBLE);
     this->append_event_path_state_(current_state_code, now);
   } else if (current_state_code != this->event_last_state_code_) {
     this->append_event_path_state_(current_state_code, now);
@@ -1204,6 +1395,20 @@ void TofOverdoorCounter::update_detection_state_machine_() {
       this->event_sensor_mask_ |= (1U << index);
       channel.first_trigger_in_event_ms = channel.active_since_ms != 0 ? channel.active_since_ms : now;
     }
+    if (channel.rising_edge) {
+      this->event_rising_mask_ |= (1U << index);
+      this->record_event_edge_(index, channel, true, channel.last_rising_ms != 0 ? channel.last_rising_ms : now,
+                               active_mask);
+    }
+  }
+  for (size_t index = 0; index < this->channels_.size(); index++) {
+    const auto &channel = this->channels_[index];
+    if (!channel.initialized || !channel.falling_edge) {
+      continue;
+    }
+    this->event_falling_mask_ |= (1U << index);
+    this->record_event_edge_(index, channel, false, channel.last_falling_ms != 0 ? channel.last_falling_ms : now,
+                             active_mask);
   }
 
   this->event_peak_active_count_ = std::max(this->event_peak_active_count_, active_count);
@@ -1229,6 +1434,18 @@ void TofOverdoorCounter::update_detection_state_machine_() {
       this->event_second_group_ = other_group;
     }
   }
+  if (active_count >= 2 || current_state_code == GROUP_STATE_BOTH) {
+    this->update_passage_state_(PASSAGE_OCCUPIED);
+  }
+  if (this->event_first_group_ != GROUP_NONE && this->event_second_group_ != GROUP_NONE) {
+    this->update_passage_state_(PASSAGE_SEQUENCE);
+  }
+  if (this->event_first_group_ != GROUP_NONE && this->event_second_group_ != GROUP_NONE &&
+      this->event_direction_group_ == GROUP_NONE) {
+    this->event_direction_group_ = this->map_physical_group_to_direction_(this->event_first_group_);
+    this->event_direction_decided_ms_ = now;
+    this->update_passage_state_(PASSAGE_DIRECTION_DECIDED);
+  }
 
   if (current_state_code == GROUP_STATE_NONE) {
     this->finalize_event_(false);
@@ -1240,6 +1457,7 @@ void TofOverdoorCounter::update_detection_state_machine_() {
   if (stalled || standing) {
     this->person_standing_in_door_ = true;
     this->standing_clear_since_ms_ = 0;
+    this->update_passage_state_(stalled ? PASSAGE_TIMEOUT : PASSAGE_OCCUPIED);
   }
 
   if (this->person_standing_in_door_) {
@@ -1307,8 +1525,13 @@ void TofOverdoorCounter::finalize_event_(bool timed_out) {
   const uint8_t in_triggered = this->triggered_sensor_count_for_group_(GROUP_IN);
   const bool both_groups_seen = out_triggered > 0 && in_triggered > 0;
   const uint8_t healthy = std::max<uint8_t>(2, this->healthy_sensor_count_());
-  const uint8_t required = std::min<uint8_t>(std::max<uint8_t>(2, this->min_valid_sensors_), healthy);
+  const uint8_t required = std::min<uint8_t>(std::max<uint8_t>(2, this->min_event_sensors_), healthy);
   const SensorGroup resolved_first_group = this->resolve_event_first_group_();
+  const uint32_t event_duration_ms = this->event_started_ms_ == 0 ? 0 : millis() - this->event_started_ms_;
+  const bool long_enough =
+      event_duration_ms >= this->min_active_duration_ms_ || this->event_peak_active_count_ >= 2 ||
+      (this->event_last_edge_ms_ > this->event_first_edge_ms_ &&
+       (this->event_last_edge_ms_ - this->event_first_edge_ms_) >= this->min_active_duration_ms_);
 
   uint8_t first_state = GROUP_STATE_NONE;
   uint8_t last_state = GROUP_STATE_NONE;
@@ -1354,8 +1577,10 @@ void TofOverdoorCounter::finalize_event_(bool timed_out) {
 
   const bool fast_cross_path = (resolved_first_group == GROUP_OUT && first_state == GROUP_STATE_OUT_ONLY && last_state == GROUP_STATE_IN_ONLY) ||
                                (resolved_first_group == GROUP_IN && first_state == GROUP_STATE_IN_ONLY && last_state == GROUP_STATE_OUT_ONLY);
-  const bool valid_three_of_four = both_groups_seen && distinct_triggered >= required &&
-                                   (saw_both_state || fast_cross_path);
+  const bool ordered_two_group_sequence = resolved_first_group != GROUP_NONE && this->event_second_group_ != GROUP_NONE &&
+                                          this->event_second_group_ != resolved_first_group;
+  const bool valid_crossing = both_groups_seen && ordered_two_group_sequence && distinct_triggered >= required &&
+                              long_enough && (path_crossed_doorway || saw_both_state || fast_cross_path);
   const bool backed_out_after_both = saw_same_side_after_both && !saw_opposite_side_after_both;
 
   DetectionOutcome outcome = OUTCOME_NONE;
@@ -1364,18 +1589,24 @@ void TofOverdoorCounter::finalize_event_(bool timed_out) {
   if (backed_out_after_both && resolved_first_group != GROUP_NONE) {
     reason = "Detection cancelled: returned to the " + std::string(group_name(resolved_first_group)) +
              " side after entering the doorway (path " + this->event_path_text_() + ")";
-  } else if (resolved_first_group != GROUP_NONE && valid_three_of_four && (path_crossed_doorway || saw_both_state)) {
+  } else if (resolved_first_group != GROUP_NONE && valid_crossing) {
     const SensorGroup direction_group = this->map_physical_group_to_direction_(resolved_first_group);
     outcome = direction_group == GROUP_IN ? OUTCOME_IN : OUTCOME_OUT;
     reason = "Detection approved: " + std::to_string(distinct_triggered) + "/" + std::to_string(healthy) +
              " sensors triggered, " + std::string(group_name(resolved_first_group)) +
-             " side first, path " + this->event_path_text_();
-  } else if (resolved_first_group != GROUP_NONE && distinct_triggered >= 2) {
+             " side first, path " + this->event_path_text_() + ", edges " + this->event_edge_text_();
+  } else if (resolved_first_group != GROUP_NONE && both_groups_seen && distinct_triggered >= 2 && long_enough) {
     const SensorGroup direction_group = this->map_physical_group_to_direction_(resolved_first_group);
     outcome = direction_group == GROUP_IN ? OUTCOME_UNSURE_IN : OUTCOME_UNSURE_OUT;
     reason = "Unsure detection: " + std::to_string(distinct_triggered) + "/" + std::to_string(healthy) +
              " sensors triggered, " + std::string(group_name(resolved_first_group)) +
-             " side first, path " + this->event_path_text_();
+             " side first, path " + this->event_path_text_() + ", edges " + this->event_edge_text_();
+  } else if (resolved_first_group != GROUP_NONE && !both_groups_seen) {
+    reason = "Detection cancelled: only one physical side triggered (sensors " +
+             this->sensor_mask_text_(this->event_sensor_mask_) + ", path " + this->event_path_text_() + ")";
+  } else if (!long_enough) {
+    reason = "Detection cancelled: trigger was shorter than " + std::to_string(this->min_active_duration_ms_) +
+             " ms (path " + this->event_path_text_() + ")";
   } else if (timed_out && resolved_first_group != GROUP_NONE) {
     reason = "Timed out before enough sensors agreed (path " + this->event_path_text_() + ")";
   } else if (this->person_standing_in_door_) {
@@ -1407,11 +1638,134 @@ void TofOverdoorCounter::finalize_event_(bool timed_out) {
     confidence = clamp_quality(raw_confidence);
   }
 
+  this->update_passage_state_(outcome == OUTCOME_NONE ? (timed_out ? PASSAGE_TIMEOUT : PASSAGE_CANCELLED)
+                                                       : PASSAGE_COMPLETED);
   this->register_detection_(outcome, confidence, reason);
   this->cooldown_until_ms_ = millis() + this->cooldown_ms_;
   this->person_standing_in_door_ = false;
   this->clear_event_tracking_();
   this->phase_text_ = outcome == OUTCOME_NONE ? "Detection cancelled" : "Detection recorded";
+}
+
+void TofOverdoorCounter::record_history_snapshot_(uint32_t now) {
+  auto &snapshot = this->history_[this->history_head_];
+  snapshot = HistorySample{};
+  snapshot.timestamp_ms = now;
+
+  for (size_t index = 0; index < this->channels_.size() && index < SENSOR_COUNT; index++) {
+    const auto &channel = this->channels_[index];
+    snapshot.raw_distance[index] = channel.raw_distance;
+    const float logic_distance = this->channel_logic_distance_(channel);
+    snapshot.filtered_distance[index] = std::isnan(logic_distance) ? 0 : static_cast<uint16_t>(logic_distance);
+    snapshot.range_status[index] = channel.range_status;
+    if (channel.initialized && channel.has_reading && !channel.stale && channel.valid_measurement) {
+      snapshot.valid_mask |= (1U << index);
+    }
+    if (channel.initialized && channel.active) {
+      snapshot.active_mask |= (1U << index);
+    }
+    if (channel.rising_edge) {
+      snapshot.rising_mask |= (1U << index);
+    }
+    if (channel.falling_edge) {
+      snapshot.falling_mask |= (1U << index);
+    }
+  }
+
+  this->history_head_ = (this->history_head_ + 1) % HISTORY_SIZE;
+  if (this->history_count_ < HISTORY_SIZE) {
+    this->history_count_++;
+  }
+}
+
+void TofOverdoorCounter::record_event_edge_(size_t index, const Channel &channel, bool rising, uint32_t now,
+                                            uint8_t active_mask) {
+  if (index >= SENSOR_COUNT) {
+    return;
+  }
+  if (this->event_edge_count_ < EVENT_EDGE_SIZE) {
+    auto &edge = this->event_edges_[this->event_edge_count_++];
+    edge.timestamp_ms = now;
+    edge.sensor_index = static_cast<uint8_t>(index);
+    edge.group = channel.group;
+    edge.rising = rising;
+    edge.active_mask = active_mask;
+  } else {
+    for (size_t i = 1; i < EVENT_EDGE_SIZE; i++) {
+      this->event_edges_[i - 1] = this->event_edges_[i];
+    }
+    auto &edge = this->event_edges_[EVENT_EDGE_SIZE - 1];
+    edge.timestamp_ms = now;
+    edge.sensor_index = static_cast<uint8_t>(index);
+    edge.group = channel.group;
+    edge.rising = rising;
+    edge.active_mask = active_mask;
+  }
+
+  if (this->event_first_edge_ms_ == 0 || now < this->event_first_edge_ms_) {
+    this->event_first_edge_ms_ = now;
+  }
+  this->event_last_edge_ms_ = now;
+  this->event_last_activity_ms_ = now;
+
+  if (this->debug_logging_) {
+    ESP_LOGD(TAG, "%s edge %s at %u ms group=%s active=%s", channel.sensor_label.c_str(),
+             rising ? "rising" : "falling", static_cast<unsigned>(now), group_name(channel.group),
+             this->sensor_mask_text_(active_mask).c_str());
+  }
+}
+
+void TofOverdoorCounter::update_passage_state_(PassageState state) {
+  if (this->passage_state_ == state) {
+    return;
+  }
+  if (state != PASSAGE_IDLE && state < this->passage_state_ &&
+      this->passage_state_ != PASSAGE_COMPLETED && this->passage_state_ != PASSAGE_CANCELLED &&
+      this->passage_state_ != PASSAGE_TIMEOUT) {
+    return;
+  }
+  if (this->debug_logging_) {
+    ESP_LOGD(TAG, "Passage state %s -> %s", this->passage_state_text_(this->passage_state_).c_str(),
+             this->passage_state_text_(state).c_str());
+  }
+  this->passage_state_ = state;
+}
+
+void TofOverdoorCounter::debug_log_sample_(uint32_t now) {
+  if (!this->debug_logging_) {
+    return;
+  }
+  if (this->last_debug_sample_log_ms_ != 0 &&
+      (now - this->last_debug_sample_log_ms_) < this->debug_sample_interval_ms_) {
+    return;
+  }
+  this->last_debug_sample_log_ms_ = now;
+
+  std::ostringstream oss;
+  oss << "sample t=" << now << " state=" << this->passage_state_text_(this->passage_state_)
+      << " active=" << this->sensor_mask_text_(this->active_sensor_count_() == 0 ? 0 : this->history_[(this->history_head_ + HISTORY_SIZE - 1) % HISTORY_SIZE].active_mask);
+  for (size_t index = 0; index < this->channels_.size(); index++) {
+    const auto &channel = this->channels_[index];
+    if (!channel.initialized) {
+      continue;
+    }
+    const float logic_distance = this->channel_logic_distance_(channel);
+    oss << " " << channel.sensor_label << "{raw=" << channel.raw_distance << ",f=";
+    if (std::isnan(logic_distance)) {
+      oss << "nan";
+    } else {
+      oss << static_cast<int>(logic_distance);
+    }
+    oss << ",drop=";
+    if (std::isnan(channel.baseline) || std::isnan(logic_distance)) {
+      oss << "nan";
+    } else {
+      oss << static_cast<int>(channel.baseline - logic_distance);
+    }
+    oss << ",active=" << (channel.active ? "1" : "0") << ",status=" << range_status_name(channel.range_status)
+        << "}";
+  }
+  ESP_LOGD(TAG, "%s", oss.str().c_str());
 }
 
 void TofOverdoorCounter::update_sensor_health_() {
@@ -1492,7 +1846,7 @@ uint8_t TofOverdoorCounter::healthy_sensor_count_() const {
     if (!channel.initialized) {
       continue;
     }
-    if (channel.has_reading && !channel.stale && channel.consecutive_errors < 3) {
+    if (channel.has_reading && !channel.stale && channel.consecutive_errors < 3 && channel.consecutive_invalid < 3) {
       count++;
     }
   }
@@ -1502,7 +1856,7 @@ uint8_t TofOverdoorCounter::healthy_sensor_count_() const {
 uint8_t TofOverdoorCounter::reporting_sensor_count_() const {
   uint8_t count = 0;
   for (const auto &channel : this->channels_) {
-    if (channel.initialized && channel.has_reading) {
+    if (channel.initialized && channel.has_reading && channel.consecutive_invalid < 3) {
       count++;
     }
   }
@@ -1681,6 +2035,9 @@ std::string TofOverdoorCounter::health_text_for_(const Channel &channel) const {
   if (channel.stale || channel.consecutive_errors >= 3) {
     return "Error";
   }
+  if (channel.consecutive_invalid >= 3) {
+    return "Warning";
+  }
   if (channel.blocked || channel.last_error != 0) {
     return "Warning";
   }
@@ -1693,6 +2050,9 @@ std::string TofOverdoorCounter::status_text_for_(const Channel &channel) const {
   }
   if (channel.consecutive_errors >= 3) {
     return "Read error " + std::to_string(channel.last_error);
+  }
+  if (channel.consecutive_invalid >= 3) {
+    return "Invalid range " + std::string(range_status_name(channel.range_status));
   }
   if (!channel.has_reading) {
     return "Waiting";
@@ -1718,6 +2078,43 @@ std::string TofOverdoorCounter::format_uptime_(uint32_t ms) const {
   snprintf(buffer, sizeof(buffer), "%02u:%02u:%02u", static_cast<unsigned>(hours), static_cast<unsigned>(minutes),
            static_cast<unsigned>(seconds));
   return buffer;
+}
+
+std::string TofOverdoorCounter::sensor_mask_text_(uint8_t mask) const {
+  if (mask == 0) {
+    return "none";
+  }
+  std::ostringstream oss;
+  bool first = true;
+  for (size_t index = 0; index < this->channels_.size() && index < SENSOR_COUNT; index++) {
+    if ((mask & (1U << index)) == 0) {
+      continue;
+    }
+    if (!first) {
+      oss << ",";
+    }
+    oss << this->channels_[index].sensor_label;
+    first = false;
+  }
+  return first ? "none" : oss.str();
+}
+
+std::string TofOverdoorCounter::event_edge_text_() const {
+  if (this->event_edge_count_ == 0) {
+    return "none";
+  }
+  std::ostringstream oss;
+  for (uint8_t index = 0; index < this->event_edge_count_; index++) {
+    if (index > 0) {
+      oss << " ";
+    }
+    const auto &edge = this->event_edges_[index];
+    const char *label = edge.sensor_index < this->channels_.size()
+                            ? this->channels_[edge.sensor_index].sensor_label.c_str()
+                            : "S?";
+    oss << (edge.timestamp_ms - this->event_started_ms_) << "ms:" << label << (edge.rising ? "+" : "-");
+  }
+  return oss.str();
 }
 
 void TofOverdoorCounter::log_event_(const std::string &message) {
@@ -1932,10 +2329,18 @@ float TofOverdoorCounter::get_cooldown_value() const { return static_cast<float>
 
 float TofOverdoorCounter::get_min_valid_sensors_value() const { return static_cast<float>(this->min_valid_sensors_); }
 
+float TofOverdoorCounter::get_min_event_sensors_value() const { return static_cast<float>(this->min_event_sensors_); }
+
+float TofOverdoorCounter::get_min_active_duration_value() const {
+  return static_cast<float>(this->min_active_duration_ms_);
+}
+
+float TofOverdoorCounter::get_direction_window_value() const { return static_cast<float>(this->direction_window_ms_); }
+
 std::string TofOverdoorCounter::get_mode_text() const { return this->mode_ == OperatingMode::COUNT ? "Count" : "Monitor"; }
 
 std::string TofOverdoorCounter::get_group_label(size_t group_index) const {
-  return group_index == 0 ? "OUT group (U3/U7)" : "IN group (U4/U8)";
+  return group_index == 0 ? "OUT group (U3/U4)" : "IN group (U7/U8)";
 }
 
 std::string TofOverdoorCounter::get_status_text(size_t index) const {
@@ -1971,13 +2376,33 @@ std::string TofOverdoorCounter::get_last_detection_timestamp_text() const {
 
 std::string TofOverdoorCounter::get_last_reason_text() const { return this->last_reason_; }
 
+std::string TofOverdoorCounter::get_passage_state_text() const { return this->passage_state_text_(this->passage_state_); }
+
+std::string TofOverdoorCounter::get_debug_snapshot_text() const {
+  if (this->history_count_ == 0) {
+    return "No samples yet";
+  }
+  const auto &snapshot = this->history_[(this->history_head_ + HISTORY_SIZE - 1) % HISTORY_SIZE];
+  std::ostringstream oss;
+  oss << "t=" << snapshot.timestamp_ms << " active=" << this->sensor_mask_text_(snapshot.active_mask)
+      << " rising=" << this->sensor_mask_text_(snapshot.rising_mask)
+      << " falling=" << this->sensor_mask_text_(snapshot.falling_mask) << " state=" << this->get_passage_state_text();
+  for (size_t index = 0; index < this->channels_.size() && index < SENSOR_COUNT; index++) {
+    oss << " " << this->channels_[index].sensor_label << "[raw=" << snapshot.raw_distance[index]
+        << ",filtered=" << snapshot.filtered_distance[index]
+        << ",status=" << range_status_name(snapshot.range_status[index]) << "]";
+  }
+  return oss.str();
+}
+
 std::string TofOverdoorCounter::get_blocked_sensor_text() const { return this->blocked_sensor_text_; }
 
 std::string TofOverdoorCounter::get_summary() const {
   std::ostringstream oss;
   oss << "Inside " << this->people_inside_ << " | IN " << this->confirmed_in_count_ << " | OUT "
       << this->confirmed_out_count_ << " | Unsure IN " << this->unsure_in_count_ << " | Unsure OUT "
-      << this->unsure_out_count_ << " | " << this->system_status_text_(this->system_status_);
+      << this->unsure_out_count_ << " | " << this->system_status_text_(this->system_status_) << " | "
+      << this->passage_state_text_(this->passage_state_);
   return oss.str();
 }
 

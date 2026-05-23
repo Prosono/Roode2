@@ -18,7 +18,7 @@ static const char *const TAG = "tof_overdoor_ui";
 namespace {
 
 const char *const SENSOR_CARD_LABELS[] = {"U3", "U4", "U7", "U8"};
-const char *const SENSOR_GROUP_LABELS[] = {"OUT group", "IN group", "OUT group", "IN group"};
+const char *const SENSOR_GROUP_LABELS[] = {"OUT group", "OUT group", "IN group", "IN group"};
 
 int parse_int_arg(AsyncWebServerRequest *request, const char *name, int fallback) {
   if (!request->hasArg(name)) {
@@ -734,7 +734,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
           </article>
           <article class="hero-tip">
             <strong>2</strong>
-            <p>OUT means the outside-facing sensor group U3/U7. IN means the inside-facing group U4/U8.</p>
+            <p>OUT means the outside-facing sensor pair U3/U4. IN means the inside-facing pair U7/U8.</p>
           </article>
           <article class="hero-tip">
             <strong>3</strong>
@@ -839,7 +839,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
             </div>
             <div class="pill" id="standing-pill">Doorway clear</div>
           </div>
-          <p class="settings-copy" id="doorway-copy">U3 and U7 are the OUT sensors. U4 and U8 are the IN sensors. The first group to trigger decides the direction candidate.</p>
+          <p class="settings-copy" id="doorway-copy">U3 and U4 are one physical doorway side. U7 and U8 are the other. The first pair to trigger decides the direction candidate.</p>
           <div class="door-grid" id="group-grid"></div>
         </section>
 
@@ -1469,7 +1469,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
 std::string default_subtitle(const tof_overdoor_counter::TofOverdoorCounter *counter) {
   return counter->is_monitor_mode()
              ? "Live monitor for four working ToF sensors, focused on baselines, agreement, and placement stability."
-             : "Local four-sensor people counter with OUT = U3/U7 and IN = U4/U8, including calibration, confidence, and event reasoning.";
+             : "Local four-sensor people counter with OUT = U3/U4 and IN = U7/U8, including calibration, confidence, and event reasoning.";
 }
 
 const char *sensor_group_label_for_index(size_t index) {
@@ -1543,6 +1543,8 @@ class TofOverdoorUi::Handler : public AsyncWebHandler {
       root["last_direction"] = counter->get_last_direction_text();
       root["last_detection_time"] = counter->get_last_detection_timestamp_text();
       root["last_reason"] = counter->get_last_reason_text();
+      root["passage_state"] = counter->get_passage_state_text();
+      root["debug_snapshot"] = counter->get_debug_snapshot_text();
       root["blocked_sensor"] = counter->get_blocked_sensor_text();
       root["summary"] = counter->get_summary();
       root["discovery_map"] = counter->get_discovery_map();

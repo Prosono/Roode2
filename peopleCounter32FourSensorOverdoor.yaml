@@ -88,7 +88,7 @@ tof_overdoor_counter:
   timing_budget: 33ms
   intermeasurement_period: 33ms
   init_retries: 3
-  sampling: 2
+  sampling: 3
   update_interval: 10ms
   base_address: 0x30
   trigger_delta: 320mm
@@ -99,12 +99,17 @@ tof_overdoor_counter:
   cooldown: 500ms
   blocked_timeout: 1800ms
   standing_timeout: 2200ms
+  min_event_sensors: 2
+  min_active_duration: 35ms
+  direction_window: 90ms
   minimum_clear_distance: 600mm
   calibration_samples: 24
   min_valid_sensors: 3
   max_people_inside: 50
   auto_save_enabled: true
   invert_direction: false
+  debug_logging: false
+  debug_sample_interval: 250ms
   mode: count
   xshut_pins:
     - GPIO16
@@ -217,6 +222,25 @@ switch:
     turn_off_action:
       - lambda: |-
           id(overdoor_counter).set_auto_save_enabled(false);
+          id(overdoor_counter).persist_runtime_state();
+
+  - platform: template
+    name: ${friendly_name} Debug Logging
+    entity_category: config
+    optimistic: true
+    restore_mode: DISABLED
+    web_server:
+      sorting_group_id: web_group_settings
+      sorting_weight: 25
+    lambda: |-
+      return id(overdoor_counter).get_debug_logging();
+    turn_on_action:
+      - lambda: |-
+          id(overdoor_counter).set_debug_logging(true);
+          id(overdoor_counter).persist_runtime_state();
+    turn_off_action:
+      - lambda: |-
+          id(overdoor_counter).set_debug_logging(false);
           id(overdoor_counter).persist_runtime_state();
 
 number:
@@ -350,6 +374,62 @@ number:
     set_action:
       - lambda: |-
           id(overdoor_counter).set_min_valid_sensors((uint8_t) x);
+          id(overdoor_counter).persist_runtime_state();
+
+  - platform: template
+    name: ${friendly_name} Min Event Sensors
+    entity_category: config
+    mode: box
+    min_value: 2
+    max_value: 4
+    step: 1
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_settings
+      sorting_weight: 95
+    lambda: |-
+      return id(overdoor_counter).get_min_event_sensors_value();
+    set_action:
+      - lambda: |-
+          id(overdoor_counter).set_min_event_sensors((uint8_t) x);
+          id(overdoor_counter).persist_runtime_state();
+
+  - platform: template
+    name: ${friendly_name} Min Active Duration
+    entity_category: config
+    unit_of_measurement: ms
+    mode: box
+    min_value: 0
+    max_value: 300
+    step: 5
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_settings
+      sorting_weight: 96
+    lambda: |-
+      return id(overdoor_counter).get_min_active_duration_value();
+    set_action:
+      - lambda: |-
+          id(overdoor_counter).set_min_active_duration_ms((uint32_t) x);
+          id(overdoor_counter).persist_runtime_state();
+
+  - platform: template
+    name: ${friendly_name} Direction Window
+    entity_category: config
+    unit_of_measurement: ms
+    mode: box
+    min_value: 10
+    max_value: 500
+    step: 5
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_settings
+      sorting_weight: 97
+    lambda: |-
+      return id(overdoor_counter).get_direction_window_value();
+    set_action:
+      - lambda: |-
+          id(overdoor_counter).set_direction_window_ms((uint32_t) x);
           id(overdoor_counter).persist_runtime_state();
 
   - platform: template
@@ -857,6 +937,27 @@ text_sensor:
       sorting_weight: 35
     lambda: |-
       return {id(overdoor_counter).get_last_reason_text()};
+
+  - platform: template
+    name: ${friendly_name} Passage State
+    update_interval: 250ms
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 34
+    lambda: |-
+      return {id(overdoor_counter).get_passage_state_text()};
+
+  - platform: template
+    name: ${friendly_name} Debug Snapshot
+    update_interval: 500ms
+    disabled_by_default: true
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 38
+    lambda: |-
+      return {id(overdoor_counter).get_debug_snapshot_text()};
 
   - platform: template
     name: ${friendly_name} Blocked Sensors
