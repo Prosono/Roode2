@@ -11,11 +11,16 @@ namespace {
 static const char *const TAG = "tof_overdoor_counter";
 constexpr uint8_t PERSISTED_STATE_VERSION = 3;
 constexpr uint32_t STALE_READING_MS = 450;
+constexpr uint32_t COLD_BOOT_SETTLE_MS = 250;
 constexpr uint32_t CALIBRATION_CLEAR_SETTLE_MS = 120;
 constexpr uint32_t GROUP_SIMULTANEOUS_WINDOW_MS = 35;
 constexpr float FILTER_ALPHA = 0.42f;
 constexpr float BASELINE_TRACK_ALPHA = 0.015f;
 constexpr float NOISE_TRACK_ALPHA = 0.08f;
+constexpr uint8_t GROUP_STATE_NONE = 0;
+constexpr uint8_t GROUP_STATE_OUT_ONLY = 1;
+constexpr uint8_t GROUP_STATE_IN_ONLY = 2;
+constexpr uint8_t GROUP_STATE_BOTH = 3;
 
 const char *sensor_name_for_pin(uint8_t pin_number) {
   switch (pin_number) {
@@ -53,6 +58,20 @@ const char *group_name(SensorGroup group) {
       return "IN";
     default:
       return "Unknown";
+  }
+}
+
+const char *group_state_name(uint8_t state_code) {
+  switch (state_code) {
+    case GROUP_STATE_OUT_ONLY:
+      return "OUT";
+    case GROUP_STATE_IN_ONLY:
+      return "IN";
+    case GROUP_STATE_BOTH:
+      return "BOTH";
+    case GROUP_STATE_NONE:
+    default:
+      return "CLEAR";
   }
 }
 
@@ -101,6 +120,8 @@ uint8_t clamp_quality(float value) {
 
 void TofOverdoorCounter::setup() {
   this->apply_calibration_defaults_();
+  ESP_LOGI(TAG, "Cold boot settle for %u ms before sensor bring-up", static_cast<unsigned>(COLD_BOOT_SETTLE_MS));
+  delay(COLD_BOOT_SETTLE_MS);
   this->prepare_xshut_pins_();
   if (!this->initialize_wire_()) {
     this->mark_failed();
@@ -681,11 +702,13 @@ void TofOverdoorCounter::rediscover() {
 
   this->last_discovery_ms_ = millis();
   this->load_persisted_state_();
-  if (!this->ready_for_counting_()) {
+  if (!this->has_restored_calibration_()) {
     this->recalibrate();
   } else {
-    this->phase_text_ = "Ready";
-    this->system_status_ = STATUS_READY;
+    this->calibration_active_ = false;
+    this->phase_text_ = "Restored calibration, waiting for live sensor readings";
+    this->system_status_ = STATUS_BOOTING;
+    ESP_LOGI(TAG, "Restored calibration from persisted state; skipping auto recalibration on boot");
   }
 
   ESP_LOGI(TAG, "Discovery complete: %u sensors active", static_cast<unsigned>(this->get_discovered_sensor_count()));
@@ -999,6 +1022,9 @@ void TofOverdoorCounter::clear_event_tracking_() {
   this->event_peak_group_counts_[1] = 0;
   this->event_group_confirmed_ms_[GROUP_OUT] = 0;
   this->event_group_confirmed_ms_[GROUP_IN] = 0;
+  this->event_path_size_ = 0;
+  this->event_last_state_code_ = GROUP_STATE_NONE;
+  std::fill(std::begin(this->event_path_), std::end(this->event_path_), GROUP_STATE_NONE);
   for (auto &channel : this->channels_) {
     channel.first_trigger_in_event_ms = 0;
   }
@@ -1144,31 +1170,10 @@ void TofOverdoorCounter::update_detection_state_machine_() {
   const uint8_t active_count = this->active_sensor_count_();
   const uint8_t active_out = this->active_sensor_count_for_group_(GROUP_OUT);
   const uint8_t active_in = this->active_sensor_count_for_group_(GROUP_IN);
-
-  if (this->person_standing_in_door_ && this->event_active_) {
-    if (active_count == 0) {
-      if (this->standing_clear_since_ms_ == 0) {
-        this->standing_clear_since_ms_ = now;
-      }
-      const uint32_t clear_ms = now - this->standing_clear_since_ms_;
-      if (clear_ms >= CALIBRATION_CLEAR_SETTLE_MS) {
-        this->last_reason_ = "Doorway cleared after standing event";
-        this->person_standing_in_door_ = false;
-        this->clear_event_tracking_();
-        this->phase_text_ = "Ready";
-      } else {
-        this->phase_text_ = "Waiting for doorway to clear after standing event";
-      }
-      return;
-    }
-
-    this->standing_clear_since_ms_ = 0;
-    this->phase_text_ = "Person standing in doorway";
-    return;
-  }
+  const uint8_t current_state_code = this->current_group_state_code_(active_out, active_in);
 
   if (!this->event_active_) {
-    if (active_count == 0) {
+    if (current_state_code == GROUP_STATE_NONE) {
       this->person_standing_in_door_ = false;
       this->standing_clear_since_ms_ = 0;
       this->phase_text_ = "Ready";
@@ -1185,6 +1190,9 @@ void TofOverdoorCounter::update_detection_state_machine_() {
     this->event_peak_group_counts_[0] = 0;
     this->event_peak_group_counts_[1] = 0;
     this->person_standing_in_door_ = false;
+    this->append_event_path_state_(current_state_code, now);
+  } else if (current_state_code != this->event_last_state_code_) {
+    this->append_event_path_state_(current_state_code, now);
   }
 
   for (size_t index = 0; index < this->channels_.size(); index++) {
@@ -1198,9 +1206,6 @@ void TofOverdoorCounter::update_detection_state_machine_() {
     }
   }
 
-  if (active_count > 0) {
-    this->event_last_activity_ms_ = now;
-  }
   this->event_peak_active_count_ = std::max(this->event_peak_active_count_, active_count);
   this->event_peak_group_counts_[GROUP_OUT] = std::max(this->event_peak_group_counts_[GROUP_OUT], active_out);
   this->event_peak_group_counts_[GROUP_IN] = std::max(this->event_peak_group_counts_[GROUP_IN], active_in);
@@ -1225,31 +1230,37 @@ void TofOverdoorCounter::update_detection_state_machine_() {
     }
   }
 
-  if (active_count == 0) {
+  if (current_state_code == GROUP_STATE_NONE) {
     this->finalize_event_(false);
     return;
   }
 
-  if ((now - this->event_started_ms_) >= this->standing_timeout_ms_) {
+  const bool stalled = this->event_last_activity_ms_ != 0 && (now - this->event_last_activity_ms_) >= this->detection_timeout_ms_;
+  const bool standing = (now - this->event_started_ms_) >= this->standing_timeout_ms_;
+  if (stalled || standing) {
     this->person_standing_in_door_ = true;
     this->standing_clear_since_ms_ = 0;
-  }
-
-  if (!this->person_standing_in_door_ && (now - this->event_started_ms_) >= this->detection_timeout_ms_) {
-    this->finalize_event_(true);
-    return;
   }
 
   if (this->person_standing_in_door_) {
     this->phase_text_ = "Person standing in doorway";
     return;
   }
-  if (this->event_first_group_ == GROUP_OUT) {
-    this->phase_text_ = "OUT group triggered first";
-  } else if (this->event_first_group_ == GROUP_IN) {
-    this->phase_text_ = "IN group triggered first";
-  } else {
-    this->phase_text_ = "Watching trigger order";
+
+  switch (current_state_code) {
+    case GROUP_STATE_OUT_ONLY:
+      this->phase_text_ = "OUT side active";
+      break;
+    case GROUP_STATE_IN_ONLY:
+      this->phase_text_ = "IN side active";
+      break;
+    case GROUP_STATE_BOTH:
+      this->phase_text_ = "Both sides active";
+      break;
+    case GROUP_STATE_NONE:
+    default:
+      this->phase_text_ = "Watching trigger order";
+      break;
   }
 }
 
@@ -1299,33 +1310,93 @@ void TofOverdoorCounter::finalize_event_(bool timed_out) {
   const uint8_t required = std::min<uint8_t>(std::max<uint8_t>(2, this->min_valid_sensors_), healthy);
   const SensorGroup resolved_first_group = this->resolve_event_first_group_();
 
+  uint8_t first_state = GROUP_STATE_NONE;
+  uint8_t last_state = GROUP_STATE_NONE;
+  bool saw_both_state = false;
+  bool saw_out_only = false;
+  bool saw_in_only = false;
+  bool saw_same_side_after_both = false;
+  bool saw_opposite_side_after_both = false;
+
+  for (uint8_t index = 0; index < this->event_path_size_; index++) {
+    const uint8_t state = this->event_path_[index];
+    if (first_state == GROUP_STATE_NONE) {
+      first_state = state;
+    }
+    last_state = state;
+    if (state == GROUP_STATE_BOTH) {
+      saw_both_state = true;
+    } else if (state == GROUP_STATE_OUT_ONLY) {
+      saw_out_only = true;
+      if (saw_both_state && resolved_first_group == GROUP_OUT) {
+        saw_same_side_after_both = true;
+      }
+      if (saw_both_state && resolved_first_group == GROUP_IN) {
+        saw_opposite_side_after_both = true;
+      }
+    } else if (state == GROUP_STATE_IN_ONLY) {
+      saw_in_only = true;
+      if (saw_both_state && resolved_first_group == GROUP_IN) {
+        saw_same_side_after_both = true;
+      }
+      if (saw_both_state && resolved_first_group == GROUP_OUT) {
+        saw_opposite_side_after_both = true;
+      }
+    }
+  }
+
+  bool path_crossed_doorway = false;
+  if (resolved_first_group == GROUP_OUT) {
+    path_crossed_doorway = saw_opposite_side_after_both || (first_state == GROUP_STATE_OUT_ONLY && last_state == GROUP_STATE_IN_ONLY);
+  } else if (resolved_first_group == GROUP_IN) {
+    path_crossed_doorway = saw_opposite_side_after_both || (first_state == GROUP_STATE_IN_ONLY && last_state == GROUP_STATE_OUT_ONLY);
+  }
+
+  const bool fast_cross_path = (resolved_first_group == GROUP_OUT && first_state == GROUP_STATE_OUT_ONLY && last_state == GROUP_STATE_IN_ONLY) ||
+                               (resolved_first_group == GROUP_IN && first_state == GROUP_STATE_IN_ONLY && last_state == GROUP_STATE_OUT_ONLY);
+  const bool valid_three_of_four = both_groups_seen && distinct_triggered >= required &&
+                                   (saw_both_state || fast_cross_path);
+  const bool backed_out_after_both = saw_same_side_after_both && !saw_opposite_side_after_both;
+
   DetectionOutcome outcome = OUTCOME_NONE;
   std::string reason = "Detection cancelled";
 
-  if (both_groups_seen && resolved_first_group != GROUP_NONE && distinct_triggered >= required) {
+  if (backed_out_after_both && resolved_first_group != GROUP_NONE) {
+    reason = "Detection cancelled: returned to the " + std::string(group_name(resolved_first_group)) +
+             " side after entering the doorway (path " + this->event_path_text_() + ")";
+  } else if (resolved_first_group != GROUP_NONE && valid_three_of_four && (path_crossed_doorway || saw_both_state)) {
     const SensorGroup direction_group = this->map_physical_group_to_direction_(resolved_first_group);
     outcome = direction_group == GROUP_IN ? OUTCOME_IN : OUTCOME_OUT;
     reason = "Detection approved: " + std::to_string(distinct_triggered) + "/" + std::to_string(healthy) +
-             " sensors triggered, " + std::string(group_name(resolved_first_group)) + " group first";
+             " sensors triggered, " + std::string(group_name(resolved_first_group)) +
+             " side first, path " + this->event_path_text_();
   } else if (resolved_first_group != GROUP_NONE && distinct_triggered >= 2) {
     const SensorGroup direction_group = this->map_physical_group_to_direction_(resolved_first_group);
     outcome = direction_group == GROUP_IN ? OUTCOME_UNSURE_IN : OUTCOME_UNSURE_OUT;
-    reason = "Unsure detection: only " + std::to_string(distinct_triggered) +
-             " sensors triggered, " + std::string(group_name(resolved_first_group)) + " group first";
+    reason = "Unsure detection: " + std::to_string(distinct_triggered) + "/" + std::to_string(healthy) +
+             " sensors triggered, " + std::string(group_name(resolved_first_group)) +
+             " side first, path " + this->event_path_text_();
   } else if (timed_out && resolved_first_group != GROUP_NONE) {
-    reason = "Timed out before enough sensors agreed";
+    reason = "Timed out before enough sensors agreed (path " + this->event_path_text_() + ")";
   } else if (this->person_standing_in_door_) {
-    reason = "Doorway stayed occupied too long";
+    reason = "Doorway stayed occupied too long (path " + this->event_path_text_() + ")";
   }
 
   uint8_t confidence = 0;
   if (outcome != OUTCOME_NONE) {
     float raw_confidence = static_cast<float>(distinct_triggered) * 20.0f;
-    raw_confidence += both_groups_seen ? 20.0f : 0.0f;
-    raw_confidence += this->event_second_group_ != GROUP_NONE ? 10.0f : 0.0f;
+    raw_confidence += both_groups_seen ? 18.0f : 0.0f;
+    raw_confidence += saw_both_state ? 14.0f : 0.0f;
+    raw_confidence += path_crossed_doorway ? 14.0f : 0.0f;
     raw_confidence += std::min<uint8_t>(20, this->event_peak_active_count_ * 5U);
     if (timed_out) {
       raw_confidence -= 15.0f;
+    }
+    if (this->person_standing_in_door_) {
+      raw_confidence -= 8.0f;
+    }
+    if (backed_out_after_both) {
+      raw_confidence -= 35.0f;
     }
     if (outcome == OUTCOME_UNSURE_IN || outcome == OUTCOME_UNSURE_OUT) {
       raw_confidence -= 22.0f;
@@ -1403,6 +1474,16 @@ bool TofOverdoorCounter::ready_for_counting_() const {
   return calibrated >= this->min_valid_sensors_ && this->reporting_sensor_count_() >= this->min_valid_sensors_;
 }
 
+bool TofOverdoorCounter::has_restored_calibration_() const {
+  uint8_t calibrated = 0;
+  for (const auto &channel : this->channels_) {
+    if (channel.initialized && channel.calibrated && !std::isnan(channel.baseline)) {
+      calibrated++;
+    }
+  }
+  return calibrated >= this->min_valid_sensors_;
+}
+
 bool TofOverdoorCounter::all_reporting_() const { return this->reporting_sensor_count_() == this->get_discovered_sensor_count(); }
 
 uint8_t TofOverdoorCounter::healthy_sensor_count_() const {
@@ -1473,6 +1554,58 @@ uint32_t TofOverdoorCounter::first_trigger_ts_for_group_(SensorGroup group) cons
 
 bool TofOverdoorCounter::group_is_active_(SensorGroup group) const {
   return this->active_sensor_count_for_group_(group) > 0;
+}
+
+uint8_t TofOverdoorCounter::current_group_state_code_(uint8_t active_out, uint8_t active_in) const {
+  const bool out_active = active_out > 0;
+  const bool in_active = active_in > 0;
+  if (out_active && in_active) {
+    return GROUP_STATE_BOTH;
+  }
+  if (out_active) {
+    return GROUP_STATE_OUT_ONLY;
+  }
+  if (in_active) {
+    return GROUP_STATE_IN_ONLY;
+  }
+  return GROUP_STATE_NONE;
+}
+
+void TofOverdoorCounter::append_event_path_state_(uint8_t state_code, uint32_t now) {
+  if (state_code == this->event_last_state_code_) {
+    return;
+  }
+
+  this->event_last_state_code_ = state_code;
+  this->event_last_activity_ms_ = now;
+
+  if (state_code == GROUP_STATE_NONE) {
+    return;
+  }
+
+  if (this->event_path_size_ < sizeof(this->event_path_)) {
+    this->event_path_[this->event_path_size_++] = state_code;
+    return;
+  }
+
+  for (size_t index = 1; index < sizeof(this->event_path_); index++) {
+    this->event_path_[index - 1] = this->event_path_[index];
+  }
+  this->event_path_[sizeof(this->event_path_) - 1] = state_code;
+}
+
+std::string TofOverdoorCounter::event_path_text_() const {
+  if (this->event_path_size_ == 0) {
+    return "CLEAR";
+  }
+
+  std::ostringstream oss;
+  oss << "CLEAR";
+  for (uint8_t index = 0; index < this->event_path_size_; index++) {
+    oss << "->" << group_state_name(this->event_path_[index]);
+  }
+  oss << "->CLEAR";
+  return oss.str();
 }
 
 float TofOverdoorCounter::group_distance_internal_(SensorGroup group) const {

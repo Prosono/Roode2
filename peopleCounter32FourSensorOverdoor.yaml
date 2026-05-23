@@ -28,7 +28,8 @@ ota:
 wifi:
   ssid: !secret roode_wifi_ssid
   password: !secret roode_wifi_password
-  use_address: 10.0.0.94
+  fast_connect: true
+  use_address: 10.0.0.100
   manual_ip:
     static_ip: 10.0.0.100
     gateway: 10.0.0.1
@@ -81,8 +82,8 @@ tof_overdoor_counter:
   scl: 22
   frequency: 400kHz
   timeout: 1500ms
-  wake_delay: 60ms
-  post_address_delay: 80ms
+  wake_delay: 120ms
+  post_address_delay: 150ms
   distance_mode: long
   timing_budget: 33ms
   intermeasurement_period: 33ms

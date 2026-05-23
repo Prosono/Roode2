@@ -89,7 +89,7 @@ class TofOverdoorCounter : public PollingComponent {
   void setup() override;
   void update() override;
   void dump_config() override;
-  float get_setup_priority() const override { return setup_priority::DATA; }
+  float get_setup_priority() const override { return setup_priority::AFTER_WIFI; }
 
   void set_sda_pin(uint8_t pin) { this->sda_pin_ = pin; }
   void set_scl_pin(uint8_t pin) { this->scl_pin_ = pin; }
@@ -279,6 +279,9 @@ class TofOverdoorCounter : public PollingComponent {
   uint32_t event_started_ms_{0};
   uint32_t event_last_activity_ms_{0};
   uint32_t cooldown_until_ms_{0};
+  uint8_t event_path_[8] = {0};
+  uint8_t event_path_size_{0};
+  uint8_t event_last_state_code_{0};
   uint32_t cycle_duration_ms_{0};
   uint32_t last_discovery_ms_{0};
   uint32_t last_detection_ms_{0};
@@ -327,6 +330,7 @@ class TofOverdoorCounter : public PollingComponent {
   void clear_event_tracking_();
   void update_blocked_state_();
   bool ready_for_counting_() const;
+  bool has_restored_calibration_() const;
   bool all_reporting_() const;
   uint8_t healthy_sensor_count_() const;
   uint8_t reporting_sensor_count_() const;
@@ -335,6 +339,9 @@ class TofOverdoorCounter : public PollingComponent {
   uint8_t triggered_sensor_count_for_group_(SensorGroup group) const;
   uint32_t first_trigger_ts_for_group_(SensorGroup group) const;
   bool group_is_active_(SensorGroup group) const;
+  uint8_t current_group_state_code_(uint8_t active_out, uint8_t active_in) const;
+  void append_event_path_state_(uint8_t state_code, uint32_t now);
+  std::string event_path_text_() const;
   float group_distance_internal_(SensorGroup group) const;
   float group_baseline_internal_(SensorGroup group) const;
   float group_drop_internal_(SensorGroup group) const;
