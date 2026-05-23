@@ -1,6 +1,13 @@
 substitutions:
   devicename: roode-four-sensor-overdoor
   friendly_name: Roode Four Sensor Overdoor
+  required_votes: "3"
+  vote_window_ms: "1800"
+  vote_cooldown_ms: "700"
+  u3_zone_invert: "false"
+  u4_zone_invert: "false"
+  u7_zone_invert: "false"
+  u8_zone_invert: "false"
 
 external_components:
   refresh: always
@@ -9,6 +16,15 @@ external_components:
 esphome:
   name: ${devicename}
   friendly_name: ${friendly_name}
+  on_boot:
+    priority: -100
+    then:
+      - text_sensor.template.publish:
+          id: aggregate_last_event
+          state: Booting
+      - text_sensor.template.publish:
+          id: aggregate_last_reason
+          state: Waiting for Roode sensors
 
 esp32:
   board: esp32dev
@@ -16,7 +32,7 @@ esp32:
     type: arduino
 
 logger:
-  level: DEBUG
+  level: INFO
 
 api:
   reboot_timeout: 60min
@@ -46,1034 +62,466 @@ web_server:
   port: 80
   version: 3
   auth:
-    username: !secret roode_web_username
-    password: !secret roode_web_password
-  sorting_groups:
-    - id: web_group_overview
-      name: Overview
-      sorting_weight: 10
-    - id: web_group_controls
-      name: Controls
-      sorting_weight: 20
-    - id: web_group_counting
-      name: Counting
-      sorting_weight: 30
-    - id: web_group_rows
-      name: Vote Zone Activity
-      sorting_weight: 40
-    - id: web_group_sensors
-      name: Sensor Distances
-      sorting_weight: 50
-    - id: web_group_settings
-      name: Settings
-      sorting_weight: 55
-    - id: web_group_health
-      name: Health
-      sorting_weight: 60
+    username: admin
+    password: admin123
 
-tof_overdoor_ui:
-  title: ${friendly_name}
-  label: Front Door Counter
-  counter_id: overdoor_counter
+globals:
+  - id: people_inside
+    type: int
+    restore_value: true
+    initial_value: "0"
+  - id: confirmed_in
+    type: int
+    restore_value: true
+    initial_value: "0"
+  - id: confirmed_out
+    type: int
+    restore_value: true
+    initial_value: "0"
+  - id: rejected_events
+    type: int
+    restore_value: true
+    initial_value: "0"
+  - id: vote_started_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+  - id: cooldown_until_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+  - id: in_vote_mask
+    type: uint8_t
+    restore_value: false
+    initial_value: "0"
+  - id: out_vote_mask
+    type: uint8_t
+    restore_value: false
+    initial_value: "0"
+  - id: last_vote_summary
+    type: std::string
+    restore_value: false
+    initial_value: '"No votes yet"'
 
-tof_overdoor_counter:
-  id: overdoor_counter
-  sda: 21
-  scl: 22
-  frequency: 400kHz
-  timeout: 1500ms
-  wake_delay: 120ms
-  post_address_delay: 150ms
-  distance_mode: long
-  timing_budget: 33ms
-  intermeasurement_period: 33ms
-  init_retries: 3
-  sampling: 3
-  update_interval: 10ms
-  base_address: 0x30
-  trigger_delta: 320mm
-  release_delta: 500mm
-  baseline_tolerance: 80mm
-  debounce: 45ms
-  sequence_timeout: 1600ms
-  cooldown: 500ms
-  blocked_timeout: 1800ms
-  standing_timeout: 2200ms
-  min_event_sensors: 2
-  min_active_duration: 35ms
-  direction_window: 90ms
-  minimum_clear_distance: 600mm
-  calibration_samples: 24
-  min_valid_sensors: 3
-  max_people_inside: 50
-  auto_save_enabled: true
-  invert_direction: false
-  debug_logging: false
-  debug_sample_interval: 250ms
-  mode: count
-  xshut_pins:
-    - GPIO16
-    - GPIO17
-    - GPIO23
-    - GPIO25
+script:
+  - id: clear_vote_window
+    mode: restart
+    then:
+      - lambda: |-
+          id(vote_started_ms) = 0;
+          id(in_vote_mask) = 0;
+          id(out_vote_mask) = 0;
+          id(last_vote_summary) = "No active votes";
+
+  - id: publish_aggregate_state
+    mode: restart
+    then:
+      - sensor.template.publish:
+          id: people_inside_sensor
+          state: !lambda "return id(people_inside);"
+      - sensor.template.publish:
+          id: confirmed_in_sensor
+          state: !lambda "return id(confirmed_in);"
+      - sensor.template.publish:
+          id: confirmed_out_sensor
+          state: !lambda "return id(confirmed_out);"
+      - sensor.template.publish:
+          id: rejected_events_sensor
+          state: !lambda "return id(rejected_events);"
+      - text_sensor.template.publish:
+          id: aggregate_vote_window
+          state: !lambda |-
+            char buffer[96];
+            snprintf(buffer, sizeof(buffer), "IN mask=0x%02X OUT mask=0x%02X | %s",
+                     id(in_vote_mask), id(out_vote_mask), id(last_vote_summary).c_str());
+            return std::string(buffer);
+
+  - id: register_roode_vote
+    mode: queued
+    parameters:
+      sensor_index: int
+      sensor_label: string
+      direction: string
+    then:
+      - lambda: |-
+          const uint32_t now = millis();
+          const uint8_t required = ${required_votes};
+          const uint32_t vote_window_ms = ${vote_window_ms};
+          const uint32_t cooldown_ms = ${vote_cooldown_ms};
+
+          auto count_bits = [](uint8_t value) -> uint8_t {
+            uint8_t count = 0;
+            while (value != 0) {
+              count += value & 0x01;
+              value >>= 1;
+            }
+            return count;
+          };
+
+          auto publish_text = [](esphome::template_::TemplateTextSensor *sensor, const std::string &value) {
+            sensor->publish_state(value);
+          };
+
+          if (now < id(cooldown_until_ms)) {
+            id(last_vote_summary) = sensor_label + " ignored during cooldown";
+            publish_text(id(aggregate_last_reason), id(last_vote_summary));
+            id(publish_aggregate_state).execute();
+            return;
+          }
+
+          if (id(vote_started_ms) == 0 || (now - id(vote_started_ms)) > vote_window_ms) {
+            id(vote_started_ms) = now;
+            id(in_vote_mask) = 0;
+            id(out_vote_mask) = 0;
+          }
+
+          const uint8_t bit = static_cast<uint8_t>(1U << sensor_index);
+          const bool is_in = direction == "Entry" || direction == "entry" || direction == "IN" || direction == "in";
+          const bool is_out = direction == "Exit" || direction == "exit" || direction == "OUT" || direction == "out";
+
+          if (!is_in && !is_out) {
+            id(last_vote_summary) = sensor_label + " produced unknown Roode event: " + direction;
+            publish_text(id(aggregate_last_reason), id(last_vote_summary));
+            id(publish_aggregate_state).execute();
+            return;
+          }
+
+          if (is_in) {
+            id(in_vote_mask) |= bit;
+            id(out_vote_mask) &= ~bit;
+          } else {
+            id(out_vote_mask) |= bit;
+            id(in_vote_mask) &= ~bit;
+          }
+
+          const uint8_t in_votes = count_bits(id(in_vote_mask));
+          const uint8_t out_votes = count_bits(id(out_vote_mask));
+
+          char vote_buffer[96];
+          snprintf(vote_buffer, sizeof(vote_buffer), "%s voted %s | IN=%u OUT=%u",
+                   sensor_label.c_str(), is_in ? "IN" : "OUT", in_votes, out_votes);
+          id(last_vote_summary) = vote_buffer;
+
+          if (in_votes >= required && out_votes < required) {
+            id(people_inside) += 1;
+            id(confirmed_in) += 1;
+            id(cooldown_until_ms) = now + cooldown_ms;
+            publish_text(id(aggregate_last_event), "IN");
+            publish_text(id(aggregate_last_reason), "Accepted: " + std::to_string(in_votes) +
+                         " sensors agreed IN. Last vote: " + id(last_vote_summary));
+            id(clear_vote_window).execute();
+          } else if (out_votes >= required && in_votes < required) {
+            if (id(people_inside) > 0) {
+              id(people_inside) -= 1;
+            }
+            id(confirmed_out) += 1;
+            id(cooldown_until_ms) = now + cooldown_ms;
+            publish_text(id(aggregate_last_event), "OUT");
+            publish_text(id(aggregate_last_reason), "Accepted: " + std::to_string(out_votes) +
+                         " sensors agreed OUT. Last vote: " + id(last_vote_summary));
+            id(clear_vote_window).execute();
+          } else if (in_votes >= required && out_votes >= required) {
+            id(rejected_events) += 1;
+            id(cooldown_until_ms) = now + cooldown_ms;
+            publish_text(id(aggregate_last_event), "REJECTED");
+            publish_text(id(aggregate_last_reason), "Rejected: conflicting IN and OUT majorities");
+            id(clear_vote_window).execute();
+          } else {
+            publish_text(id(aggregate_last_reason), "Waiting for " + std::to_string(required) +
+                         " matching votes. " + id(last_vote_summary));
+          }
+
+          id(publish_aggregate_state).execute();
+
+interval:
+  - interval: 500ms
+    then:
+      - lambda: |-
+          const uint32_t now = millis();
+          if (id(vote_started_ms) != 0 && (now - id(vote_started_ms)) > ${vote_window_ms}) {
+            id(rejected_events) += 1;
+            id(vote_started_ms) = 0;
+            id(in_vote_mask) = 0;
+            id(out_vote_mask) = 0;
+            id(last_vote_summary) = "Vote window expired without enough agreement";
+            id(aggregate_last_event).publish_state("REJECTED");
+            id(aggregate_last_reason).publish_state(id(last_vote_summary));
+          }
+      - script.execute: publish_aggregate_state
+
+vl53l1x:
+  - id: tof_u3
+    address: 0x30
+    sda_pin: 21
+    scl_pin: 22
+    frequency: 400kHz
+    timeout: 2s
+    pins:
+      xshut: GPIO16
+    calibration:
+      ranging: auto
+
+  - id: tof_u4
+    address: 0x31
+    sda_pin: 21
+    scl_pin: 22
+    frequency: 400kHz
+    timeout: 2s
+    pins:
+      xshut: GPIO17
+    calibration:
+      ranging: auto
+
+  - id: tof_u7
+    address: 0x32
+    sda_pin: 21
+    scl_pin: 22
+    frequency: 400kHz
+    timeout: 2s
+    pins:
+      xshut: GPIO23
+    calibration:
+      ranging: auto
+
+  - id: tof_u8
+    address: 0x33
+    sda_pin: 21
+    scl_pin: 22
+    frequency: 400kHz
+    timeout: 2s
+    pins:
+      xshut: GPIO25
+    calibration:
+      ranging: auto
+
+roode:
+  - id: roode_u3
+    sensor: tof_u3
+    sampling: 2
+    roi: { height: 16, width: 6 }
+    detection_thresholds:
+      max: 85%
+    zones:
+      invert: ${u3_zone_invert}
+
+  - id: roode_u4
+    sensor: tof_u4
+    sampling: 2
+    roi: { height: 16, width: 6 }
+    detection_thresholds:
+      max: 85%
+    zones:
+      invert: ${u4_zone_invert}
+
+  - id: roode_u7
+    sensor: tof_u7
+    sampling: 2
+    roi: { height: 16, width: 6 }
+    detection_thresholds:
+      max: 85%
+    zones:
+      invert: ${u7_zone_invert}
+
+  - id: roode_u8
+    sensor: tof_u8
+    sampling: 2
+    roi: { height: 16, width: 6 }
+    detection_thresholds:
+      max: 85%
+    zones:
+      invert: ${u8_zone_invert}
 
 button:
   - platform: restart
     name: ${friendly_name} Restart
     entity_category: config
-    web_server:
-      sorting_group_id: web_group_controls
-      sorting_weight: 40
 
   - platform: template
-    name: ${friendly_name} Rediscover Sensors
+    name: ${friendly_name} Recalibrate All Roode Sensors
     entity_category: config
-    web_server:
-      sorting_group_id: web_group_controls
-      sorting_weight: 10
     on_press:
       - lambda: |-
-          id(overdoor_counter).rediscover();
-
-  - platform: template
-    name: ${friendly_name} Recalibrate Floor Reference
-    entity_category: config
-    web_server:
-      sorting_group_id: web_group_controls
-      sorting_weight: 20
-    on_press:
-      - lambda: |-
-          id(overdoor_counter).recalibrate();
+          id(roode_u3)->recalibration();
+          id(roode_u4)->recalibration();
+          id(roode_u7)->recalibration();
+          id(roode_u8)->recalibration();
+          id(aggregate_last_reason).publish_state("Manual recalibration requested for all sensors");
 
   - platform: template
     name: ${friendly_name} Reset Counts
     entity_category: config
-    web_server:
-      sorting_group_id: web_group_controls
-      sorting_weight: 30
     on_press:
       - lambda: |-
-          id(overdoor_counter).reset_counts();
-
-  - platform: template
-    name: ${friendly_name} Reset Unsure IN
-    entity_category: config
-    web_server:
-      sorting_group_id: web_group_controls
-      sorting_weight: 35
-    on_press:
-      - lambda: |-
-          id(overdoor_counter).reset_unsure_in();
-
-  - platform: template
-    name: ${friendly_name} Reset Unsure OUT
-    entity_category: config
-    web_server:
-      sorting_group_id: web_group_controls
-      sorting_weight: 36
-    on_press:
-      - lambda: |-
-          id(overdoor_counter).reset_unsure_out();
-
-  - platform: template
-    name: ${friendly_name} Reset All Counters
-    entity_category: config
-    web_server:
-      sorting_group_id: web_group_controls
-      sorting_weight: 37
-    on_press:
-      - lambda: |-
-          id(overdoor_counter).reset_all_counters();
-
-switch:
-  - platform: template
-    name: ${friendly_name} Invert Direction
-    entity_category: config
-    optimistic: true
-    restore_mode: DISABLED
-    web_server:
-      sorting_group_id: web_group_settings
-      sorting_weight: 10
-    lambda: |-
-      return id(overdoor_counter).get_invert_direction();
-    turn_on_action:
-      - lambda: |-
-          id(overdoor_counter).set_invert_direction(true);
-          id(overdoor_counter).persist_runtime_state();
-    turn_off_action:
-      - lambda: |-
-          id(overdoor_counter).set_invert_direction(false);
-          id(overdoor_counter).persist_runtime_state();
-
-  - platform: template
-    name: ${friendly_name} Auto Save Enabled
-    entity_category: config
-    optimistic: true
-    restore_mode: DISABLED
-    web_server:
-      sorting_group_id: web_group_settings
-      sorting_weight: 20
-    lambda: |-
-      return id(overdoor_counter).get_auto_save_enabled();
-    turn_on_action:
-      - lambda: |-
-          id(overdoor_counter).set_auto_save_enabled(true);
-          id(overdoor_counter).persist_runtime_state();
-    turn_off_action:
-      - lambda: |-
-          id(overdoor_counter).set_auto_save_enabled(false);
-          id(overdoor_counter).persist_runtime_state();
-
-  - platform: template
-    name: ${friendly_name} Debug Logging
-    entity_category: config
-    optimistic: true
-    restore_mode: DISABLED
-    web_server:
-      sorting_group_id: web_group_settings
-      sorting_weight: 25
-    lambda: |-
-      return id(overdoor_counter).get_debug_logging();
-    turn_on_action:
-      - lambda: |-
-          id(overdoor_counter).set_debug_logging(true);
-          id(overdoor_counter).persist_runtime_state();
-    turn_off_action:
-      - lambda: |-
-          id(overdoor_counter).set_debug_logging(false);
-          id(overdoor_counter).persist_runtime_state();
+          id(people_inside) = 0;
+          id(confirmed_in) = 0;
+          id(confirmed_out) = 0;
+          id(rejected_events) = 0;
+          id(aggregate_last_event).publish_state("RESET");
+          id(aggregate_last_reason).publish_state("All aggregate counters reset");
+      - script.execute: clear_vote_window
+      - script.execute: publish_aggregate_state
 
 number:
   - platform: template
-    name: ${friendly_name} Trigger Threshold
-    entity_category: config
-    unit_of_measurement: mm
-    mode: box
-    min_value: 80
-    max_value: 1200
-    step: 10
-    update_interval: 2s
-    web_server:
-      sorting_group_id: web_group_settings
-      sorting_weight: 30
-    lambda: |-
-      return id(overdoor_counter).get_trigger_threshold_value();
-    set_action:
-      - lambda: |-
-          id(overdoor_counter).set_trigger_delta_mm((uint16_t) x);
-          id(overdoor_counter).persist_runtime_state();
-
-  - platform: template
-    name: ${friendly_name} Clear Threshold
-    entity_category: config
-    unit_of_measurement: mm
-    mode: box
-    min_value: 40
-    max_value: 1800
-    step: 10
-    update_interval: 2s
-    web_server:
-      sorting_group_id: web_group_settings
-      sorting_weight: 40
-    lambda: |-
-      return id(overdoor_counter).get_clear_threshold_value();
-    set_action:
-      - lambda: |-
-          id(overdoor_counter).set_release_delta_mm((uint16_t) x);
-          id(overdoor_counter).persist_runtime_state();
-
-  - platform: template
-    name: ${friendly_name} Baseline Tolerance
-    entity_category: config
-    unit_of_measurement: mm
-    mode: box
-    min_value: 20
-    max_value: 300
-    step: 5
-    update_interval: 2s
-    web_server:
-      sorting_group_id: web_group_settings
-      sorting_weight: 50
-    lambda: |-
-      return id(overdoor_counter).get_baseline_tolerance_value();
-    set_action:
-      - lambda: |-
-          id(overdoor_counter).set_baseline_tolerance_mm((uint16_t) x);
-          id(overdoor_counter).persist_runtime_state();
-
-  - platform: template
-    name: ${friendly_name} Debounce
-    entity_category: config
-    unit_of_measurement: ms
-    mode: box
-    min_value: 5
-    max_value: 300
-    step: 5
-    update_interval: 2s
-    web_server:
-      sorting_group_id: web_group_settings
-      sorting_weight: 60
-    lambda: |-
-      return id(overdoor_counter).get_debounce_value();
-    set_action:
-      - lambda: |-
-          id(overdoor_counter).set_debounce_ms((uint32_t) x);
-          id(overdoor_counter).persist_runtime_state();
-
-  - platform: template
-    name: ${friendly_name} Detection Timeout
-    entity_category: config
-    unit_of_measurement: ms
-    mode: box
-    min_value: 300
-    max_value: 4000
-    step: 50
-    update_interval: 2s
-    web_server:
-      sorting_group_id: web_group_settings
-      sorting_weight: 70
-    lambda: |-
-      return id(overdoor_counter).get_detection_timeout_value();
-    set_action:
-      - lambda: |-
-          id(overdoor_counter).set_sequence_timeout_ms((uint32_t) x);
-          id(overdoor_counter).persist_runtime_state();
-
-  - platform: template
-    name: ${friendly_name} Cooldown
-    entity_category: config
-    unit_of_measurement: ms
-    mode: box
+    id: people_inside_number
+    name: ${friendly_name} People Inside
     min_value: 0
-    max_value: 3000
-    step: 50
-    update_interval: 2s
-    web_server:
-      sorting_group_id: web_group_settings
-      sorting_weight: 80
-    lambda: |-
-      return id(overdoor_counter).get_cooldown_value();
-    set_action:
-      - lambda: |-
-          id(overdoor_counter).set_cooldown_ms((uint32_t) x);
-          id(overdoor_counter).persist_runtime_state();
-
-  - platform: template
-    name: ${friendly_name} Min Valid Sensors
-    entity_category: config
-    mode: box
-    min_value: 2
-    max_value: 4
-    step: 1
-    update_interval: 2s
-    web_server:
-      sorting_group_id: web_group_settings
-      sorting_weight: 90
-    lambda: |-
-      return id(overdoor_counter).get_min_valid_sensors_value();
-    set_action:
-      - lambda: |-
-          id(overdoor_counter).set_min_valid_sensors((uint8_t) x);
-          id(overdoor_counter).persist_runtime_state();
-
-  - platform: template
-    name: ${friendly_name} Min Event Sensors
-    entity_category: config
-    mode: box
-    min_value: 2
-    max_value: 4
-    step: 1
-    update_interval: 2s
-    web_server:
-      sorting_group_id: web_group_settings
-      sorting_weight: 95
-    lambda: |-
-      return id(overdoor_counter).get_min_event_sensors_value();
-    set_action:
-      - lambda: |-
-          id(overdoor_counter).set_min_event_sensors((uint8_t) x);
-          id(overdoor_counter).persist_runtime_state();
-
-  - platform: template
-    name: ${friendly_name} Min Active Duration
-    entity_category: config
-    unit_of_measurement: ms
-    mode: box
-    min_value: 0
-    max_value: 300
-    step: 5
-    update_interval: 2s
-    web_server:
-      sorting_group_id: web_group_settings
-      sorting_weight: 96
-    lambda: |-
-      return id(overdoor_counter).get_min_active_duration_value();
-    set_action:
-      - lambda: |-
-          id(overdoor_counter).set_min_active_duration_ms((uint32_t) x);
-          id(overdoor_counter).persist_runtime_state();
-
-  - platform: template
-    name: ${friendly_name} Direction Window
-    entity_category: config
-    unit_of_measurement: ms
-    mode: box
-    min_value: 10
-    max_value: 500
-    step: 5
-    update_interval: 2s
-    web_server:
-      sorting_group_id: web_group_settings
-      sorting_weight: 97
-    lambda: |-
-      return id(overdoor_counter).get_direction_window_value();
-    set_action:
-      - lambda: |-
-          id(overdoor_counter).set_direction_window_ms((uint32_t) x);
-          id(overdoor_counter).persist_runtime_state();
-
-  - platform: template
-    name: ${friendly_name} Max People Inside
-    entity_category: config
-    mode: box
-    min_value: 1
     max_value: 500
     step: 1
-    update_interval: 2s
-    web_server:
-      sorting_group_id: web_group_settings
-      sorting_weight: 100
+    mode: box
+    update_interval: 1s
     lambda: |-
-      return id(overdoor_counter).get_max_people_inside_value();
+      return id(people_inside);
     set_action:
       - lambda: |-
-          id(overdoor_counter).set_max_people_inside((uint16_t) x);
-          id(overdoor_counter).persist_runtime_state();
+          id(people_inside) = static_cast<int>(x);
+      - script.execute: publish_aggregate_state
 
 binary_sensor:
   - platform: status
-    name: ${friendly_name} Device Status
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_overview
-      sorting_weight: 10
+    name: ${friendly_name} API Status
 
-  - platform: template
-    name: ${friendly_name} Counter Ready
-    lambda: |-
-      return id(overdoor_counter).get_ready_state() > 0.5f;
-    web_server:
-      sorting_group_id: web_group_overview
-      sorting_weight: 20
+  - platform: roode
+    roode_id: roode_u3
+    presence_sensor:
+      name: ${friendly_name} U3 Presence
 
-  - platform: template
-    name: ${friendly_name} Presence
-    lambda: |-
-      return id(overdoor_counter).get_presence_state() > 0.5f;
-    web_server:
-      sorting_group_id: web_group_overview
-      sorting_weight: 30
+  - platform: roode
+    roode_id: roode_u4
+    presence_sensor:
+      name: ${friendly_name} U4 Presence
 
-  - platform: template
-    name: ${friendly_name} OUT Group Active
-    lambda: |-
-      return id(overdoor_counter).get_row_active_state(0) > 0.5f;
-    web_server:
-      sorting_group_id: web_group_rows
-      sorting_weight: 10
+  - platform: roode
+    roode_id: roode_u7
+    presence_sensor:
+      name: ${friendly_name} U7 Presence
 
-  - platform: template
-    name: ${friendly_name} IN Group Active
-    lambda: |-
-      return id(overdoor_counter).get_row_active_state(1) > 0.5f;
-    web_server:
-      sorting_group_id: web_group_rows
-      sorting_weight: 20
-
-  - platform: template
-    name: ${friendly_name} Person Standing In Door
-    lambda: |-
-      return id(overdoor_counter).get_person_standing_state() > 0.5f;
-    web_server:
-      sorting_group_id: web_group_overview
-      sorting_weight: 35
+  - platform: roode
+    roode_id: roode_u8
+    presence_sensor:
+      name: ${friendly_name} U8 Presence
 
 sensor:
   - platform: template
-    name: ${friendly_name} Discovered Sensors
-    unit_of_measurement: sensors
+    id: people_inside_sensor
+    name: ${friendly_name} People Inside Sensor
     accuracy_decimals: 0
-    update_interval: 2s
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_overview
-      sorting_weight: 40
-    lambda: |-
-      return id(overdoor_counter).get_discovered_sensor_count();
+    update_interval: never
 
   - platform: template
-    name: ${friendly_name} Cycle Duration
-    unit_of_measurement: ms
+    id: confirmed_in_sensor
+    name: ${friendly_name} Confirmed IN
     accuracy_decimals: 0
-    update_interval: 2s
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_health
-      sorting_weight: 10
-    lambda: |-
-      return id(overdoor_counter).get_cycle_duration_ms();
+    update_interval: never
 
   - platform: template
-    name: ${friendly_name} Update Skew
-    unit_of_measurement: ms
+    id: confirmed_out_sensor
+    name: ${friendly_name} Confirmed OUT
     accuracy_decimals: 0
-    update_interval: 2s
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_health
-      sorting_weight: 20
-    lambda: |-
-      return id(overdoor_counter).get_update_skew_ms();
+    update_interval: never
 
   - platform: template
-    name: ${friendly_name} People Inside
-    unit_of_measurement: persons
+    id: rejected_events_sensor
+    name: ${friendly_name} Rejected Events
     accuracy_decimals: 0
-    update_interval: 500ms
-    web_server:
-      sorting_group_id: web_group_counting
-      sorting_weight: 10
-    lambda: |-
-      return id(overdoor_counter).get_people_count();
+    update_interval: never
 
-  - platform: template
-    name: ${friendly_name} Entry Count
-    unit_of_measurement: persons
-    accuracy_decimals: 0
-    update_interval: 500ms
-    web_server:
-      sorting_group_id: web_group_counting
-      sorting_weight: 20
-    lambda: |-
-      return id(overdoor_counter).get_entry_count();
+  - platform: wifi_signal
+    name: ${friendly_name} RSSI
+    update_interval: 60s
 
-  - platform: template
-    name: ${friendly_name} Exit Count
-    unit_of_measurement: persons
-    accuracy_decimals: 0
-    update_interval: 500ms
-    web_server:
-      sorting_group_id: web_group_counting
-      sorting_weight: 30
-    lambda: |-
-      return id(overdoor_counter).get_exit_count();
+  - platform: roode
+    id: roode_u3_distance_sensors
+    roode_id: roode_u3
+    distance_entry:
+      name: ${friendly_name} U3 Entry Zone Distance
+    distance_exit:
+      name: ${friendly_name} U3 Exit Zone Distance
 
-  - platform: template
-    name: ${friendly_name} Unsure Detection IN
-    unit_of_measurement: events
-    accuracy_decimals: 0
-    update_interval: 500ms
-    web_server:
-      sorting_group_id: web_group_counting
-      sorting_weight: 35
-    lambda: |-
-      return id(overdoor_counter).get_unsure_in_count();
+  - platform: roode
+    id: roode_u4_distance_sensors
+    roode_id: roode_u4
+    distance_entry:
+      name: ${friendly_name} U4 Entry Zone Distance
+    distance_exit:
+      name: ${friendly_name} U4 Exit Zone Distance
 
-  - platform: template
-    name: ${friendly_name} Unsure Detection OUT
-    unit_of_measurement: events
-    accuracy_decimals: 0
-    update_interval: 500ms
-    web_server:
-      sorting_group_id: web_group_counting
-      sorting_weight: 36
-    lambda: |-
-      return id(overdoor_counter).get_unsure_out_count();
+  - platform: roode
+    id: roode_u7_distance_sensors
+    roode_id: roode_u7
+    distance_entry:
+      name: ${friendly_name} U7 Entry Zone Distance
+    distance_exit:
+      name: ${friendly_name} U7 Exit Zone Distance
 
-  - platform: template
-    name: ${friendly_name} Last Confidence
-    unit_of_measurement: "%"
-    accuracy_decimals: 0
-    update_interval: 500ms
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_health
-      sorting_weight: 25
-    lambda: |-
-      return id(overdoor_counter).get_confidence_score();
-
-  - platform: template
-    name: ${friendly_name} Calibration Progress
-    unit_of_measurement: "%"
-    accuracy_decimals: 0
-    update_interval: 500ms
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_health
-      sorting_weight: 26
-    lambda: |-
-      return id(overdoor_counter).get_calibration_progress();
-
-  - platform: template
-    name: ${friendly_name} OUT Group Distance
-    unit_of_measurement: mm
-    accuracy_decimals: 0
-    update_interval: 200ms
-    web_server:
-      sorting_group_id: web_group_rows
-      sorting_weight: 30
-    lambda: |-
-      return id(overdoor_counter).get_row_distance_mm(0);
-
-  - platform: template
-    name: ${friendly_name} OUT Group Baseline
-    unit_of_measurement: mm
-    accuracy_decimals: 0
-    update_interval: 2s
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_rows
-      sorting_weight: 40
-    lambda: |-
-      return id(overdoor_counter).get_row_baseline_mm(0);
-
-  - platform: template
-    name: ${friendly_name} OUT Group Drop
-    unit_of_measurement: mm
-    accuracy_decimals: 0
-    update_interval: 200ms
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_rows
-      sorting_weight: 50
-    lambda: |-
-      return id(overdoor_counter).get_row_drop_mm(0);
-
-  - platform: template
-    name: ${friendly_name} IN Group Distance
-    unit_of_measurement: mm
-    accuracy_decimals: 0
-    update_interval: 200ms
-    web_server:
-      sorting_group_id: web_group_rows
-      sorting_weight: 60
-    lambda: |-
-      return id(overdoor_counter).get_row_distance_mm(1);
-
-  - platform: template
-    name: ${friendly_name} IN Group Baseline
-    unit_of_measurement: mm
-    accuracy_decimals: 0
-    update_interval: 2s
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_rows
-      sorting_weight: 70
-    lambda: |-
-      return id(overdoor_counter).get_row_baseline_mm(1);
-
-  - platform: template
-    name: ${friendly_name} IN Group Drop
-    unit_of_measurement: mm
-    accuracy_decimals: 0
-    update_interval: 200ms
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_rows
-      sorting_weight: 80
-    lambda: |-
-      return id(overdoor_counter).get_row_drop_mm(1);
-
-  - platform: template
-    name: ${friendly_name} U3 Distance
-    unit_of_measurement: mm
-    accuracy_decimals: 0
-    update_interval: 200ms
-    web_server:
-      sorting_group_id: web_group_sensors
-      sorting_weight: 10
-    lambda: |-
-      return id(overdoor_counter).get_distance_mm(0);
-
-  - platform: template
-    name: ${friendly_name} U4 Distance
-    unit_of_measurement: mm
-    accuracy_decimals: 0
-    update_interval: 200ms
-    web_server:
-      sorting_group_id: web_group_sensors
-      sorting_weight: 20
-    lambda: |-
-      return id(overdoor_counter).get_distance_mm(1);
-
-  - platform: template
-    name: ${friendly_name} U7 Distance
-    unit_of_measurement: mm
-    accuracy_decimals: 0
-    update_interval: 200ms
-    web_server:
-      sorting_group_id: web_group_sensors
-      sorting_weight: 30
-    lambda: |-
-      return id(overdoor_counter).get_distance_mm(2);
-
-  - platform: template
-    name: ${friendly_name} U8 Distance
-    unit_of_measurement: mm
-    accuracy_decimals: 0
-    update_interval: 200ms
-    web_server:
-      sorting_group_id: web_group_sensors
-      sorting_weight: 40
-    lambda: |-
-      return id(overdoor_counter).get_distance_mm(3);
-
-  - platform: template
-    name: ${friendly_name} U3 Raw Distance
-    unit_of_measurement: mm
-    accuracy_decimals: 0
-    update_interval: 200ms
-    disabled_by_default: true
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_sensors
-      sorting_weight: 110
-    lambda: |-
-      return id(overdoor_counter).get_raw_distance_mm(0);
-
-  - platform: template
-    name: ${friendly_name} U4 Raw Distance
-    unit_of_measurement: mm
-    accuracy_decimals: 0
-    update_interval: 200ms
-    disabled_by_default: true
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_sensors
-      sorting_weight: 120
-    lambda: |-
-      return id(overdoor_counter).get_raw_distance_mm(1);
-
-  - platform: template
-    name: ${friendly_name} U7 Raw Distance
-    unit_of_measurement: mm
-    accuracy_decimals: 0
-    update_interval: 200ms
-    disabled_by_default: true
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_sensors
-      sorting_weight: 130
-    lambda: |-
-      return id(overdoor_counter).get_raw_distance_mm(2);
-
-  - platform: template
-    name: ${friendly_name} U8 Raw Distance
-    unit_of_measurement: mm
-    accuracy_decimals: 0
-    update_interval: 200ms
-    disabled_by_default: true
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_sensors
-      sorting_weight: 140
-    lambda: |-
-      return id(overdoor_counter).get_raw_distance_mm(3);
-
-  - platform: template
-    name: ${friendly_name} U3 Baseline
-    unit_of_measurement: mm
-    accuracy_decimals: 0
-    update_interval: 2s
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_sensors
-      sorting_weight: 150
-    lambda: |-
-      return id(overdoor_counter).get_baseline_mm(0);
-
-  - platform: template
-    name: ${friendly_name} U4 Baseline
-    unit_of_measurement: mm
-    accuracy_decimals: 0
-    update_interval: 2s
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_sensors
-      sorting_weight: 160
-    lambda: |-
-      return id(overdoor_counter).get_baseline_mm(1);
-
-  - platform: template
-    name: ${friendly_name} U7 Baseline
-    unit_of_measurement: mm
-    accuracy_decimals: 0
-    update_interval: 2s
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_sensors
-      sorting_weight: 170
-    lambda: |-
-      return id(overdoor_counter).get_baseline_mm(2);
-
-  - platform: template
-    name: ${friendly_name} U8 Baseline
-    unit_of_measurement: mm
-    accuracy_decimals: 0
-    update_interval: 2s
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_sensors
-      sorting_weight: 180
-    lambda: |-
-      return id(overdoor_counter).get_baseline_mm(3);
-
-  - platform: template
-    name: ${friendly_name} U3 Calibration Quality
-    unit_of_measurement: "%"
-    accuracy_decimals: 0
-    update_interval: 2s
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_health
-      sorting_weight: 40
-    lambda: |-
-      return id(overdoor_counter).get_calibration_quality(0);
-
-  - platform: template
-    name: ${friendly_name} U4 Calibration Quality
-    unit_of_measurement: "%"
-    accuracy_decimals: 0
-    update_interval: 2s
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_health
-      sorting_weight: 50
-    lambda: |-
-      return id(overdoor_counter).get_calibration_quality(1);
-
-  - platform: template
-    name: ${friendly_name} U7 Calibration Quality
-    unit_of_measurement: "%"
-    accuracy_decimals: 0
-    update_interval: 2s
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_health
-      sorting_weight: 60
-    lambda: |-
-      return id(overdoor_counter).get_calibration_quality(2);
-
-  - platform: template
-    name: ${friendly_name} U8 Calibration Quality
-    unit_of_measurement: "%"
-    accuracy_decimals: 0
-    update_interval: 2s
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_health
-      sorting_weight: 70
-    lambda: |-
-      return id(overdoor_counter).get_calibration_quality(3);
+  - platform: roode
+    id: roode_u8_distance_sensors
+    roode_id: roode_u8
+    distance_entry:
+      name: ${friendly_name} U8 Entry Zone Distance
+    distance_exit:
+      name: ${friendly_name} U8 Exit Zone Distance
 
 text_sensor:
-  - platform: wifi_info
-    ip_address:
-      name: ${friendly_name} IP Address
-      entity_category: diagnostic
-      web_server:
-        sorting_group_id: web_group_overview
-        sorting_weight: 70
-    ssid:
-      name: ${friendly_name} WiFi SSID
-      entity_category: diagnostic
-      web_server:
-        sorting_group_id: web_group_health
-        sorting_weight: 80
+  - platform: template
+    id: aggregate_last_event
+    name: ${friendly_name} Last Aggregate Event
+    update_interval: never
 
   - platform: template
-    name: ${friendly_name} System Status
-    update_interval: 500ms
-    web_server:
-      sorting_group_id: web_group_overview
-      sorting_weight: 45
-    lambda: |-
-      return {id(overdoor_counter).get_system_status_text()};
+    id: aggregate_last_reason
+    name: ${friendly_name} Last Aggregate Reason
+    update_interval: never
 
   - platform: template
-    name: ${friendly_name} Detection Phase
-    update_interval: 500ms
-    web_server:
-      sorting_group_id: web_group_overview
-      sorting_weight: 50
-    lambda: |-
-      return {id(overdoor_counter).get_phase_text()};
+    id: aggregate_vote_window
+    name: ${friendly_name} Vote Window
+    update_interval: never
 
-  - platform: template
-    name: ${friendly_name} Last Direction
-    update_interval: 500ms
-    web_server:
-      sorting_group_id: web_group_counting
-      sorting_weight: 40
-    lambda: |-
-      return {id(overdoor_counter).get_last_direction_text()};
+  - platform: roode
+    roode_id: roode_u3
+    entry_exit_event:
+      name: ${friendly_name} U3 Roode Event
+      on_value:
+        then:
+          - script.execute:
+              id: register_roode_vote
+              sensor_index: 0
+              sensor_label: U3
+              direction: !lambda "return x;"
 
-  - platform: template
-    name: ${friendly_name} Last Detection Time
-    update_interval: 500ms
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_counting
-      sorting_weight: 45
-    lambda: |-
-      return {id(overdoor_counter).get_last_detection_timestamp_text()};
+  - platform: roode
+    roode_id: roode_u4
+    entry_exit_event:
+      name: ${friendly_name} U4 Roode Event
+      on_value:
+        then:
+          - script.execute:
+              id: register_roode_vote
+              sensor_index: 1
+              sensor_label: U4
+              direction: !lambda "return x;"
 
-  - platform: template
-    name: ${friendly_name} Last Decision Reason
-    update_interval: 500ms
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_health
-      sorting_weight: 35
-    lambda: |-
-      return {id(overdoor_counter).get_last_reason_text()};
+  - platform: roode
+    roode_id: roode_u7
+    entry_exit_event:
+      name: ${friendly_name} U7 Roode Event
+      on_value:
+        then:
+          - script.execute:
+              id: register_roode_vote
+              sensor_index: 2
+              sensor_label: U7
+              direction: !lambda "return x;"
 
-  - platform: template
-    name: ${friendly_name} Passage State
-    update_interval: 250ms
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_health
-      sorting_weight: 34
-    lambda: |-
-      return {id(overdoor_counter).get_passage_state_text()};
-
-  - platform: template
-    name: ${friendly_name} Debug Snapshot
-    update_interval: 500ms
-    disabled_by_default: true
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_health
-      sorting_weight: 38
-    lambda: |-
-      return {id(overdoor_counter).get_debug_snapshot_text()};
-
-  - platform: template
-    name: ${friendly_name} Blocked Sensors
-    update_interval: 500ms
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_health
-      sorting_weight: 36
-    lambda: |-
-      return {id(overdoor_counter).get_blocked_sensor_text()};
-
-  - platform: template
-    name: ${friendly_name} Summary
-    update_interval: 500ms
-    web_server:
-      sorting_group_id: web_group_overview
-      sorting_weight: 60
-    lambda: |-
-      return {id(overdoor_counter).get_summary()};
-
-  - platform: template
-    name: ${friendly_name} Discovery Map
-    update_interval: 10s
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_health
-      sorting_weight: 30
-    lambda: |-
-      return {id(overdoor_counter).get_discovery_map()};
-
-  - platform: template
-    name: ${friendly_name} Event Log
-    update_interval: 1s
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_health
-      sorting_weight: 90
-    lambda: |-
-      return {id(overdoor_counter).get_event_log()};
-
-  - platform: template
-    name: ${friendly_name} U3 Status
-    update_interval: 500ms
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_sensors
-      sorting_weight: 60
-    lambda: |-
-      return {id(overdoor_counter).get_status_text(0)};
-
-  - platform: template
-    name: ${friendly_name} U4 Status
-    update_interval: 500ms
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_sensors
-      sorting_weight: 70
-    lambda: |-
-      return {id(overdoor_counter).get_status_text(1)};
-
-  - platform: template
-    name: ${friendly_name} U7 Status
-    update_interval: 500ms
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_sensors
-      sorting_weight: 80
-    lambda: |-
-      return {id(overdoor_counter).get_status_text(2)};
-
-  - platform: template
-    name: ${friendly_name} U8 Status
-    update_interval: 500ms
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_sensors
-      sorting_weight: 90
-    lambda: |-
-      return {id(overdoor_counter).get_status_text(3)};
-
-  - platform: template
-    name: ${friendly_name} U3 Health
-    update_interval: 500ms
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_sensors
-      sorting_weight: 200
-    lambda: |-
-      return {id(overdoor_counter).get_sensor_health_text(0)};
-
-  - platform: template
-    name: ${friendly_name} U4 Health
-    update_interval: 500ms
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_sensors
-      sorting_weight: 210
-    lambda: |-
-      return {id(overdoor_counter).get_sensor_health_text(1)};
-
-  - platform: template
-    name: ${friendly_name} U7 Health
-    update_interval: 500ms
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_sensors
-      sorting_weight: 220
-    lambda: |-
-      return {id(overdoor_counter).get_sensor_health_text(2)};
-
-  - platform: template
-    name: ${friendly_name} U8 Health
-    update_interval: 500ms
-    entity_category: diagnostic
-    web_server:
-      sorting_group_id: web_group_sensors
-      sorting_weight: 230
-    lambda: |-
-      return {id(overdoor_counter).get_sensor_health_text(3)};
+  - platform: roode
+    roode_id: roode_u8
+    entry_exit_event:
+      name: ${friendly_name} U8 Roode Event
+      on_value:
+        then:
+          - script.execute:
+              id: register_roode_vote
+              sensor_index: 3
+              sensor_label: U8
+              direction: !lambda "return x;"
