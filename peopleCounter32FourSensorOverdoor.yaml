@@ -31,8 +31,17 @@ esp32:
 logger:
   level: INFO
 
+preferences:
+  flash_write_interval: 0s
+
 api:
-  reboot_timeout: 60min
+  # The counter must keep running even if Home Assistant/API is unavailable
+  # during router or HA restarts after a power outage.
+  reboot_timeout: 0s
+
+safe_mode:
+  num_attempts: 10
+  reboot_timeout: 5min
 
 ota:
   - platform: esphome
@@ -42,6 +51,7 @@ wifi:
   ssid: !secret roode_wifi_ssid
   password: !secret roode_wifi_password
   fast_connect: true
+  reboot_timeout: 10min
   use_address: 10.0.0.100
   manual_ip:
     static_ip: 10.0.0.100
@@ -62,6 +72,18 @@ web_server:
     username: admin
     password: admin123
 
+room_counter_ui:
+  title: ${friendly_name}
+  label: People in room
+  people_sensor: people_inside_sensor
+  confirmed_in_sensor: confirmed_in_sensor
+  confirmed_out_sensor: confirmed_out_sensor
+  aggregate_invert_switch: aggregate_invert_direction_switch
+  rejected_events_sensor: rejected_events_sensor
+  last_event: aggregate_last_event
+  last_reason: aggregate_last_reason
+  vote_window: aggregate_vote_window
+
 globals:
   - id: people_inside
     type: int
@@ -79,6 +101,10 @@ globals:
     type: int
     restore_value: true
     initial_value: "0"
+  - id: aggregate_invert_direction
+    type: bool
+    restore_value: true
+    initial_value: "false"
   - id: vote_started_ms
     type: uint32_t
     restore_value: false
@@ -174,7 +200,12 @@ script:
             return;
           }
 
-          if (is_in) {
+          bool vote_is_in = is_in;
+          if (id(aggregate_invert_direction)) {
+            vote_is_in = !vote_is_in;
+          }
+
+          if (vote_is_in) {
             id(in_vote_mask) |= bit;
             id(out_vote_mask) &= ~bit;
           } else {
@@ -186,8 +217,9 @@ script:
           const uint8_t out_votes = count_bits(id(out_vote_mask));
 
           char vote_buffer[96];
-          snprintf(vote_buffer, sizeof(vote_buffer), "%s voted %s | IN=%u OUT=%u",
-                   sensor_label.c_str(), is_in ? "IN" : "OUT", in_votes, out_votes);
+          snprintf(vote_buffer, sizeof(vote_buffer), "%s voted %s%s | IN=%u OUT=%u",
+                   sensor_label.c_str(), vote_is_in ? "IN" : "OUT",
+                   id(aggregate_invert_direction) ? " (aggregate reversed)" : "", in_votes, out_votes);
           id(last_vote_summary) = vote_buffer;
 
           if (in_votes >= required && out_votes < required) {
@@ -348,6 +380,120 @@ button:
           id(aggregate_last_reason).publish_state("All aggregate counters reset");
       - script.execute: clear_vote_window
       - script.execute: publish_aggregate_state
+
+switch:
+  - platform: template
+    id: aggregate_invert_direction_switch
+    name: ${friendly_name} Invert Aggregate Direction
+    icon: mdi:swap-horizontal
+    entity_category: config
+    optimistic: true
+    lambda: |-
+      return id(aggregate_invert_direction);
+    turn_on_action:
+      - lambda: |-
+          id(aggregate_invert_direction) = true;
+          id(aggregate_last_reason).publish_state("Aggregate direction reversed. Sensor votes are now flipped before counting.");
+      - script.execute: clear_vote_window
+      - script.execute: publish_aggregate_state
+    turn_off_action:
+      - lambda: |-
+          id(aggregate_invert_direction) = false;
+          id(aggregate_last_reason).publish_state("Aggregate direction normal. Sensor votes are counted as reported by Roode.");
+      - script.execute: clear_vote_window
+      - script.execute: publish_aggregate_state
+
+  - platform: template
+    id: u3_direction_invert_switch
+    name: ${friendly_name} U3 Invert Sensor Direction
+    icon: mdi:swap-horizontal
+    entity_category: config
+    optimistic: true
+    lambda: |-
+      return id(roode_u3)->get_invert_direction();
+    turn_on_action:
+      - lambda: |-
+          id(roode_u3)->set_invert_direction(true);
+          id(roode_u3)->persist_runtime_settings();
+          id(roode_u3)->recalibration();
+          id(aggregate_last_reason).publish_state("U3 sensor direction reversed and recalibration started");
+      - script.execute: clear_vote_window
+    turn_off_action:
+      - lambda: |-
+          id(roode_u3)->set_invert_direction(false);
+          id(roode_u3)->persist_runtime_settings();
+          id(roode_u3)->recalibration();
+          id(aggregate_last_reason).publish_state("U3 sensor direction normal and recalibration started");
+      - script.execute: clear_vote_window
+
+  - platform: template
+    id: u4_direction_invert_switch
+    name: ${friendly_name} U4 Invert Sensor Direction
+    icon: mdi:swap-horizontal
+    entity_category: config
+    optimistic: true
+    lambda: |-
+      return id(roode_u4)->get_invert_direction();
+    turn_on_action:
+      - lambda: |-
+          id(roode_u4)->set_invert_direction(true);
+          id(roode_u4)->persist_runtime_settings();
+          id(roode_u4)->recalibration();
+          id(aggregate_last_reason).publish_state("U4 sensor direction reversed and recalibration started");
+      - script.execute: clear_vote_window
+    turn_off_action:
+      - lambda: |-
+          id(roode_u4)->set_invert_direction(false);
+          id(roode_u4)->persist_runtime_settings();
+          id(roode_u4)->recalibration();
+          id(aggregate_last_reason).publish_state("U4 sensor direction normal and recalibration started");
+      - script.execute: clear_vote_window
+
+  - platform: template
+    id: u7_direction_invert_switch
+    name: ${friendly_name} U7 Invert Sensor Direction
+    icon: mdi:swap-horizontal
+    entity_category: config
+    optimistic: true
+    lambda: |-
+      return id(roode_u7)->get_invert_direction();
+    turn_on_action:
+      - lambda: |-
+          id(roode_u7)->set_invert_direction(true);
+          id(roode_u7)->persist_runtime_settings();
+          id(roode_u7)->recalibration();
+          id(aggregate_last_reason).publish_state("U7 sensor direction reversed and recalibration started");
+      - script.execute: clear_vote_window
+    turn_off_action:
+      - lambda: |-
+          id(roode_u7)->set_invert_direction(false);
+          id(roode_u7)->persist_runtime_settings();
+          id(roode_u7)->recalibration();
+          id(aggregate_last_reason).publish_state("U7 sensor direction normal and recalibration started");
+      - script.execute: clear_vote_window
+
+  - platform: template
+    id: u8_direction_invert_switch
+    name: ${friendly_name} U8 Invert Sensor Direction
+    icon: mdi:swap-horizontal
+    entity_category: config
+    optimistic: true
+    lambda: |-
+      return id(roode_u8)->get_invert_direction();
+    turn_on_action:
+      - lambda: |-
+          id(roode_u8)->set_invert_direction(true);
+          id(roode_u8)->persist_runtime_settings();
+          id(roode_u8)->recalibration();
+          id(aggregate_last_reason).publish_state("U8 sensor direction reversed and recalibration started");
+      - script.execute: clear_vote_window
+    turn_off_action:
+      - lambda: |-
+          id(roode_u8)->set_invert_direction(false);
+          id(roode_u8)->persist_runtime_settings();
+          id(roode_u8)->recalibration();
+          id(aggregate_last_reason).publish_state("U8 sensor direction normal and recalibration started");
+      - script.execute: clear_vote_window
 
 number:
   - platform: template
