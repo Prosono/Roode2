@@ -24,8 +24,8 @@ class VL53L1X : public Component {
   VL53L1X();
   void setup() override;
   void dump_config() override;
-  /** This connects directly to a sensor */
-  float get_setup_priority() const override { return setup_priority::DATA; };
+  /** This owns the shared Arduino Wire bus and sensor address setup. */
+  float get_setup_priority() const override { return setup_priority::BUS; };
 
   optional<uint16_t> read_distance(ROI *roi, VL53L1_Error &error);
   void set_ranging_mode(const RangingMode *mode);
@@ -42,6 +42,7 @@ class VL53L1X : public Component {
   void set_sda_pin(uint8_t pin) { this->sda_pin_ = pin; }
   void set_scl_pin(uint8_t pin) { this->scl_pin_ = pin; }
   void set_i2c_frequency(uint32_t frequency) { this->i2c_frequency_ = frequency; }
+  bool is_ready() const { return this->setup_complete_; }
 
  protected:
   VL53L1X_ULD sensor;
@@ -58,6 +59,7 @@ class VL53L1X : public Component {
   uint8_t scl_pin_{255};
   uint32_t i2c_frequency_{400000};
   ROI *last_roi{};
+  bool setup_complete_{false};
 
   static std::vector<VL53L1X *> &instances_();
   static bool xshut_prepared_;

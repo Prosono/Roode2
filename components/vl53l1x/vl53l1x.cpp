@@ -1,7 +1,53 @@
 #include "vl53l1x.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+
 namespace esphome {
 namespace vl53l1x {
+
+namespace {
+
+SemaphoreHandle_t wire_mutex = nullptr;
+
+bool lock_wire_bus(uint32_t timeout_ms) {
+  if (wire_mutex == nullptr) {
+    wire_mutex = xSemaphoreCreateRecursiveMutex();
+    if (wire_mutex == nullptr) {
+      ESP_LOGE(TAG, "Failed to create Wire mutex");
+      return false;
+    }
+  }
+
+  if (xSemaphoreTakeRecursive(wire_mutex, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+    ESP_LOGW(TAG, "Timed out waiting for Wire mutex");
+    return false;
+  }
+
+  return true;
+}
+
+void unlock_wire_bus() {
+  if (wire_mutex != nullptr) {
+    xSemaphoreGiveRecursive(wire_mutex);
+  }
+}
+
+class ScopedWireLock {
+ public:
+  explicit ScopedWireLock(uint32_t timeout_ms) : locked_(lock_wire_bus(timeout_ms)) {}
+  ~ScopedWireLock() {
+    if (locked_) {
+      unlock_wire_bus();
+    }
+  }
+  bool locked() const { return locked_; }
+
+ protected:
+  bool locked_{false};
+};
+
+}  // namespace
 
 bool VL53L1X::xshut_prepared_ = false;
 bool VL53L1X::wire_initialized_ = false;
@@ -102,6 +148,12 @@ void VL53L1X::prepare_xshut_pins_() {
 }
 
 bool VL53L1X::initialize_wire_() {
+  ScopedWireLock lock(2000);
+  if (!lock.locked()) {
+    this->mark_failed();
+    return false;
+  }
+
   if (wire_initialized_) {
     if (wire_sda_pin_ != this->sda_pin_ || wire_scl_pin_ != this->scl_pin_ || wire_i2c_frequency_ != this->i2c_frequency_) {
       ESP_LOGE(TAG, "Wire bus already initialized with different SDA/SCL/frequency settings");
@@ -144,6 +196,7 @@ void VL53L1X::enable_sensor_() {
 }
 
 void VL53L1X::setup() {
+  this->setup_complete_ = false;
   ESP_LOGD(TAG, "Beginning setup");
 
   if (this->sda_pin_ == 255 || this->scl_pin_ == 255) {
@@ -170,6 +223,11 @@ void VL53L1X::setup() {
   ESP_LOGD(TAG, "Device initialized");
 
   if (this->offset.has_value()) {
+    ScopedWireLock lock(2000);
+    if (!lock.locked()) {
+      this->mark_failed();
+      return;
+    }
     ESP_LOGI(TAG, "Setting offset calibration to %d", this->offset.value());
     status = this->sensor.SetOffsetInMm(this->offset.value());
     if (status != VL53L1_ERROR_NONE) {
@@ -180,6 +238,11 @@ void VL53L1X::setup() {
   }
 
   if (this->xtalk.has_value()) {
+    ScopedWireLock lock(2000);
+    if (!lock.locked()) {
+      this->mark_failed();
+      return;
+    }
     ESP_LOGI(TAG, "Setting crosstalk calibration to %d", this->xtalk.value());
     status = this->sensor.SetXTalk(this->xtalk.value());
     if (status != VL53L1_ERROR_NONE) {
@@ -189,10 +252,16 @@ void VL53L1X::setup() {
     }
   }
 
+  this->setup_complete_ = true;
   ESP_LOGI(TAG, "Setup complete");
 }
 
 VL53L1_Error VL53L1X::init() {
+  ScopedWireLock lock(2000);
+  if (!lock.locked()) {
+    return VL53L1_ERROR_TIME_OUT;
+  }
+
   ESP_LOGD(TAG, "Trying to initialize");
 
   VL53L1_Error status;
@@ -270,6 +339,17 @@ void VL53L1X::set_ranging_mode(const RangingMode *mode) {
     return;
   }
 
+  if (!this->setup_complete_) {
+    ESP_LOGE(TAG, "Cannot set ranging mode before VL53L1X setup is complete");
+    return;
+  }
+
+  ScopedWireLock lock(2000);
+  if (!lock.locked()) {
+    ESP_LOGE(TAG, "Cannot set ranging mode because Wire bus is busy");
+    return;
+  }
+
   auto status = this->sensor.SetDistanceMode(mode->mode);
   if (status != VL53L1_ERROR_NONE) {
     ESP_LOGE(TAG, "Could not set distance mode: %d, error code: %d", mode->mode, status);
@@ -292,6 +372,18 @@ void VL53L1X::set_ranging_mode(const RangingMode *mode) {
 optional<uint16_t> VL53L1X::read_distance(ROI *roi, VL53L1_Error &status) {
   if (this->is_failed()) {
     ESP_LOGW(TAG, "Cannot read distance while component is failed");
+    return {};
+  }
+
+  if (!this->setup_complete_) {
+    ESP_LOGW(TAG, "Cannot read distance before VL53L1X setup is complete");
+    status = VL53L1_ERROR_TIME_OUT;
+    return {};
+  }
+
+  ScopedWireLock lock(2000);
+  if (!lock.locked()) {
+    status = VL53L1_ERROR_TIME_OUT;
     return {};
   }
 
