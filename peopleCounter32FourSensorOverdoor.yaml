@@ -22,6 +22,8 @@ esphome:
       - lambda: |-
           id(aggregate_last_event).publish_state("Booting");
           id(aggregate_last_reason).publish_state("Waiting for Roode sensors");
+      - script.execute: clear_vote_window
+      - script.execute: publish_aggregate_state
 
 esp32:
   board: esp32dev
@@ -402,98 +404,6 @@ switch:
           id(aggregate_last_reason).publish_state("Aggregate direction normal. Sensor votes are counted as reported by Roode.");
       - script.execute: clear_vote_window
       - script.execute: publish_aggregate_state
-
-  - platform: template
-    id: u3_direction_invert_switch
-    name: ${friendly_name} U3 Invert Sensor Direction
-    icon: mdi:swap-horizontal
-    entity_category: config
-    optimistic: true
-    lambda: |-
-      return id(roode_u3)->get_invert_direction();
-    turn_on_action:
-      - lambda: |-
-          id(roode_u3)->set_invert_direction(true);
-          id(roode_u3)->persist_runtime_settings();
-          id(roode_u3)->recalibration();
-          id(aggregate_last_reason).publish_state("U3 sensor direction reversed and recalibration started");
-      - script.execute: clear_vote_window
-    turn_off_action:
-      - lambda: |-
-          id(roode_u3)->set_invert_direction(false);
-          id(roode_u3)->persist_runtime_settings();
-          id(roode_u3)->recalibration();
-          id(aggregate_last_reason).publish_state("U3 sensor direction normal and recalibration started");
-      - script.execute: clear_vote_window
-
-  - platform: template
-    id: u4_direction_invert_switch
-    name: ${friendly_name} U4 Invert Sensor Direction
-    icon: mdi:swap-horizontal
-    entity_category: config
-    optimistic: true
-    lambda: |-
-      return id(roode_u4)->get_invert_direction();
-    turn_on_action:
-      - lambda: |-
-          id(roode_u4)->set_invert_direction(true);
-          id(roode_u4)->persist_runtime_settings();
-          id(roode_u4)->recalibration();
-          id(aggregate_last_reason).publish_state("U4 sensor direction reversed and recalibration started");
-      - script.execute: clear_vote_window
-    turn_off_action:
-      - lambda: |-
-          id(roode_u4)->set_invert_direction(false);
-          id(roode_u4)->persist_runtime_settings();
-          id(roode_u4)->recalibration();
-          id(aggregate_last_reason).publish_state("U4 sensor direction normal and recalibration started");
-      - script.execute: clear_vote_window
-
-  - platform: template
-    id: u7_direction_invert_switch
-    name: ${friendly_name} U7 Invert Sensor Direction
-    icon: mdi:swap-horizontal
-    entity_category: config
-    optimistic: true
-    lambda: |-
-      return id(roode_u7)->get_invert_direction();
-    turn_on_action:
-      - lambda: |-
-          id(roode_u7)->set_invert_direction(true);
-          id(roode_u7)->persist_runtime_settings();
-          id(roode_u7)->recalibration();
-          id(aggregate_last_reason).publish_state("U7 sensor direction reversed and recalibration started");
-      - script.execute: clear_vote_window
-    turn_off_action:
-      - lambda: |-
-          id(roode_u7)->set_invert_direction(false);
-          id(roode_u7)->persist_runtime_settings();
-          id(roode_u7)->recalibration();
-          id(aggregate_last_reason).publish_state("U7 sensor direction normal and recalibration started");
-      - script.execute: clear_vote_window
-
-  - platform: template
-    id: u8_direction_invert_switch
-    name: ${friendly_name} U8 Invert Sensor Direction
-    icon: mdi:swap-horizontal
-    entity_category: config
-    optimistic: true
-    lambda: |-
-      return id(roode_u8)->get_invert_direction();
-    turn_on_action:
-      - lambda: |-
-          id(roode_u8)->set_invert_direction(true);
-          id(roode_u8)->persist_runtime_settings();
-          id(roode_u8)->recalibration();
-          id(aggregate_last_reason).publish_state("U8 sensor direction reversed and recalibration started");
-      - script.execute: clear_vote_window
-    turn_off_action:
-      - lambda: |-
-          id(roode_u8)->set_invert_direction(false);
-          id(roode_u8)->persist_runtime_settings();
-          id(roode_u8)->recalibration();
-          id(aggregate_last_reason).publish_state("U8 sensor direction normal and recalibration started");
-      - script.execute: clear_vote_window
 
 number:
   - platform: template

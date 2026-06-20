@@ -1,115 +1,286 @@
-type: vertical-stack
-cards:
-  - type: markdown
-    content: |
-      ## Roode room counter
-      Denne visningen bruker de fire fungerende ToF-sensorene som to virtuelle dørsoner:
-      - `U3/U4`
-      - `U7/U8`
+# Full Home Assistant dashboard YAML for the current four-sensor Roode setup.
+# Paste this into a new dashboard's raw configuration editor.
+#
+# If Home Assistant has added suffixes like _2 to any entity IDs, update the
+# entity IDs below after opening Settings -> Devices & services -> ESPHome.
 
-      Tanken er enkel:
-      - én sone trigges først
-      - den andre følger etter
-      - så teller vi `Entry` eller `Exit`
+title: Roode Door Counter
+views:
+  - title: Oversikt
+    path: roode-counter
+    icon: mdi:door-sliding
+    type: sections
+    max_columns: 3
+    badges: []
+    sections:
+      - type: grid
+        column_span: 2
+        cards:
+          - type: markdown
+            content: |
+              # {{ states('number.people_counter_smart_sauna_roode_four_sensor_overdoor_people_inside') }}
+              **personer i rommet**
 
-  - type: grid
-    columns: 4
-    square: false
-    cards:
-      - type: tile
-        entity: input_number.roode_room_people_count
-        name: People in room
-        color: blue
-      - type: tile
-        entity: input_text.roode_last_direction
-        name: Last direction
-        color: amber
-      - type: tile
-        entity: input_select.roode_sequence_state
-        name: Sequence state
-        color: teal
-      - type: tile
-        entity: sensor.roode_passage_summary
-        name: Summary
-        color: green
+              Siste hendelse: **{{ states('text_sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_last_aggregate_event') }}**
 
-  - type: grid
-    columns: 2
-    square: false
-    cards:
-      - type: entities
-        title: Pair U3/U4
-        show_header_toggle: false
-        entities:
-          - entity: sensor.roode_pair_u3_u4_distance
-            name: Pair distance
-          - entity: binary_sensor.roode_pair_u3_u4_triggered
-            name: Triggered
-          - entity: input_number.roode_pair_u3_u4_trigger_below_mm
-            name: Trigger below
-          - entity: sensor.roode_four_sensor_overdoor_u3_distance
-            name: U3 distance
-          - entity: sensor.roode_four_sensor_overdoor_u4_distance
-            name: U4 distance
+              {{ states('text_sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_last_aggregate_reason') }}
 
-      - type: entities
-        title: Pair U7/U8
-        show_header_toggle: false
-        entities:
-          - entity: sensor.roode_pair_u7_u8_distance
-            name: Pair distance
-          - entity: binary_sensor.roode_pair_u7_u8_triggered
-            name: Triggered
-          - entity: input_number.roode_pair_u7_u8_trigger_below_mm
-            name: Trigger below
-          - entity: sensor.roode_four_sensor_overdoor_u7_distance
-            name: U7 distance
-          - entity: sensor.roode_four_sensor_overdoor_u8_distance
-            name: U8 distance
+          - type: grid
+            columns: 4
+            square: false
+            cards:
+              - type: tile
+                entity: sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_confirmed_in
+                name: Inn
+                icon: mdi:login
+                color: green
+              - type: tile
+                entity: sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_confirmed_out
+                name: Ut
+                icon: mdi:logout
+                color: blue
+              - type: tile
+                entity: sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_rejected_events
+                name: Forkastet
+                icon: mdi:alert-circle-outline
+                color: amber
+              - type: tile
+                entity: binary_sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_api_status
+                name: ESPHome
+                icon: mdi:lan-connect
+                color: teal
 
-  - type: history-graph
-    title: Virtual doorway zones
-    hours_to_show: 1
-    refresh_interval: 5
-    entities:
-      - entity: sensor.roode_pair_u3_u4_distance
-        name: U3/U4 pair
-      - entity: sensor.roode_pair_u7_u8_distance
-        name: U7/U8 pair
+          - type: history-graph
+            title: Personer i rommet
+            hours_to_show: 12
+            refresh_interval: 10
+            entities:
+              - entity: number.people_counter_smart_sauna_roode_four_sensor_overdoor_people_inside
+                name: Rommet
 
-  - type: history-graph
-    title: Raw sensor distances
-    hours_to_show: 1
-    refresh_interval: 5
-    entities:
-      - entity: sensor.roode_four_sensor_overdoor_u3_distance
-        name: U3
-      - entity: sensor.roode_four_sensor_overdoor_u4_distance
-        name: U4
-      - entity: sensor.roode_four_sensor_overdoor_u7_distance
-        name: U7
-      - entity: sensor.roode_four_sensor_overdoor_u8_distance
-        name: U8
+      - type: grid
+        cards:
+          - type: gauge
+            entity: number.people_counter_smart_sauna_roode_four_sensor_overdoor_people_inside
+            name: Kapasitet
+            min: 0
+            max: 50
+            needle: true
+            severity:
+              green: 0
+              yellow: 25
+              red: 40
 
-  - type: entities
-    title: Tuning and controls
-    show_header_toggle: false
-    entities:
-      - entity: input_boolean.roode_direction_inverted
-        name: Invert direction
-      - entity: timer.roode_sequence_window
-        name: Sequence window
-      - entity: input_number.roode_room_people_count
-        name: Manual room count
-      - entity: input_text.roode_last_direction
-        name: Last detected direction
-      - entity: input_select.roode_sequence_state
-        name: Current sequence state
+          - type: entities
+            title: Hurtigkontroll
+            show_header_toggle: false
+            entities:
+              - entity: number.people_counter_smart_sauna_roode_four_sensor_overdoor_people_inside
+                name: Sett antall manuelt
+              - entity: switch.people_counter_smart_sauna_roode_four_sensor_overdoor_invert_aggregate_direction
+                name: Reverser total retning
+              - type: button
+                entity: button.people_counter_smart_sauna_roode_four_sensor_overdoor_recalibrate_all_roode_sensors
+                name: Rekalibrer alle sensorer
+                icon: mdi:target
+              - type: button
+                entity: button.people_counter_smart_sauna_roode_four_sensor_overdoor_reset_counts
+                name: Nullstill tellere
+                icon: mdi:counter
+              - type: button
+                entity: button.people_counter_smart_sauna_roode_four_sensor_overdoor_restart
+                name: Restart ESP
+                icon: mdi:restart
 
-  - type: markdown
-    content: |
-      ### Quick test
-      1. Start with both pair distances stable and above the trigger thresholds.
-      2. Walk through the doorway so one pair clearly drops before the other.
-      3. Watch `Sequence state` go from `idle` to `a_first` or `b_first`, then complete.
-      4. If direction is reversed, toggle `Invert direction`.
+          - type: button
+            name: Åpne lokal sensor-UI
+            icon: mdi:web
+            show_state: false
+            tap_action:
+              action: url
+              url_path: http://10.0.0.100/counter
+
+  - title: Sensorer
+    path: roode-sensors
+    icon: mdi:radar
+    type: sections
+    max_columns: 4
+    badges: []
+    sections:
+      - type: grid
+        column_span: 4
+        cards:
+          - type: heading
+            heading: Live sensorstatus
+            heading_style: title
+            icon: mdi:radar
+
+          - type: grid
+            columns: 4
+            square: false
+            cards:
+              - type: tile
+                entity: binary_sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_u3_presence
+                name: U3
+                icon: mdi:numeric-3-circle
+                color: indigo
+              - type: tile
+                entity: binary_sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_u4_presence
+                name: U4
+                icon: mdi:numeric-4-circle
+                color: indigo
+              - type: tile
+                entity: binary_sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_u7_presence
+                name: U7
+                icon: mdi:numeric-7-circle
+                color: indigo
+              - type: tile
+                entity: binary_sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_u8_presence
+                name: U8
+                icon: mdi:numeric-8-circle
+                color: indigo
+
+          - type: history-graph
+            title: Entry-zone avstander
+            hours_to_show: 1
+            refresh_interval: 2
+            entities:
+              - entity: sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_u3_entry_zone_distance
+                name: U3 entry
+              - entity: sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_u4_entry_zone_distance
+                name: U4 entry
+              - entity: sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_u7_entry_zone_distance
+                name: U7 entry
+              - entity: sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_u8_entry_zone_distance
+                name: U8 entry
+
+          - type: history-graph
+            title: Exit-zone avstander
+            hours_to_show: 1
+            refresh_interval: 2
+            entities:
+              - entity: sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_u3_exit_zone_distance
+                name: U3 exit
+              - entity: sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_u4_exit_zone_distance
+                name: U4 exit
+              - entity: sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_u7_exit_zone_distance
+                name: U7 exit
+              - entity: sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_u8_exit_zone_distance
+                name: U8 exit
+
+      - type: grid
+        cards:
+          - type: entities
+            title: U3
+            show_header_toggle: false
+            entities:
+              - entity: text_sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_u3_roode_event
+                name: Siste Roode-event
+              - entity: sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_u3_entry_zone_distance
+                name: Entry distance
+              - entity: sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_u3_exit_zone_distance
+                name: Exit distance
+              - entity: switch.people_counter_smart_sauna_roode_four_sensor_overdoor_u3_invert_sensor_direction
+                name: Reverser U3
+
+      - type: grid
+        cards:
+          - type: entities
+            title: U4
+            show_header_toggle: false
+            entities:
+              - entity: text_sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_u4_roode_event
+                name: Siste Roode-event
+              - entity: sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_u4_entry_zone_distance
+                name: Entry distance
+              - entity: sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_u4_exit_zone_distance
+                name: Exit distance
+              - entity: switch.people_counter_smart_sauna_roode_four_sensor_overdoor_u4_invert_sensor_direction
+                name: Reverser U4
+
+      - type: grid
+        cards:
+          - type: entities
+            title: U7
+            show_header_toggle: false
+            entities:
+              - entity: text_sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_u7_roode_event
+                name: Siste Roode-event
+              - entity: sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_u7_entry_zone_distance
+                name: Entry distance
+              - entity: sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_u7_exit_zone_distance
+                name: Exit distance
+              - entity: switch.people_counter_smart_sauna_roode_four_sensor_overdoor_u7_invert_sensor_direction
+                name: Reverser U7
+
+      - type: grid
+        cards:
+          - type: entities
+            title: U8
+            show_header_toggle: false
+            entities:
+              - entity: text_sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_u8_roode_event
+                name: Siste Roode-event
+              - entity: sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_u8_entry_zone_distance
+                name: Entry distance
+              - entity: sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_u8_exit_zone_distance
+                name: Exit distance
+              - entity: switch.people_counter_smart_sauna_roode_four_sensor_overdoor_u8_invert_sensor_direction
+                name: Reverser U8
+
+  - title: Diagnose
+    path: roode-diagnostics
+    icon: mdi:stethoscope
+    type: sections
+    max_columns: 3
+    badges: []
+    sections:
+      - type: grid
+        column_span: 2
+        cards:
+          - type: entities
+            title: Beslutningslogikk
+            show_header_toggle: false
+            entities:
+              - entity: text_sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_last_aggregate_event
+                name: Siste aggregate event
+              - entity: text_sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_last_aggregate_reason
+                name: Hvorfor
+              - entity: text_sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_vote_window
+                name: Stemmespor
+              - entity: sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_confirmed_in
+                name: Godkjent inn
+              - entity: sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_confirmed_out
+                name: Godkjent ut
+              - entity: sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_rejected_events
+                name: Forkastet
+
+          - type: logbook
+            title: Siste hendelser
+            hours_to_show: 2
+            entities:
+              - number.people_counter_smart_sauna_roode_four_sensor_overdoor_people_inside
+              - text_sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_last_aggregate_event
+              - text_sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_last_aggregate_reason
+              - text_sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_vote_window
+
+      - type: grid
+        cards:
+          - type: entities
+            title: Drift
+            show_header_toggle: false
+            entities:
+              - entity: binary_sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_api_status
+                name: ESPHome API
+              - entity: sensor.people_counter_smart_sauna_roode_four_sensor_overdoor_rssi
+                name: WiFi RSSI
+              - entity: switch.people_counter_smart_sauna_roode_four_sensor_overdoor_invert_aggregate_direction
+                name: Reverser total retning
+              - type: button
+                entity: button.people_counter_smart_sauna_roode_four_sensor_overdoor_recalibrate_all_roode_sensors
+                name: Rekalibrer alle
+                icon: mdi:target
+              - type: button
+                entity: button.people_counter_smart_sauna_roode_four_sensor_overdoor_restart
+                name: Restart ESP
+                icon: mdi:restart

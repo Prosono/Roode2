@@ -9,6 +9,8 @@ namespace vl53l1x {
 namespace {
 
 SemaphoreHandle_t wire_mutex = nullptr;
+constexpr uint8_t SENSOR_INIT_ATTEMPTS = 3;
+constexpr uint32_t SENSOR_RECOVERY_SETTLE_MS = 25;
 
 bool lock_wire_bus(uint32_t timeout_ms) {
   if (wire_mutex == nullptr) {
@@ -195,6 +197,86 @@ void VL53L1X::enable_sensor_() {
   delay(10);
 }
 
+void VL53L1X::disable_sensor_() {
+  if (!this->xshut_pin.has_value()) {
+    return;
+  }
+
+  auto *pin = this->xshut_pin.value();
+  pin->setup();
+  pin->pin_mode(gpio::FLAG_OUTPUT);
+  pin->digital_write(false);
+  delay(10);
+}
+
+bool VL53L1X::apply_post_init_settings_() {
+  if (this->offset.has_value()) {
+    ScopedWireLock lock(2000);
+    if (!lock.locked()) {
+      return false;
+    }
+    ESP_LOGI(TAG, "Setting offset calibration to %d", this->offset.value());
+    auto status = this->sensor.SetOffsetInMm(this->offset.value());
+    if (status != VL53L1_ERROR_NONE) {
+      ESP_LOGE(TAG, "Could not set offset calibration, error code: %d", status);
+      return false;
+    }
+  }
+
+  if (this->xtalk.has_value()) {
+    ScopedWireLock lock(2000);
+    if (!lock.locked()) {
+      return false;
+    }
+    ESP_LOGI(TAG, "Setting crosstalk calibration to %d", this->xtalk.value());
+    auto status = this->sensor.SetXTalk(this->xtalk.value());
+    if (status != VL53L1_ERROR_NONE) {
+      ESP_LOGE(TAG, "Could not set crosstalk calibration, error code: %d", status);
+      return false;
+    }
+  }
+
+  const RangingMode *mode = this->ranging_mode_override.has_value() ? this->ranging_mode_override.value() : this->ranging_mode;
+  if (mode != nullptr) {
+    this->set_ranging_mode(mode);
+  }
+  return true;
+}
+
+bool VL53L1X::recover_sensor_(const char *reason, bool power_cycle) {
+  ESP_LOGW(TAG, "Recovering sensor 0x%02X after %s", this->address_, reason);
+
+  this->setup_complete_ = false;
+  this->last_roi = nullptr;
+
+  if (power_cycle) {
+    this->disable_sensor_();
+    delay(SENSOR_RECOVERY_SETTLE_MS);
+    this->enable_sensor_();
+    delay(SENSOR_RECOVERY_SETTLE_MS);
+  }
+
+  if (!this->initialize_wire_()) {
+    return false;
+  }
+
+  const auto status = this->init();
+  if (status != VL53L1_ERROR_NONE) {
+    ESP_LOGE(TAG, "Sensor recovery failed during init, error code: %d", status);
+    return false;
+  }
+
+  this->setup_complete_ = true;
+  if (!this->apply_post_init_settings_()) {
+    ESP_LOGE(TAG, "Sensor recovery failed while restoring settings");
+    this->setup_complete_ = false;
+    return false;
+  }
+
+  ESP_LOGI(TAG, "Sensor 0x%02X recovered successfully", this->address_);
+  return true;
+}
+
 void VL53L1X::setup() {
   this->setup_complete_ = false;
   ESP_LOGD(TAG, "Beginning setup");
@@ -213,46 +295,42 @@ void VL53L1X::setup() {
   if (!this->initialize_wire_()) {
     return;
   }
-  this->enable_sensor_();
+  bool initialized = false;
+  for (uint8_t attempt = 0; attempt < SENSOR_INIT_ATTEMPTS; attempt++) {
+    if (attempt == 0) {
+      this->enable_sensor_();
+    } else {
+      this->disable_sensor_();
+      delay(SENSOR_RECOVERY_SETTLE_MS);
+      this->enable_sensor_();
+    }
 
-  auto status = this->init();
-  if (status != VL53L1_ERROR_NONE) {
+    auto status = this->init();
+    if (status != VL53L1_ERROR_NONE) {
+      ESP_LOGW(TAG, "Init attempt %u/%u failed for sensor 0x%02X with error %d",
+               static_cast<unsigned>(attempt + 1), static_cast<unsigned>(SENSOR_INIT_ATTEMPTS), this->address_, status);
+      delay(SENSOR_RECOVERY_SETTLE_MS);
+      continue;
+    }
+
+    this->setup_complete_ = true;
+    if (!this->apply_post_init_settings_()) {
+      ESP_LOGW(TAG, "Post-init setup attempt %u/%u failed for sensor 0x%02X",
+               static_cast<unsigned>(attempt + 1), static_cast<unsigned>(SENSOR_INIT_ATTEMPTS), this->address_);
+      this->setup_complete_ = false;
+      delay(SENSOR_RECOVERY_SETTLE_MS);
+      continue;
+    }
+
+    initialized = true;
+    break;
+  }
+
+  if (!initialized) {
     this->mark_failed();
     return;
   }
-  ESP_LOGD(TAG, "Device initialized");
 
-  if (this->offset.has_value()) {
-    ScopedWireLock lock(2000);
-    if (!lock.locked()) {
-      this->mark_failed();
-      return;
-    }
-    ESP_LOGI(TAG, "Setting offset calibration to %d", this->offset.value());
-    status = this->sensor.SetOffsetInMm(this->offset.value());
-    if (status != VL53L1_ERROR_NONE) {
-      ESP_LOGE(TAG, "Could not set offset calibration, error code: %d", status);
-      this->mark_failed();
-      return;
-    }
-  }
-
-  if (this->xtalk.has_value()) {
-    ScopedWireLock lock(2000);
-    if (!lock.locked()) {
-      this->mark_failed();
-      return;
-    }
-    ESP_LOGI(TAG, "Setting crosstalk calibration to %d", this->xtalk.value());
-    status = this->sensor.SetXTalk(this->xtalk.value());
-    if (status != VL53L1_ERROR_NONE) {
-      ESP_LOGE(TAG, "Could not set crosstalk calibration, error code: %d", status);
-      this->mark_failed();
-      return;
-    }
-  }
-
-  this->setup_complete_ = true;
   ESP_LOGI(TAG, "Setup complete");
 }
 
@@ -369,7 +447,7 @@ void VL53L1X::set_ranging_mode(const RangingMode *mode) {
   ESP_LOGI(TAG, "Set ranging mode: %s", mode->name);
 }
 
-optional<uint16_t> VL53L1X::read_distance(ROI *roi, VL53L1_Error &status) {
+optional<uint16_t> VL53L1X::read_distance_once_(ROI *roi, VL53L1_Error &status) {
   if (this->is_failed()) {
     ESP_LOGW(TAG, "Cannot read distance while component is failed");
     return {};
@@ -442,6 +520,20 @@ optional<uint16_t> VL53L1X::read_distance(ROI *roi, VL53L1_Error &status) {
 
   ESP_LOGV(TAG, "Finished distance read: %d", distance);
   return {distance};
+}
+
+optional<uint16_t> VL53L1X::read_distance(ROI *roi, VL53L1_Error &status) {
+  auto result = this->read_distance_once_(roi, status);
+  if (result.has_value()) {
+    return result;
+  }
+
+  if (!this->recover_sensor_("read failure", true)) {
+    this->mark_failed();
+    return {};
+  }
+
+  return this->read_distance_once_(roi, status);
 }
 
 }  // namespace vl53l1x

@@ -69,6 +69,7 @@ void Roode::setup() {
 
   this->init_tuning_preferences_();
   this->load_persisted_tuning_();
+  this->reset_runtime_detection_state_();
 
   if (this->status_sensor != nullptr) {
     this->status_sensor->publish_state(VL53L1_ERROR_NONE);
@@ -252,7 +253,7 @@ void Roode::load_persisted_tuning_() {
   }
 
   ESP_LOGI(TAG,
-           "Loaded saved tuning auto=%u sampling=%u invert=%s min=%u max=%u roi=%ux%u",
+           "Loaded saved tuning auto=%u sampling=%u saved_invert=%s min=%u max=%u roi=%ux%u",
            static_cast<unsigned int>(state.auto_recalibration_minutes), static_cast<unsigned int>(state.sampling),
            state.invert_direction ? "true" : "false", static_cast<unsigned int>(state.min_threshold_percentage),
            static_cast<unsigned int>(state.max_threshold_percentage), static_cast<unsigned int>(state.roi_width),
@@ -260,7 +261,6 @@ void Roode::load_persisted_tuning_() {
 
   this->set_auto_recalibration_interval_minutes(state.auto_recalibration_minutes);
   this->set_sampling_size(state.sampling);
-  this->set_invert_direction(state.invert_direction);
   this->set_min_threshold_percentage(state.min_threshold_percentage);
   this->set_max_threshold_percentage(state.max_threshold_percentage);
   this->set_roi_width(state.roi_width);
@@ -465,7 +465,25 @@ void Roode::recalibration() {
     ESP_LOGE(TAG, "Cannot recalibrate while VL53L1X sensor is failed");
     return;
   }
+  this->reset_runtime_detection_state_();
   calibrate_zones();
+}
+
+void Roode::reset_runtime_detection_state_() {
+  this->current_zone = this->entry;
+  this->last_sensor_status = VL53L1_ERROR_NONE;
+  this->sensor_status = VL53L1_ERROR_NONE;
+  this->last_direction_ = "Waiting";
+  this->masking_candidate_since_ms_ = 0;
+  this->publish_presence_state_(false);
+  this->publish_masking_state_(false);
+  this->path_track_[0] = 0;
+  this->path_track_[1] = 0;
+  this->path_track_[2] = 0;
+  this->path_track_[3] = 0;
+  this->path_track_filling_size_ = 1;
+  this->left_previous_status_ = NOBODY;
+  this->right_previous_status_ = NOBODY;
 }
 
 void Roode::handle_auto_recalibration_() {

@@ -1,0 +1,123 @@
+# Home Assistant package: combine the side and top Roode people counters.
+#
+# Assumption:
+# - Both counters measure the same room/doorway.
+# - Therefore we should NOT sum them. Instead, treat them as two independent
+#   estimates of the same occupancy count.
+#
+# Fusion rule:
+# - If both are available and differ by 0-1 person: use the rounded average.
+# - If both are available but differ by more than 1: use the higher value and
+#   expose the status as "conflict".
+# - If only one counter is available: use that counter.
+
+template:
+  - sensor:
+      - name: Roode Combined People Inside
+        unique_id: roode_combined_people_inside
+        icon: mdi:account-group
+        state_class: measurement
+        availability: >
+          {% set side = states('number.roode_four_sensor_overdoor_side_roode_four_sensor_overdoor_people_inside') %}
+          {% set top = states('number.people_counter_smart_sauna_roode_four_sensor_overdoor_top_people_inside') %}
+          {{ side not in ['unknown', 'unavailable', 'none', ''] or top not in ['unknown', 'unavailable', 'none', ''] }}
+        state: >
+          {% set side_raw = states('number.roode_four_sensor_overdoor_side_roode_four_sensor_overdoor_people_inside') %}
+          {% set top_raw = states('number.people_counter_smart_sauna_roode_four_sensor_overdoor_top_people_inside') %}
+          {% set side_ok = side_raw not in ['unknown', 'unavailable', 'none', ''] %}
+          {% set top_ok = top_raw not in ['unknown', 'unavailable', 'none', ''] %}
+          {% if side_ok and top_ok %}
+            {% set side = side_raw | float(0) %}
+            {% set top = top_raw | float(0) %}
+            {% set delta = (side - top) | abs %}
+            {% if delta <= 1 %}
+              {{ ((side + top) / 2) | round(0) | int }}
+            {% else %}
+              {{ [side, top] | max | round(0) | int }}
+            {% endif %}
+          {% elif side_ok %}
+            {{ side_raw | float(0) | round(0) | int }}
+          {% elif top_ok %}
+            {{ top_raw | float(0) | round(0) | int }}
+          {% else %}
+            unknown
+          {% endif %}
+        attributes:
+          side_counter: "{{ states('number.roode_four_sensor_overdoor_side_roode_four_sensor_overdoor_people_inside') }}"
+          top_counter: "{{ states('number.people_counter_smart_sauna_roode_four_sensor_overdoor_top_people_inside') }}"
+          fusion_rule: "average_when_close_max_when_conflict"
+
+      - name: Roode Counter Difference
+        unique_id: roode_counter_difference
+        icon: mdi:delta
+        state_class: measurement
+        availability: >
+          {% set side = states('number.roode_four_sensor_overdoor_side_roode_four_sensor_overdoor_people_inside') %}
+          {% set top = states('number.people_counter_smart_sauna_roode_four_sensor_overdoor_top_people_inside') %}
+          {{ side not in ['unknown', 'unavailable', 'none', ''] and top not in ['unknown', 'unavailable', 'none', ''] }}
+        state: >
+          {% set side = states('number.roode_four_sensor_overdoor_side_roode_four_sensor_overdoor_people_inside') | float(0) %}
+          {% set top = states('number.people_counter_smart_sauna_roode_four_sensor_overdoor_top_people_inside') | float(0) %}
+          {{ (side - top) | abs | round(0) | int }}
+
+      - name: Roode Counter Fusion Status
+        unique_id: roode_counter_fusion_status
+        icon: mdi:source-branch-check
+        state: >
+          {% set side_raw = states('number.roode_four_sensor_overdoor_side_roode_four_sensor_overdoor_people_inside') %}
+          {% set top_raw = states('number.people_counter_smart_sauna_roode_four_sensor_overdoor_top_people_inside') %}
+          {% set side_ok = side_raw not in ['unknown', 'unavailable', 'none', ''] %}
+          {% set top_ok = top_raw not in ['unknown', 'unavailable', 'none', ''] %}
+          {% if not side_ok and not top_ok %}
+            unavailable
+          {% elif side_ok and not top_ok %}
+            side_only
+          {% elif top_ok and not side_ok %}
+            top_only
+          {% else %}
+            {% set side = side_raw | float(0) %}
+            {% set top = top_raw | float(0) %}
+            {% set delta = (side - top) | abs %}
+            {% if delta == 0 %}
+              agreement
+            {% elif delta <= 1 %}
+              small_drift
+            {% else %}
+              conflict
+            {% endif %}
+          {% endif %}
+        attributes:
+          side_counter: "{{ states('number.roode_four_sensor_overdoor_side_roode_four_sensor_overdoor_people_inside') }}"
+          top_counter: "{{ states('number.people_counter_smart_sauna_roode_four_sensor_overdoor_top_people_inside') }}"
+          difference: "{{ states('sensor.roode_counter_difference') }}"
+
+  - binary_sensor:
+      - name: Roode Counters Agree
+        unique_id: roode_counters_agree
+        icon: mdi:check-decagram
+        availability: >
+          {% set side = states('number.roode_four_sensor_overdoor_side_roode_four_sensor_overdoor_people_inside') %}
+          {% set top = states('number.people_counter_smart_sauna_roode_four_sensor_overdoor_top_people_inside') %}
+          {{ side not in ['unknown', 'unavailable', 'none', ''] and top not in ['unknown', 'unavailable', 'none', ''] }}
+        state: >
+          {% set side = states('number.roode_four_sensor_overdoor_side_roode_four_sensor_overdoor_people_inside') | float(0) %}
+          {% set top = states('number.people_counter_smart_sauna_roode_four_sensor_overdoor_top_people_inside') | float(0) %}
+          {{ (side - top) | abs <= 1 }}
+
+automation:
+  - alias: Roode Counter Conflict Notification
+    id: roode_counter_conflict_notification
+    mode: single
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.roode_counter_difference
+        above: 1
+        for: "00:01:00"
+    action:
+      - service: persistent_notification.create
+        data:
+          title: Roode tellere er uenige
+          message: >
+            Side-teller er {{ states('number.roode_four_sensor_overdoor_side_roode_four_sensor_overdoor_people_inside') }},
+            top-teller er {{ states('number.people_counter_smart_sauna_roode_four_sensor_overdoor_top_people_inside') }}.
+            Samlet teller bruker høyeste verdi til tellerne er enige igjen.

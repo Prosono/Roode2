@@ -188,6 +188,7 @@ class Roode : public PollingComponent {
   void init_tuning_preferences_();
   void load_persisted_tuning_();
   uint32_t tuning_preference_key_() const;
+  void reset_runtime_detection_state_();
   Orientation orientation_{Parallel};
   uint8_t samples{2};
   bool invert_direction_{false};

@@ -72,6 +72,10 @@ class VL53L1X : public Component {
   bool initialize_wire_();
   void prepare_xshut_pins_();
   void enable_sensor_();
+  void disable_sensor_();
+  bool apply_post_init_settings_();
+  bool recover_sensor_(const char *reason, bool power_cycle);
+  optional<uint16_t> read_distance_once_(ROI *roi, VL53L1_Error &error);
 
   VL53L1_Error init();
   VL53L1_Error wait_for_boot();
