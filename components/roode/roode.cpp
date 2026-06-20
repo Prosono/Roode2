@@ -469,6 +469,10 @@ void Roode::recalibration() {
   calibrate_zones();
 }
 
+void Roode::reset_runtime_state() {
+  this->reset_runtime_detection_state_();
+}
+
 void Roode::reset_runtime_detection_state_() {
   this->current_zone = this->entry;
   this->last_sensor_status = VL53L1_ERROR_NONE;

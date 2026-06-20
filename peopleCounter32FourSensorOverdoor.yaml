@@ -34,7 +34,7 @@ logger:
   level: INFO
 
 preferences:
-  flash_write_interval: 0s
+  flash_write_interval: 10s
 
 api:
   # The counter must keep running even if Home Assistant/API is unavailable
@@ -395,12 +395,20 @@ switch:
     turn_on_action:
       - lambda: |-
           id(aggregate_invert_direction) = true;
+          id(roode_u3)->reset_runtime_state();
+          id(roode_u4)->reset_runtime_state();
+          id(roode_u7)->reset_runtime_state();
+          id(roode_u8)->reset_runtime_state();
           id(aggregate_last_reason).publish_state("Aggregate direction reversed. Sensor votes are now flipped before counting.");
       - script.execute: clear_vote_window
       - script.execute: publish_aggregate_state
     turn_off_action:
       - lambda: |-
           id(aggregate_invert_direction) = false;
+          id(roode_u3)->reset_runtime_state();
+          id(roode_u4)->reset_runtime_state();
+          id(roode_u7)->reset_runtime_state();
+          id(roode_u8)->reset_runtime_state();
           id(aggregate_last_reason).publish_state("Aggregate direction normal. Sensor votes are counted as reported by Roode.");
       - script.execute: clear_vote_window
       - script.execute: publish_aggregate_state

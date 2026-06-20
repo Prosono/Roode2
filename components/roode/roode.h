@@ -149,6 +149,7 @@ class Roode : public PollingComponent {
     entry_exit_event_sensor = entry_exit_event_sensor_;
   }
   void recalibration();
+  void reset_runtime_state();
   Zone *entry = new Zone(0);
   Zone *exit = new Zone(1);
 
