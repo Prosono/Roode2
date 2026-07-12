@@ -176,6 +176,8 @@ class TofOverdoorCounter : public PollingComponent {
   void setup() override;
   void update() override;
   void dump_config() override;
+  // XSHUT must be asserted before the four sensors can collide at 0x29. The
+  // potentially slow discovery itself is deferred until the main loop.
   float get_setup_priority() const override { return setup_priority::BUS; }
 
   void set_sda_pin(uint8_t pin) { this->sda_pin_ = pin; }
@@ -548,6 +550,7 @@ class TofOverdoorCounter : public PollingComponent {
 
   bool initialize_wire_();
   bool recover_wire_();
+  bool clear_i2c_bus_();
   void prepare_xshut_pins_();
   void set_all_xshut_(bool state);
   void set_xshut_(size_t index, bool state);

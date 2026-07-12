@@ -1,5 +1,6 @@
 #include "tof_overdoor_counter.h"
 
+#include <Arduino.h>
 #include <algorithm>
 #include <cstdint>
 #include <sstream>
@@ -12,6 +13,7 @@ static const char *const TAG = "tof_overdoor_counter";
 constexpr uint8_t PERSISTED_STATE_VERSION = 6;
 constexpr uint32_t STALE_READING_MS = 450;
 constexpr uint32_t COLD_BOOT_SETTLE_MS = 250;
+constexpr uint32_t I2C_TRANSACTION_TIMEOUT_MS = 50;
 constexpr uint32_t CALIBRATION_CLEAR_SETTLE_MS = 120;
 constexpr uint32_t BOOT_CLEAR_SETTLE_MS = 500;
 constexpr uint32_t SENSOR_RECOVERY_BASE_MS = 1000;
@@ -181,17 +183,15 @@ uint8_t clamp_quality(float value) {
 
 void TofOverdoorCounter::setup() {
   this->apply_calibration_defaults_();
-  ESP_LOGI(TAG, "Cold boot settle for %u ms before sensor bring-up", static_cast<unsigned>(COLD_BOOT_SETTLE_MS));
-  delay(COLD_BOOT_SETTLE_MS);
+  // Assert every XSHUT line before doing anything on I2C. After an uncontrolled
+  // power restoration all four VL53L1X devices otherwise wake at 0x29 and can
+  // leave SDA low before ESPHome has even initialized its logger.
   this->prepare_xshut_pins_();
   this->init_preferences_();
-  if (!this->initialize_wire_()) {
-    this->system_status_ = STATUS_ERROR;
-    this->phase_text_ = "I2C initialization failed; retrying automatically";
-    this->next_rediscovery_ms_ = millis() + SENSOR_RECOVERY_BASE_MS;
-    return;
-  }
-  this->rediscover();
+  this->wire_initialized_ = false;
+  this->system_status_ = STATUS_BOOTING;
+  this->phase_text_ = "Core online; sensor discovery scheduled";
+  this->next_rediscovery_ms_ = millis() + COLD_BOOT_SETTLE_MS;
 }
 
 void TofOverdoorCounter::update() {
@@ -201,7 +201,9 @@ void TofOverdoorCounter::update() {
       if (this->initialize_wire_()) {
         this->rediscover();
       } else {
-        this->next_rediscovery_ms_ = now + SENSOR_RECOVERY_MAX_MS;
+        this->system_status_ = STATUS_ERROR;
+        this->phase_text_ = "I2C unavailable; retrying automatically";
+        this->next_rediscovery_ms_ = now + SENSOR_RECOVERY_BASE_MS;
       }
     }
     return;
@@ -291,14 +293,56 @@ bool TofOverdoorCounter::initialize_wire_() {
   }
   Wire.end();
   delay(1);
+  const bool bus_released = this->clear_i2c_bus_();
+  if (!bus_released) {
+    ESP_LOGW(TAG, "I2C bus is still held low after recovery pulses; Wire will retry with bounded transactions");
+  }
   if (!Wire.begin(this->sda_pin_, this->scl_pin_)) {
     ESP_LOGE(TAG, "Failed to initialize Wire on SDA=%u SCL=%u", this->sda_pin_, this->scl_pin_);
     return false;
   }
+  // Never let a marginal or half-powered sensor hold the ESP32 main loop
+  // indefinitely. Higher-level boot/recovery deadlines handle retries.
+  Wire.setTimeOut(I2C_TRANSACTION_TIMEOUT_MS);
   Wire.setClock(this->i2c_frequency_);
   this->wire_initialized_ = true;
   ESP_LOGI(TAG, "Initialized Wire on SDA=%u SCL=%u @ %u Hz", this->sda_pin_, this->scl_pin_, this->i2c_frequency_);
   return true;
+}
+
+bool TofOverdoorCounter::clear_i2c_bus_() {
+  pinMode(this->sda_pin_, INPUT_PULLUP);
+  pinMode(this->scl_pin_, INPUT_PULLUP);
+  delayMicroseconds(10);
+
+  // Give a slow slave a short opportunity to release SCL before clocking it.
+  const uint32_t clock_wait_started = micros();
+  while (digitalRead(this->scl_pin_) == LOW && (micros() - clock_wait_started) < 2000U) {
+    delayMicroseconds(10);
+  }
+
+  pinMode(this->scl_pin_, OUTPUT_OPEN_DRAIN);
+  digitalWrite(this->scl_pin_, HIGH);
+  for (uint8_t pulse = 0; pulse < 18 && digitalRead(this->sda_pin_) == LOW; pulse++) {
+    digitalWrite(this->scl_pin_, LOW);
+    delayMicroseconds(5);
+    digitalWrite(this->scl_pin_, HIGH);
+    delayMicroseconds(5);
+  }
+
+  // Generate an explicit STOP (SDA low -> SCL high -> SDA high).
+  pinMode(this->sda_pin_, OUTPUT_OPEN_DRAIN);
+  digitalWrite(this->sda_pin_, LOW);
+  delayMicroseconds(5);
+  digitalWrite(this->scl_pin_, HIGH);
+  delayMicroseconds(5);
+  digitalWrite(this->sda_pin_, HIGH);
+  delayMicroseconds(5);
+
+  pinMode(this->sda_pin_, INPUT_PULLUP);
+  pinMode(this->scl_pin_, INPUT_PULLUP);
+  delayMicroseconds(10);
+  return digitalRead(this->sda_pin_) == HIGH && digitalRead(this->scl_pin_) == HIGH;
 }
 
 bool TofOverdoorCounter::recover_wire_() {

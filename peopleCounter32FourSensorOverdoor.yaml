@@ -17,6 +17,8 @@ esp32:
 
 logger:
   level: INFO
+  # Prevent USB serial clients from leaving EN/BOOT asserted after attaching.
+  deassert_rts_dtr: true
 
 preferences:
   # Bounds counter loss after a hard power cut without forcing a blocking NVS
@@ -30,6 +32,9 @@ api:
 safe_mode:
   num_attempts: 10
   reboot_timeout: 5min
+  # Sensor recovery happens after the ESPHome core is alive; do not count a
+  # healthy core as a failed boot just because a ToF channel is still retrying.
+  boot_is_good_after: 30s
 
 ota:
   - platform: esphome
