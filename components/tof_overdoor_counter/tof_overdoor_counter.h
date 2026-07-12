@@ -526,6 +526,8 @@ class TofOverdoorCounter : public PollingComponent {
   uint8_t sensor_vote_count_{0};
   uint32_t last_debug_sample_log_ms_{0};
   uint32_t next_rediscovery_ms_{0};
+  uint32_t last_heartbeat_log_ms_{0};
+  bool boot_diagnostics_logged_{false};
   uint32_t boot_clear_since_ms_{0};
   int people_inside_{0};
   uint32_t confirmed_in_count_{0};

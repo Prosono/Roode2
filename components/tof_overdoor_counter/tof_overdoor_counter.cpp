@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <algorithm>
 #include <cstdint>
+#include <esp_system.h>
 #include <sstream>
 
 namespace esphome {
@@ -12,7 +13,10 @@ namespace {
 static const char *const TAG = "tof_overdoor_counter";
 constexpr uint8_t PERSISTED_STATE_VERSION = 6;
 constexpr uint32_t STALE_READING_MS = 450;
-constexpr uint32_t COLD_BOOT_SETTLE_MS = 250;
+// Keep every sensor in XSHUT while the ESP32 rail, logger and Wi-Fi radio pass
+// their cold-start/inrush phase. A warm reset does not reproduce that load.
+constexpr uint32_t COLD_BOOT_SETTLE_MS = 5000;
+constexpr uint32_t HEARTBEAT_INTERVAL_MS = 5000;
 constexpr uint32_t I2C_TRANSACTION_TIMEOUT_MS = 50;
 constexpr uint32_t CALIBRATION_CLEAR_SETTLE_MS = 120;
 constexpr uint32_t BOOT_CLEAR_SETTLE_MS = 500;
@@ -196,6 +200,19 @@ void TofOverdoorCounter::setup() {
 
 void TofOverdoorCounter::update() {
   const uint32_t now = millis();
+
+  if (!this->boot_diagnostics_logged_) {
+    ESP_LOGI(TAG, "ESP32 core reached main loop; reset_reason=%d, ToF discovery deferred until %u ms uptime",
+             static_cast<int>(esp_reset_reason()), static_cast<unsigned>(this->next_rediscovery_ms_));
+    this->boot_diagnostics_logged_ = true;
+    this->last_heartbeat_log_ms_ = now;
+  } else if ((now - this->last_heartbeat_log_ms_) >= HEARTBEAT_INTERVAL_MS) {
+    ESP_LOGI(TAG, "Heartbeat uptime=%u ms wire=%s discovered=%u phase=%s", static_cast<unsigned>(now),
+             this->wire_initialized_ ? "ready" : "waiting",
+             static_cast<unsigned>(this->get_discovered_sensor_count()), this->phase_text_.c_str());
+    this->last_heartbeat_log_ms_ = now;
+  }
+
   if (!this->wire_initialized_ || this->channels_.empty()) {
     if (this->next_rediscovery_ms_ == 0 || static_cast<int32_t>(now - this->next_rediscovery_ms_) >= 0) {
       if (this->initialize_wire_()) {
