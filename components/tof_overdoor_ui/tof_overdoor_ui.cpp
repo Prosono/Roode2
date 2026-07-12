@@ -1324,7 +1324,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
       updateMetric('last-detection-copy', state.last_detection_time || 'Never');
       updateMetric('last-reason-copy', state.last_reason || 'No decision logged yet.');
       updateMetric('discovery-map-copy', state.discovery_map || 'No discovery data yet.');
-      updateMetric('timing-copy', `${formatInt(state.reporting_sensors)} of ${formatInt(state.discovered_sensors)} sensors reporting, cycle ${formatInt(state.cycle_duration_ms)} ms, skew ${formatInt(state.update_skew_ms)} ms.`);
+      updateMetric('timing-copy', `${formatInt(state.reporting_sensors)} of ${formatInt(state.discovered_sensors)} sensors reporting, cycle ${formatInt(state.cycle_duration_ms)} ms, skew ${formatInt(state.update_skew_ms)} ms, last decision ${formatInt(state.last_decision_latency_ms)} ms.`);
       updateMetric('summary-copy', state.summary || 'No summary yet.');
       document.getElementById('event-log-copy').textContent = state.event_log || 'No events yet.';
 
@@ -1558,6 +1558,7 @@ class TofOverdoorUi::Handler : public AsyncWebHandler {
       root["discovered_sensors"] = static_cast<int>(counter->get_discovered_sensor_count());
       root["reporting_sensors"] = static_cast<int>(counter->get_reporting_sensor_count());
       root["cycle_duration_ms"] = counter->get_cycle_duration_ms();
+      root["last_decision_latency_ms"] = counter->get_last_decision_latency_ms();
       root["update_skew_ms"] = counter->get_update_skew_ms();
       root["nearest_distance"] = counter->get_nearest_distance_mm();
       root["average_distance"] = counter->get_average_distance_mm();

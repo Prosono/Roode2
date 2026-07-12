@@ -97,24 +97,24 @@ tof_overdoor_counter:
   post_address_delay: 150ms
   distance_mode: long
   timing_budget: 33ms
-  intermeasurement_period: 40ms
+  intermeasurement_period: 37ms
   init_retries: 3
   # Debounce already requires repeated hits; a one-sample median avoids adding
   # another full ROI cycle of latency for runners and closely-spaced people.
   sampling: 1
-  update_interval: 10ms
+  update_interval: 5ms
   base_address: 0x30
   # Per-ROI drops from the calibrated empty-doorway baseline.
   trigger_delta: 280mm
   release_delta: 140mm
   baseline_tolerance: 80mm
-  debounce: 45ms
+  debounce: 25ms
   sequence_timeout: 3s
-  cooldown: 180ms
+  cooldown: 80ms
   blocked_timeout: 1800ms
   standing_timeout: 2200ms
   min_event_sensors: 3
-  min_active_duration: 35ms
+  min_active_duration: 25ms
   direction_window: 90ms
   # Reject boot calibration while a person/object is under a typical doorway.
   minimum_clear_distance: 1200mm
@@ -566,10 +566,22 @@ sensor:
       return id(overdoor_counter).get_update_skew_ms();
 
   - platform: template
+    name: ${friendly_name} Last Decision Latency
+    unit_of_measurement: ms
+    accuracy_decimals: 0
+    update_interval: 500ms
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 25
+    lambda: |-
+      return id(overdoor_counter).get_last_decision_latency_ms();
+
+  - platform: template
     name: ${friendly_name} People Inside
     unit_of_measurement: persons
     accuracy_decimals: 0
-    update_interval: 500ms
+    update_interval: 100ms
     web_server:
       sorting_group_id: web_group_counting
       sorting_weight: 10
@@ -580,7 +592,7 @@ sensor:
     name: ${friendly_name} Confirmed IN
     unit_of_measurement: persons
     accuracy_decimals: 0
-    update_interval: 500ms
+    update_interval: 100ms
     web_server:
       sorting_group_id: web_group_counting
       sorting_weight: 20
@@ -591,7 +603,7 @@ sensor:
     name: ${friendly_name} Confirmed OUT
     unit_of_measurement: persons
     accuracy_decimals: 0
-    update_interval: 500ms
+    update_interval: 100ms
     web_server:
       sorting_group_id: web_group_counting
       sorting_weight: 30

@@ -74,19 +74,19 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_POST_ADDRESS_DELAY, default="80ms"): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_DISTANCE_MODE, default="long"): cv.enum(DISTANCE_MODE_OPTIONS, lower=True),
             cv.Optional(CONF_TIMING_BUDGET, default="33ms"): cv.positive_time_period_milliseconds,
-            cv.Optional(CONF_INTERMEASUREMENT, default="40ms"): cv.positive_time_period_milliseconds,
+            cv.Optional(CONF_INTERMEASUREMENT, default="37ms"): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_INIT_RETRIES, default=3): cv.int_range(min=1, max=5),
             cv.Optional(CONF_SAMPLING, default=3): cv.int_range(min=1, max=8),
             cv.Optional(CONF_TRIGGER_DELTA, default="320mm"): cv.distance,
             cv.Optional(CONF_RELEASE_DELTA, default="160mm"): cv.distance,
             cv.Optional(CONF_BASELINE_TOLERANCE, default="80mm"): cv.distance,
             cv.Optional(CONF_SEQUENCE_TIMEOUT, default="2s"): cv.positive_time_period_milliseconds,
-            cv.Optional(CONF_DEBOUNCE, default="45ms"): cv.positive_time_period_milliseconds,
-            cv.Optional(CONF_COOLDOWN, default="180ms"): cv.positive_time_period_milliseconds,
+            cv.Optional(CONF_DEBOUNCE, default="25ms"): cv.positive_time_period_milliseconds,
+            cv.Optional(CONF_COOLDOWN, default="80ms"): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_BLOCKED_TIMEOUT, default="1800ms"): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_STANDING_TIMEOUT, default="2200ms"): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_MIN_EVENT_SENSORS, default=3): cv.int_range(min=2, max=4),
-            cv.Optional(CONF_MIN_ACTIVE_DURATION, default="35ms"): cv.positive_time_period_milliseconds,
+            cv.Optional(CONF_MIN_ACTIVE_DURATION, default="25ms"): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_DIRECTION_WINDOW, default="90ms"): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_MINIMUM_CLEAR_DISTANCE, default="600mm"): cv.distance,
             cv.Optional(CONF_CALIBRATION_SAMPLES, default=24): cv.int_range(min=8, max=100),
@@ -100,7 +100,7 @@ CONFIG_SCHEMA = (
             cv.Required(CONF_XSHUT_PINS): validate_xshut_pins,
         }
     )
-    .extend(cv.polling_component_schema("10ms"))
+    .extend(cv.polling_component_schema("5ms"))
 )
 
 

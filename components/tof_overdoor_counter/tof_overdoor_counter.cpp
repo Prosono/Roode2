@@ -9,7 +9,7 @@ namespace tof_overdoor_counter {
 namespace {
 
 static const char *const TAG = "tof_overdoor_counter";
-constexpr uint8_t PERSISTED_STATE_VERSION = 5;
+constexpr uint8_t PERSISTED_STATE_VERSION = 6;
 constexpr uint32_t STALE_READING_MS = 450;
 constexpr uint32_t COLD_BOOT_SETTLE_MS = 250;
 constexpr uint32_t CALIBRATION_CLEAR_SETTLE_MS = 120;
@@ -18,7 +18,9 @@ constexpr uint32_t SENSOR_RECOVERY_BASE_MS = 1000;
 constexpr uint32_t SENSOR_RECOVERY_MAX_MS = 30000;
 constexpr uint8_t ERRORS_BEFORE_POWER_CYCLE = 3;
 constexpr uint32_t TRACE_SAMPLE_INTERVAL_MS = 25;
-constexpr float FILTER_ALPHA = 0.65f;
+// React strongly to a new range sample. The adaptive threshold, hysteresis and
+// quorum provide the noise rejection; a slow EMA only delays zone edges.
+constexpr float FILTER_ALPHA = 0.85f;
 constexpr float BASELINE_TRACK_ALPHA = 0.015f;
 constexpr float NOISE_TRACK_ALPHA = 0.08f;
 constexpr uint16_t MIN_VALID_DISTANCE_MM = 30;
@@ -859,7 +861,21 @@ void TofOverdoorCounter::load_persisted_state_() {
   }
 
   PersistedState state{};
-  bool loaded = this->persisted_state_pref_.load(&state) && state.version == PERSISTED_STATE_VERSION;
+  bool loaded = this->persisted_state_pref_.load(&state) &&
+                (state.version == PERSISTED_STATE_VERSION || state.version == 5);
+
+  // Version 6 keeps the same persisted layout as version 5. It migrates the
+  // conservative timing values so already-installed counters receive the
+  // low-latency profile without losing counts, calibration or direction.
+  if (loaded && state.version == 5) {
+    state.version = PERSISTED_STATE_VERSION;
+    state.debounce_ms = std::min<uint16_t>(state.debounce_ms, 25);
+    state.cooldown_ms = std::min<uint16_t>(state.cooldown_ms, 80);
+    state.min_active_duration_ms = std::min<uint16_t>(state.min_active_duration_ms, 25);
+    this->state_dirty_ = true;
+    ESP_LOGI(TAG, "Migrated saved counter timing from version 5 to version %u",
+             static_cast<unsigned>(PERSISTED_STATE_VERSION));
+  }
 
   if (!loaded && global_preferences != nullptr) {
     PersistedStateV4 legacy{};
@@ -957,13 +973,13 @@ void TofOverdoorCounter::load_persisted_state_() {
   this->clear_threshold_mm_ = sanitize_persisted<uint16_t>(state.clear_threshold_mm, 20, 1000, 160);
   this->baseline_tolerance_mm_ = sanitize_persisted<uint16_t>(state.baseline_tolerance_mm, 10, 500, 80);
   this->minimum_clear_distance_mm_ = sanitize_persisted<uint16_t>(state.minimum_clear_distance_mm, 100, 4000, 600);
-  this->debounce_ms_ = sanitize_persisted<uint16_t>(state.debounce_ms, 5, 5000, 45);
+  this->debounce_ms_ = sanitize_persisted<uint16_t>(state.debounce_ms, 5, 5000, 25);
   this->detection_timeout_ms_ = sanitize_persisted<uint16_t>(state.detection_timeout_ms, 200, 20000, 1600);
-  this->cooldown_ms_ = sanitize_persisted<uint16_t>(state.cooldown_ms, 0, 20000, 180);
+  this->cooldown_ms_ = sanitize_persisted<uint16_t>(state.cooldown_ms, 0, 20000, 80);
   this->blocked_timeout_ms_ = sanitize_persisted<uint16_t>(state.blocked_timeout_ms, 200, 60000, 1800);
   this->standing_timeout_ms_ = sanitize_persisted<uint16_t>(state.standing_timeout_ms, 200, 60000, 2200);
   this->min_event_sensors_ = sanitize_persisted<uint16_t>(state.min_event_sensors, 2, SENSOR_COUNT, 3);
-  this->min_active_duration_ms_ = sanitize_persisted<uint16_t>(state.min_active_duration_ms, 0, 1000, 35);
+  this->min_active_duration_ms_ = sanitize_persisted<uint16_t>(state.min_active_duration_ms, 0, 1000, 25);
   this->direction_window_ms_ = sanitize_persisted<uint16_t>(state.direction_window_ms, 10, 1000, 90);
   this->calibration_samples_ = sanitize_persisted<uint16_t>(state.calibration_samples, 4, 128, 24);
   this->max_people_inside_ = sanitize_persisted<uint16_t>(state.max_people_inside, 1, 5000, 50);
@@ -1008,13 +1024,13 @@ void TofOverdoorCounter::apply_calibration_defaults_() {
   this->clear_threshold_mm_ = sanitize_persisted<uint16_t>(this->clear_threshold_mm_, 20, 1000, 160);
   this->baseline_tolerance_mm_ = sanitize_persisted<uint16_t>(this->baseline_tolerance_mm_, 10, 500, 80);
   this->minimum_clear_distance_mm_ = sanitize_persisted<uint16_t>(this->minimum_clear_distance_mm_, 100, 4000, 600);
-  this->debounce_ms_ = sanitize_persisted<uint32_t>(this->debounce_ms_, 5, 5000, 45);
+  this->debounce_ms_ = sanitize_persisted<uint32_t>(this->debounce_ms_, 5, 5000, 25);
   this->detection_timeout_ms_ = sanitize_persisted<uint32_t>(this->detection_timeout_ms_, 200, 20000, 1600);
-  this->cooldown_ms_ = sanitize_persisted<uint32_t>(this->cooldown_ms_, 0, 20000, 180);
+  this->cooldown_ms_ = sanitize_persisted<uint32_t>(this->cooldown_ms_, 0, 20000, 80);
   this->blocked_timeout_ms_ = sanitize_persisted<uint32_t>(this->blocked_timeout_ms_, 200, 60000, 1800);
   this->standing_timeout_ms_ = sanitize_persisted<uint32_t>(this->standing_timeout_ms_, 200, 60000, 2200);
   this->min_event_sensors_ = sanitize_persisted<uint8_t>(this->min_event_sensors_, 2, SENSOR_COUNT, 3);
-  this->min_active_duration_ms_ = sanitize_persisted<uint32_t>(this->min_active_duration_ms_, 0, 1000, 35);
+  this->min_active_duration_ms_ = sanitize_persisted<uint32_t>(this->min_active_duration_ms_, 0, 1000, 25);
   this->direction_window_ms_ = sanitize_persisted<uint32_t>(this->direction_window_ms_, 10, 1000, 90);
   this->calibration_samples_ = sanitize_persisted<uint16_t>(this->calibration_samples_, 4, 128, 24);
   this->max_people_inside_ = sanitize_persisted<uint16_t>(this->max_people_inside_, 1, 5000, 50);
@@ -1808,8 +1824,11 @@ void TofOverdoorCounter::reset_channel_path_tracker_(Channel &channel) {
   channel.roode_path[2] = 0;
   channel.roode_path[3] = 0;
   channel.roode_path_filling_size = 1;
-  channel.roode_previous_status[ZONE_OUT] = ROODE_NOBODY;
-  channel.roode_previous_status[ZONE_IN] = ROODE_NOBODY;
+  // Synchronize to the live state. This is important when a quorum is reached
+  // before the person has left the second ROI: resetting to CLEAR here would
+  // turn the later falling edge into a second artificial passage.
+  channel.roode_previous_status[ZONE_OUT] = channel.zones[ZONE_OUT].active ? ROODE_SOMEONE : ROODE_NOBODY;
+  channel.roode_previous_status[ZONE_IN] = channel.zones[ZONE_IN].active ? ROODE_SOMEONE : ROODE_NOBODY;
   channel.roode_event_started_ms = 0;
   channel.roode_last_activity_ms = 0;
   channel.roode_first_zone = GROUP_NONE;
@@ -1817,6 +1836,7 @@ void TofOverdoorCounter::reset_channel_path_tracker_(Channel &channel) {
   channel.roode_seen_out = false;
   channel.roode_seen_in = false;
   channel.roode_seen_both = false;
+  channel.roode_vote_latched = false;
   channel.roode_transition_count = 0;
   channel.pending_vote = GROUP_NONE;
   channel.pending_vote_ms = 0;
@@ -1843,112 +1863,128 @@ void TofOverdoorCounter::update_channel_path_tracker_(Channel &channel, size_t i
     return;
   }
 
-  for (uint8_t zone_index = 0; zone_index < SENSOR_ZONE_COUNT; zone_index++) {
-    const auto &zone = channel.zones[zone_index];
-    if (!zone.rising_edge && !zone.falling_edge) {
-      continue;
-    }
+  const bool has_edge = channel.zones[ZONE_OUT].rising_edge || channel.zones[ZONE_OUT].falling_edge ||
+                        channel.zones[ZONE_IN].rising_edge || channel.zones[ZONE_IN].falling_edge;
+  if (!has_edge) {
+    return;
+  }
 
-    const uint8_t current_status = zone.active ? ROODE_SOMEONE : ROODE_NOBODY;
-    if (current_status == channel.roode_previous_status[zone_index]) {
-      continue;
-    }
+  // Consume both ROI edges atomically. Processing OUT and IN one by one could
+  // briefly manufacture a CLEAR state when one ROI fell in the same update in
+  // which the other rose, causing fast walkers to be rejected.
+  const uint8_t previous_state =
+      (channel.roode_previous_status[ZONE_OUT] == ROODE_SOMEONE ? GROUP_STATE_OUT_ONLY : 0) |
+      (channel.roode_previous_status[ZONE_IN] == ROODE_SOMEONE ? GROUP_STATE_IN_ONLY : 0);
+  const uint8_t current_state = (channel.zones[ZONE_OUT].active ? GROUP_STATE_OUT_ONLY : 0) |
+                                (channel.zones[ZONE_IN].active ? GROUP_STATE_IN_ONLY : 0);
+  if (current_state == previous_state) {
+    return;
+  }
 
-    uint8_t all_zones_status = 0;
-    if (zone_index == ZONE_OUT) {
-      if (current_status == ROODE_SOMEONE) {
-        all_zones_status += 1;
-      }
-      if (channel.roode_previous_status[ZONE_IN] == ROODE_SOMEONE) {
-        all_zones_status += 2;
-      }
-    } else {
-      if (current_status == ROODE_SOMEONE) {
-        all_zones_status += 2;
-      }
-      if (channel.roode_previous_status[ZONE_OUT] == ROODE_SOMEONE) {
-        all_zones_status += 1;
-      }
-    }
+  channel.roode_previous_status[ZONE_OUT] = channel.zones[ZONE_OUT].active ? ROODE_SOMEONE : ROODE_NOBODY;
+  channel.roode_previous_status[ZONE_IN] = channel.zones[ZONE_IN].active ? ROODE_SOMEONE : ROODE_NOBODY;
+  channel.roode_last_activity_ms = now;
 
-    channel.roode_previous_status[zone_index] = current_status;
-    channel.roode_last_activity_ms = now;
-    if (current_status == ROODE_SOMEONE && channel.roode_event_started_ms == 0) {
-      channel.roode_event_started_ms = zone.last_rising_ms != 0 ? zone.last_rising_ms : now;
-      channel.roode_path[0] = 0;
-      channel.roode_path_filling_size = 1;
+  if (current_state != GROUP_STATE_NONE && channel.roode_event_started_ms == 0) {
+    uint32_t first_edge_ms = now;
+    if (channel.zones[ZONE_OUT].active && channel.zones[ZONE_OUT].last_rising_ms != 0) {
+      first_edge_ms = std::min(first_edge_ms, channel.zones[ZONE_OUT].last_rising_ms);
     }
-
-    if (all_zones_status == GROUP_STATE_OUT_ONLY) {
-      channel.roode_seen_out = true;
-      channel.roode_last_solo_zone = GROUP_OUT;
-      if (channel.roode_first_zone == GROUP_NONE) {
-        channel.roode_first_zone = GROUP_OUT;
-      }
-    } else if (all_zones_status == GROUP_STATE_IN_ONLY) {
-      channel.roode_seen_in = true;
-      channel.roode_last_solo_zone = GROUP_IN;
-      if (channel.roode_first_zone == GROUP_NONE) {
-        channel.roode_first_zone = GROUP_IN;
-      }
-    } else if (all_zones_status == GROUP_STATE_BOTH) {
-      channel.roode_seen_out = true;
-      channel.roode_seen_in = true;
-      channel.roode_seen_both = true;
+    if (channel.zones[ZONE_IN].active && channel.zones[ZONE_IN].last_rising_ms != 0) {
+      first_edge_ms = std::min(first_edge_ms, channel.zones[ZONE_IN].last_rising_ms);
     }
-    channel.roode_transition_count = std::min<uint8_t>(channel.roode_transition_count + 1U, 255);
+    channel.roode_event_started_ms = first_edge_ms;
+    channel.roode_path[0] = GROUP_STATE_NONE;
+    channel.roode_path_filling_size = 1;
+  }
 
+  if (current_state == GROUP_STATE_OUT_ONLY) {
+    channel.roode_seen_out = true;
+    channel.roode_last_solo_zone = GROUP_OUT;
+    if (channel.roode_first_zone == GROUP_NONE && !channel.roode_seen_both) {
+      channel.roode_first_zone = GROUP_OUT;
+    }
+  } else if (current_state == GROUP_STATE_IN_ONLY) {
+    channel.roode_seen_in = true;
+    channel.roode_last_solo_zone = GROUP_IN;
+    if (channel.roode_first_zone == GROUP_NONE && !channel.roode_seen_both) {
+      channel.roode_first_zone = GROUP_IN;
+    }
+  } else if (current_state == GROUP_STATE_BOTH) {
+    channel.roode_seen_out = true;
+    channel.roode_seen_in = true;
+    channel.roode_seen_both = true;
+  }
+
+  channel.roode_transition_count = std::min<uint8_t>(channel.roode_transition_count + 1U, 255);
+  if (current_state != GROUP_STATE_NONE) {
     if (channel.roode_path_filling_size < 4) {
-      channel.roode_path_filling_size++;
-    }
-
-    if (channel.roode_previous_status[ZONE_OUT] == ROODE_NOBODY &&
-        channel.roode_previous_status[ZONE_IN] == ROODE_NOBODY) {
-      const std::string path = this->roode_path_text_(channel);
-      const uint32_t duration = channel.roode_event_started_ms == 0 ? 0 : now - channel.roode_event_started_ms;
-      SensorGroup vote = GROUP_NONE;
-
-      // Tolerant per-sensor passage FSM. A crossing must begin on one side,
-      // reach the opposite zone, and finish on that opposite side. Returning
-      // to the starting side is explicitly a turn-around and produces no vote.
-      const bool visited_both_sides = channel.roode_seen_out && channel.roode_seen_in;
-      const bool ended_opposite = channel.roode_first_zone != GROUP_NONE &&
-                                  channel.roode_last_solo_zone != GROUP_NONE &&
-                                  channel.roode_last_solo_zone != channel.roode_first_zone;
-      if (visited_both_sides && ended_opposite) {
-        vote = channel.roode_first_zone;
-      }
-
-      if (vote != GROUP_NONE && duration >= this->min_active_duration_ms_) {
-        const std::string vote_text = std::string(group_name(vote)) + " path " + path + " duration " +
-                                      std::to_string(duration) + "ms transitions " +
-                                      std::to_string(channel.roode_transition_count);
-        if (this->debug_logging_) {
-          ESP_LOGD(TAG, "%s per-sensor vote %s (%s)", channel.sensor_label.c_str(), group_name(vote),
-                   vote_text.c_str());
-        }
-        this->reset_channel_path_tracker_(channel);
-        channel.pending_vote = vote;
-        channel.pending_vote_ms = now;
-        channel.pending_vote_path = path;
-        channel.last_vote_text = vote_text;
-      } else {
-        const bool turned_back = visited_both_sides && channel.roode_last_solo_zone == channel.roode_first_zone;
-        channel.last_vote_text = std::string(turned_back ? "turn-around " : "rejected ") + "path " + path +
-                                 " duration " + std::to_string(duration) + "ms";
-        if (this->debug_logging_) {
-          ESP_LOGD(TAG, "%s per-sensor path rejected (%s)", channel.sensor_label.c_str(),
-                   channel.last_vote_text.c_str());
-        }
-        this->reset_channel_path_tracker_(channel);
-      }
-      channel.last_path_text = path;
+      channel.roode_path[channel.roode_path_filling_size++] = current_state;
     } else {
-      if (channel.roode_path_filling_size > 0) {
-        channel.roode_path[channel.roode_path_filling_size - 1] = all_zones_status;
-      }
-      channel.last_path_text = this->roode_path_text_(channel);
+      channel.roode_path[3] = current_state;
     }
+  }
+
+  const bool visited_both_sides = channel.roode_seen_out && channel.roode_seen_in;
+  const bool ended_opposite = channel.roode_first_zone != GROUP_NONE &&
+                              channel.roode_last_solo_zone != GROUP_NONE &&
+                              channel.roode_last_solo_zone != channel.roode_first_zone;
+  const uint32_t duration = channel.roode_event_started_ms == 0 ? 0 : now - channel.roode_event_started_ms;
+  const bool crossing_committed = current_state != GROUP_STATE_NONE && current_state != GROUP_STATE_BOTH &&
+                                  visited_both_sides && ended_opposite &&
+                                  duration >= this->min_active_duration_ms_;
+
+  // Emit as soon as the person has left the starting ROI and occupies only the
+  // opposite ROI. Waiting for the opposite ROI to clear added human dwell time
+  // to every result. The latch prevents a second vote until the field is clear.
+  if (!channel.roode_vote_latched && crossing_committed) {
+    const SensorGroup vote = channel.roode_first_zone;
+    const std::string path = this->roode_path_text_(channel);
+    const std::string vote_text = std::string(group_name(vote)) + " early path " + path + " duration " +
+                                  std::to_string(duration) + "ms transitions " +
+                                  std::to_string(channel.roode_transition_count);
+    channel.pending_vote = vote;
+    channel.pending_vote_ms = now;
+    channel.pending_vote_path = path;
+    channel.last_vote_text = vote_text;
+    channel.last_path_text = path;
+    channel.roode_vote_latched = true;
+    if (this->debug_logging_) {
+      ESP_LOGD(TAG, "%s early per-sensor vote %s (%s)", channel.sensor_label.c_str(), group_name(vote),
+               vote_text.c_str());
+    }
+  }
+
+  if (current_state != GROUP_STATE_NONE) {
+    channel.last_path_text = this->roode_path_text_(channel);
+    return;
+  }
+
+  const std::string completed_path = this->roode_path_text_(channel);
+  const bool fallback_vote = !channel.roode_vote_latched && visited_both_sides && ended_opposite &&
+                             duration >= this->min_active_duration_ms_;
+  const bool turned_back = visited_both_sides && channel.roode_first_zone != GROUP_NONE &&
+                           channel.roode_last_solo_zone == channel.roode_first_zone;
+  const SensorGroup vote = fallback_vote ? channel.roode_first_zone : GROUP_NONE;
+  const std::string vote_text = vote != GROUP_NONE
+                                    ? std::string(group_name(vote)) + " clear path " + completed_path + " duration " +
+                                          std::to_string(duration) + "ms"
+                                    : std::string(turned_back ? "turn-around " : "rejected ") + "path " +
+                                          completed_path + " duration " + std::to_string(duration) + "ms";
+  if (this->debug_logging_ && vote == GROUP_NONE && !channel.roode_vote_latched) {
+    ESP_LOGD(TAG, "%s per-sensor path rejected (%s)", channel.sensor_label.c_str(), vote_text.c_str());
+  }
+
+  const bool already_voted = channel.roode_vote_latched;
+  this->reset_channel_path_tracker_(channel);
+  channel.last_path_text = completed_path;
+  if (vote != GROUP_NONE && !already_voted) {
+    channel.pending_vote = vote;
+    channel.pending_vote_ms = now;
+    channel.pending_vote_path = completed_path;
+    channel.last_vote_text = vote_text;
+  } else if (!already_voted) {
+    channel.last_vote_text = vote_text;
   }
 }
 
@@ -2132,6 +2168,8 @@ void TofOverdoorCounter::update_detection_state_machine_() {
                                              (average_quality * 0.20f) -
                                              (static_cast<float>(std::min(logical_in_votes, logical_out_votes)) * 20.0f));
 
+    this->last_decision_latency_ms_ = this->event_started_ms_ == 0 ? 0 : now - this->event_started_ms_;
+    reason += "; decision latency " + std::to_string(this->last_decision_latency_ms_) + "ms";
     this->event_sensor_mask_ = vote_mask;
     this->update_passage_state_(outcome == OUTCOME_NONE ? PASSAGE_CANCELLED : PASSAGE_COMPLETED);
     this->register_detection_(outcome, confidence, reason);
@@ -2936,6 +2974,10 @@ float TofOverdoorCounter::get_discovered_sensor_count() const {
 float TofOverdoorCounter::get_reporting_sensor_count() const { return static_cast<float>(this->reporting_sensor_count_()); }
 
 float TofOverdoorCounter::get_cycle_duration_ms() const { return static_cast<float>(this->cycle_duration_ms_); }
+
+float TofOverdoorCounter::get_last_decision_latency_ms() const {
+  return static_cast<float>(this->last_decision_latency_ms_);
+}
 
 float TofOverdoorCounter::get_update_skew_ms() const {
   uint32_t min_ts = UINT32_MAX;

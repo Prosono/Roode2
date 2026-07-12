@@ -93,7 +93,7 @@ class TofOverdoorCounter : public PollingComponent {
   };
 
   struct PersistedState {
-    uint8_t version{5};
+    uint8_t version{6};
     int32_t people_inside{0};
     uint32_t confirmed_in{0};
     uint32_t confirmed_out{0};
@@ -104,13 +104,13 @@ class TofOverdoorCounter : public PollingComponent {
     uint16_t clear_threshold_mm{160};
     uint16_t baseline_tolerance_mm{80};
     uint16_t minimum_clear_distance_mm{600};
-    uint16_t debounce_ms{45};
+    uint16_t debounce_ms{25};
     uint16_t detection_timeout_ms{1600};
-    uint16_t cooldown_ms{180};
+    uint16_t cooldown_ms{80};
     uint16_t blocked_timeout_ms{1800};
     uint16_t standing_timeout_ms{2200};
     uint16_t min_event_sensors{3};
-    uint16_t min_active_duration_ms{35};
+    uint16_t min_active_duration_ms{25};
     uint16_t direction_window_ms{90};
     uint16_t calibration_samples{24};
     uint16_t max_people_inside{50};
@@ -250,6 +250,7 @@ class TofOverdoorCounter : public PollingComponent {
   float get_discovered_sensor_count() const;
   float get_reporting_sensor_count() const;
   float get_cycle_duration_ms() const;
+  float get_last_decision_latency_ms() const;
   float get_update_skew_ms() const;
   float get_nearest_distance_mm() const;
   float get_average_distance_mm() const;
@@ -413,6 +414,7 @@ class TofOverdoorCounter : public PollingComponent {
     bool roode_seen_out{false};
     bool roode_seen_in{false};
     bool roode_seen_both{false};
+    bool roode_vote_latched{false};
     uint8_t roode_transition_count{0};
     SensorGroup pending_vote{GROUP_NONE};
     uint32_t pending_vote_ms{0};
@@ -460,20 +462,20 @@ class TofOverdoorCounter : public PollingComponent {
   uint32_t post_address_delay_ms_{80};
   SensorDistanceMode distance_mode_{DISTANCE_MODE_LONG};
   uint16_t timing_budget_ms_{33};
-  uint16_t intermeasurement_ms_{40};
+  uint16_t intermeasurement_ms_{37};
   uint8_t init_retries_{3};
   uint8_t sampling_size_{2};
   uint16_t trigger_threshold_mm_{320};
   uint16_t clear_threshold_mm_{160};
   uint16_t baseline_tolerance_mm_{80};
   uint16_t minimum_clear_distance_mm_{600};
-  uint32_t debounce_ms_{45};
+  uint32_t debounce_ms_{25};
   uint32_t detection_timeout_ms_{1600};
-  uint32_t cooldown_ms_{180};
+  uint32_t cooldown_ms_{80};
   uint32_t blocked_timeout_ms_{1800};
   uint32_t standing_timeout_ms_{2200};
   uint8_t min_event_sensors_{3};
-  uint32_t min_active_duration_ms_{35};
+  uint32_t min_active_duration_ms_{25};
   uint32_t direction_window_ms_{90};
   uint16_t calibration_samples_{24};
   uint16_t max_people_inside_{50};
@@ -512,6 +514,7 @@ class TofOverdoorCounter : public PollingComponent {
   uint8_t event_path_size_{0};
   uint8_t event_last_state_code_{0};
   uint32_t cycle_duration_ms_{0};
+  uint32_t last_decision_latency_ms_{0};
   uint32_t last_discovery_ms_{0};
   uint32_t last_detection_ms_{0};
   uint32_t event_log_count_{0};

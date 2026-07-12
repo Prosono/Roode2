@@ -20,8 +20,8 @@ tof_overdoor_counter:
   scl: 22
   frequency: 400kHz
   timing_budget: 33ms
-  intermeasurement_period: 40ms
-  update_interval: 10ms
+  intermeasurement_period: 37ms
+  update_interval: 5ms
   trigger_delta: 280mm
   release_delta: 140mm
   min_event_sensors: 3
@@ -42,4 +42,3 @@ sensor:
     name: People Count
     update_interval: 1s
     lambda: return id(overdoor_counter).get_people_count();
-
