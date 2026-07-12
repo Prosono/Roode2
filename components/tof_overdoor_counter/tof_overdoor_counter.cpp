@@ -201,6 +201,29 @@ void TofOverdoorCounter::setup() {
 void TofOverdoorCounter::update() {
   const uint32_t now = millis();
 
+  if (!this->cold_boot_reset_evaluated_) {
+    const esp_reset_reason_t reset_reason = esp_reset_reason();
+    this->cold_boot_reset_evaluated_ = true;
+    this->cold_boot_reset_pending_ =
+        this->cold_boot_soft_reset_enabled_ &&
+        (reset_reason == ESP_RST_POWERON || reset_reason == ESP_RST_BROWNOUT);
+    if (this->cold_boot_reset_pending_) {
+      this->cold_boot_reset_due_ms_ = now + this->cold_boot_soft_reset_delay_ms_;
+      this->phase_text_ = "Cold-start stabilization before one-time software reset";
+      ESP_LOGW(TAG, "Cold boot reset_reason=%d; one-time ESP.restart() scheduled in %u ms",
+               static_cast<int>(reset_reason), static_cast<unsigned>(this->cold_boot_soft_reset_delay_ms_));
+    }
+  }
+
+  if (this->cold_boot_reset_pending_ &&
+      static_cast<int32_t>(now - this->cold_boot_reset_due_ms_) >= 0) {
+    this->cold_boot_reset_pending_ = false;
+    ESP_LOGW(TAG, "Power rail stabilization complete; performing one-time cold-boot software reset now");
+    delay(20);
+    ESP.restart();
+    return;
+  }
+
   if (!this->boot_diagnostics_logged_) {
     ESP_LOGI(TAG, "ESP32 core reached main loop; reset_reason=%d, ToF discovery deferred until %u ms uptime",
              static_cast<int>(esp_reset_reason()), static_cast<unsigned>(this->next_rediscovery_ms_));

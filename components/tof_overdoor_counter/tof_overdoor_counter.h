@@ -222,6 +222,8 @@ class TofOverdoorCounter : public PollingComponent {
     this->minimum_clear_distance_mm_ = minimum_clear_distance_mm;
   }
   void set_calibration_samples(uint16_t calibration_samples) { this->calibration_samples_ = calibration_samples; }
+  void set_cold_boot_soft_reset(bool enabled) { this->cold_boot_soft_reset_enabled_ = enabled; }
+  void set_cold_boot_soft_reset_delay_ms(uint32_t delay_ms) { this->cold_boot_soft_reset_delay_ms_ = delay_ms; }
   void set_min_valid_sensors(uint8_t min_valid_sensors) { this->min_valid_sensors_ = min_valid_sensors; }
   void set_max_people_inside(uint16_t max_people_inside) {
     this->max_people_inside_ = max_people_inside;
@@ -480,6 +482,8 @@ class TofOverdoorCounter : public PollingComponent {
   uint32_t min_active_duration_ms_{25};
   uint32_t direction_window_ms_{90};
   uint16_t calibration_samples_{24};
+  bool cold_boot_soft_reset_enabled_{true};
+  uint32_t cold_boot_soft_reset_delay_ms_{3000};
   uint16_t max_people_inside_{50};
   uint8_t min_valid_sensors_{3};
   bool auto_save_enabled_{true};
@@ -528,6 +532,9 @@ class TofOverdoorCounter : public PollingComponent {
   uint32_t next_rediscovery_ms_{0};
   uint32_t last_heartbeat_log_ms_{0};
   bool boot_diagnostics_logged_{false};
+  bool cold_boot_reset_evaluated_{false};
+  bool cold_boot_reset_pending_{false};
+  uint32_t cold_boot_reset_due_ms_{0};
   uint32_t boot_clear_since_ms_{0};
   int people_inside_{0};
   uint32_t confirmed_in_count_{0};

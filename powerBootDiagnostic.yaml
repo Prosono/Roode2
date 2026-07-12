@@ -1,0 +1,83 @@
+substitutions:
+  devicename: roode-power-diagnostic
+  friendly_name: Roode Power Diagnostic
+
+esphome:
+  name: ${devicename}
+  friendly_name: ${friendly_name}
+  on_boot:
+    priority: -100
+    then:
+      - logger.log:
+          level: WARN
+          format: "BOOT_OK: ESPHome reached the main loop"
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+# WARN keeps the proof-of-life messages visible even in a noisy serial client.
+logger:
+  level: WARN
+  baud_rate: 115200
+  deassert_rts_dtr: true
+
+api:
+  reboot_timeout: 0s
+
+safe_mode:
+  num_attempts: 10
+  reboot_timeout: 5min
+  boot_is_good_after: 15s
+
+ota:
+  - platform: esphome
+    password: !secret roode_ota_password
+
+# Deliberately uses DHCP and no fast_connect/static address. This isolates the
+# router/static-IP path from the ESP32 cold-start test.
+wifi:
+  ssid: !secret roode_wifi_ssid
+  password: !secret roode_wifi_password
+  reboot_timeout: 0s
+  power_save_mode: none
+  ap:
+    ssid: "Roode Power Diagnostic"
+    password: !secret roode_fallback_ap_password
+
+captive_portal:
+
+web_server:
+  port: 80
+  version: 3
+  auth:
+    username: !secret roode_web_username
+    password: !secret roode_web_password
+
+interval:
+  - interval: 2s
+    then:
+      - logger.log:
+          level: WARN
+          format: "HEARTBEAT_OK: main loop is alive"
+
+sensor:
+  - platform: uptime
+    name: ${friendly_name} Uptime
+    update_interval: 2s
+
+  - platform: wifi_signal
+    name: ${friendly_name} WiFi Signal
+    update_interval: 5s
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: ${friendly_name} IP Address
+    ssid:
+      name: ${friendly_name} WiFi SSID
+
+button:
+  - platform: restart
+    name: ${friendly_name} Restart

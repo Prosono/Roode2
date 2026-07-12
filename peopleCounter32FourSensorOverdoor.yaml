@@ -124,6 +124,10 @@ tof_overdoor_counter:
   # Reject boot calibration while a person/object is under a typical doorway.
   minimum_clear_distance: 1200mm
   calibration_samples: 24
+  # A USB/web "Reset device" succeeds after the rail has stabilized. Reproduce
+  # that once after a true power-on/brownout; ESP_RST_SW will not retrigger it.
+  cold_boot_soft_reset: true
+  cold_boot_soft_reset_delay: 3s
   min_valid_sensors: 3
   max_people_inside: 50
   auto_save_enabled: true

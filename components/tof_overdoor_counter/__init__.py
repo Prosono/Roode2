@@ -12,6 +12,8 @@ CONF_BASE_ADDRESS = "base_address"
 CONF_BASELINE_TOLERANCE = "baseline_tolerance"
 CONF_BLOCKED_TIMEOUT = "blocked_timeout"
 CONF_CALIBRATION_SAMPLES = "calibration_samples"
+CONF_COLD_BOOT_SOFT_RESET = "cold_boot_soft_reset"
+CONF_COLD_BOOT_SOFT_RESET_DELAY = "cold_boot_soft_reset_delay"
 CONF_COOLDOWN = "cooldown"
 CONF_DEBOUNCE = "debounce"
 CONF_DISTANCE_MODE = "distance_mode"
@@ -90,6 +92,8 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_DIRECTION_WINDOW, default="90ms"): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_MINIMUM_CLEAR_DISTANCE, default="600mm"): cv.distance,
             cv.Optional(CONF_CALIBRATION_SAMPLES, default=24): cv.int_range(min=8, max=100),
+            cv.Optional(CONF_COLD_BOOT_SOFT_RESET, default=True): cv.boolean,
+            cv.Optional(CONF_COLD_BOOT_SOFT_RESET_DELAY, default="3s"): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_MIN_VALID_SENSORS, default=3): cv.int_range(min=2, max=4),
             cv.Optional(CONF_MAX_PEOPLE_INSIDE, default=50): cv.int_range(min=1, max=500),
             cv.Optional(CONF_AUTO_SAVE_ENABLED, default=True): cv.boolean,
@@ -136,6 +140,8 @@ async def to_code(config):
     cg.add(var.set_direction_window_ms(config[CONF_DIRECTION_WINDOW]))
     cg.add(var.set_minimum_clear_distance_mm(config[CONF_MINIMUM_CLEAR_DISTANCE]))
     cg.add(var.set_calibration_samples(config[CONF_CALIBRATION_SAMPLES]))
+    cg.add(var.set_cold_boot_soft_reset(config[CONF_COLD_BOOT_SOFT_RESET]))
+    cg.add(var.set_cold_boot_soft_reset_delay_ms(config[CONF_COLD_BOOT_SOFT_RESET_DELAY]))
     cg.add(var.set_min_valid_sensors(config[CONF_MIN_VALID_SENSORS]))
     cg.add(var.set_max_people_inside(config[CONF_MAX_PEOPLE_INSIDE]))
     cg.add(var.set_auto_save_enabled(config[CONF_AUTO_SAVE_ENABLED]))
