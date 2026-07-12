@@ -52,3 +52,7 @@ jobs:
 
       - name: Build ${{ matrix.esp }} manual config
         run: esphome compile ci/${{ matrix.esp }}_manual.yaml
+
+      - name: Build four-sensor fusion firmware
+        if: matrix.esp == 'esp32'
+        run: esphome compile ci/tof_overdoor.yaml

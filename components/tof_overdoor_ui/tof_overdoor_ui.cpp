@@ -734,11 +734,11 @@ const char OVERDOOR_UI_HTML[] = R"html(
           </article>
           <article class="hero-tip">
             <strong>2</strong>
-            <p>Each sensor now runs its own two-zone Roode path and votes IN or OUT.</p>
+            <p>Each sensor tracks a tolerant two-zone passage path and contributes direction evidence.</p>
           </article>
           <article class="hero-tip">
             <strong>3</strong>
-            <p>A clean count needs at least two sensors to vote the same direction.</p>
+            <p>A clean count needs three matching sensor tracks in the same direction.</p>
           </article>
         </div>
       </section>
@@ -839,7 +839,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
             </div>
             <div class="pill" id="standing-pill">Doorway clear</div>
           </div>
-          <p class="settings-copy" id="doorway-copy">Every physical sensor alternates between an OUT ROI and an IN ROI. Two matching sensor votes are required before the counter increments.</p>
+          <p class="settings-copy" id="doorway-copy">Every physical sensor alternates between an OUT ROI and an IN ROI. Three matching sensor tracks are required before the counter increments.</p>
           <div class="door-grid" id="group-grid"></div>
         </section>
 
@@ -896,11 +896,11 @@ const char OVERDOOR_UI_HTML[] = R"html(
           <form id="settings-form">
             <div class="settings-grid">
               <label class="field">
-                <span>Trigger threshold (mm)</span>
+                <span>Trigger delta (mm)</span>
                 <input type="number" name="trigger_threshold" id="setting-trigger" min="80" max="1200" step="10" value="320">
               </label>
               <label class="field">
-                <span>Clear threshold (mm)</span>
+                <span>Release delta (mm)</span>
                 <input type="number" name="clear_threshold" id="setting-clear" min="40" max="900" step="10" value="180">
               </label>
               <label class="field">
@@ -917,7 +917,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
               </label>
               <label class="field">
                 <span>Cooldown (ms)</span>
-                <input type="number" name="cooldown_ms" id="setting-cooldown" min="0" max="3000" step="50" value="500">
+                <input type="number" name="cooldown_ms" id="setting-cooldown" min="0" max="3000" step="10" value="180">
               </label>
               <label class="field">
                 <span>Min valid sensors</span>
@@ -1098,7 +1098,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
         return 'At least one sensor has stayed active too long, or someone is standing in the doorway. The counter waits for the opening to clear before it trusts a new event.';
       }
       if (phase.includes('waiting for 2 sensors')) {
-        return 'One or more sensors has produced a direction vote. The counter is waiting for a second matching vote before it counts.';
+        return 'One or more sensors has produced a direction track. The counter is waiting for the configured quorum before it counts.';
       }
       if (phase.includes('per-sensor')) {
         return 'Each physical sensor is watching its own OUT and IN zones and will vote only after a complete Roode path.';
@@ -1466,7 +1466,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
 std::string default_subtitle(const tof_overdoor_counter::TofOverdoorCounter *counter) {
   return counter->is_monitor_mode()
              ? "Live monitor for four working ToF sensors, focused on baselines, agreement, and placement stability."
-             : "Local four-sensor people counter where each ToF sensor votes independently, and two matching votes confirm IN or OUT.";
+             : "Local four-sensor fusion counter where three matching passage tracks confirm IN or OUT.";
 }
 
 const char *sensor_group_label_for_index(size_t index) {

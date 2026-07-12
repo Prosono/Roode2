@@ -1,0 +1,45 @@
+substitutions:
+  devicename: ci-tof-overdoor
+
+external_components:
+  source: ../components
+
+esphome:
+  name: ${devicename}
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+logger:
+
+tof_overdoor_counter:
+  id: overdoor_counter
+  sda: 21
+  scl: 22
+  frequency: 400kHz
+  timing_budget: 33ms
+  intermeasurement_period: 40ms
+  update_interval: 10ms
+  trigger_delta: 280mm
+  release_delta: 140mm
+  min_event_sensors: 3
+  min_valid_sensors: 3
+  xshut_pins:
+    - GPIO16
+    - GPIO17
+    - GPIO23
+    - GPIO25
+
+binary_sensor:
+  - platform: template
+    name: Counter Ready
+    lambda: return id(overdoor_counter).get_ready_state() > 0.5f;
+
+sensor:
+  - platform: template
+    name: People Count
+    update_interval: 1s
+    lambda: return id(overdoor_counter).get_people_count();
+
