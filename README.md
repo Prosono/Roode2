@@ -67,6 +67,19 @@ Ps=0 (when connected to GND): In the IIC mode, the user can operate the chip by 
               D1 (GPIO 5) - SCL
 ```
 
+## Counting reliability and profile status
+
+See [counting robustness](Documents/COUNTING_ROBUSTNESS.md) for the current passage contract, upgrade behavior, tests and trace collection. Four-sensor and Home profiles now use a shared, host-tested decision core that waits for a confirmed clear doorway.
+
+| Profiles | Status |
+| --- | --- |
+| `peopleCounter32FourSensorOverdoor.yaml` | Main fused counter; four sensors, eight ROI fields |
+| `peopleCounter32Home*.yaml` | Supported independent one/two/three-sensor counters |
+| `peopleCounter32*.yaml` / `peopleCounter8266*.yaml` older examples | Legacy examples; some fetch remote components instead of local edits |
+| `SixSensor*`, `*Isolation*`, `*MicroProbe*`, `powerBootDiagnostic.yaml` | Hardware diagnostics / bringup; not the main counting deployment |
+| `home_assistant_room_counter_package.yaml` | Legacy HA-side algorithm for monitor mode |
+| `home_assistant_combined_people_counter.yaml` | Combines two occupancy estimates; does not fuse individual passages |
+
 ## Configuration
 
 ## Platform Setup

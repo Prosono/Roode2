@@ -1,5 +1,7 @@
 # Produksjonsvalidering av fire-sensor-telleren
 
+Se også `COUNTING_ROBUSTNESS.md` for gjeldende implementasjon, oppgraderingskrav og automatiske tester.
+
 ## Arkitektur
 
 `peopleCounter32FourSensorOverdoor.yaml` bruker én samlet `tof_overdoor_counter` i stedet for fire blokkerende
@@ -14,7 +16,7 @@ En passering godkjennes først når:
 
 Et spor som ender på samme side som det startet, klassifiseres som en vending og teller ikke. En person som
 stopper i åpningen beholdes i samme hendelse; sporet vurderes først når vedkommende fortsetter eller trekker seg
-tilbake. Kort cooldown brukes bare til å absorbere den siste, forsinkede sensorstemmen fra samme person.
+tilbake. En bekreftet tomperiode avslutter hendelsen; korte gjeninntredener behandles konservativt som tvetydige spor.
 
 ## Terskler
 
@@ -30,7 +32,7 @@ kalibreringskvalitet er samlet fra den faktiske installasjonen.
 ## Oppstart og recovery
 
 - Sensoradressene er bundet til fysisk XSHUT-plass (`0x30`–`0x33`), også når en sensor mangler ved oppstart.
-- En defekt sensor power-cycles og gjenoppdages isolert med eksponentiell backoff. De tre andre fortsetter å måle.
+- En defekt sensor power-cycles og gjenoppdages isolert med eksponentiell backoff. De tre andre behandles mellom recovery-trinnene. En feil på den felles I2C-bussen kan fortsatt påvirke alle kanalene.
 - Ved I2C-bussfeil reinitialiseres bussen før neste isolerte forsøk.
 - Lagret kalibrering brukes etter restart, men telling låses til minst 500 ms med bekreftet tom åpning.
 - Uten gyldig lagret kalibrering må minst tre sensorer se begge ROI-er over `minimum_clear_distance` før ny

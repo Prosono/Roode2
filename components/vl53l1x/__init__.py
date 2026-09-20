@@ -1,3 +1,4 @@
+AUTO_LOAD = ["counting_core"]
 import logging
 from typing import Dict, Any
 import esphome.codegen as cg

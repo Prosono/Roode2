@@ -1,18 +1,24 @@
+#include "../counting_core/sensor_init.h"
 #include "vl53l1x.h"
 
+#ifdef USE_ESP32
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#endif
 
 namespace esphome {
 namespace vl53l1x {
 
 namespace {
 
+#ifdef USE_ESP32
 SemaphoreHandle_t wire_mutex = nullptr;
+#endif
 constexpr uint8_t SENSOR_INIT_ATTEMPTS = 3;
 constexpr uint32_t SENSOR_RECOVERY_SETTLE_MS = 25;
 
 bool lock_wire_bus(uint32_t timeout_ms) {
+#ifdef USE_ESP32
   if (wire_mutex == nullptr) {
     wire_mutex = xSemaphoreCreateRecursiveMutex();
     if (wire_mutex == nullptr) {
@@ -26,13 +32,18 @@ bool lock_wire_bus(uint32_t timeout_ms) {
     return false;
   }
 
+#else
+  (void) timeout_ms; // ESP8266 components run cooperatively on one loop.
+#endif
   return true;
 }
 
 void unlock_wire_bus() {
+#ifdef USE_ESP32
   if (wire_mutex != nullptr) {
     xSemaphoreGiveRecursive(wire_mutex);
   }
+#endif
 }
 
 class ScopedWireLock {
@@ -168,6 +179,7 @@ bool VL53L1X::initialize_wire_() {
   // ESPHome's ESP32 build initializes an IDF I2C bus first. On this hybrid
   // Arduino+IDF runtime, calling Wire.begin() while the bus is already active
   // can skip buffer allocation, which later causes NULL TX/RX buffer errors.
+#ifdef USE_ESP32
   Wire.end();
   delay(1);
   if (!Wire.begin(this->sda_pin_, this->scl_pin_, this->i2c_frequency_)) {
@@ -175,6 +187,13 @@ bool VL53L1X::initialize_wire_() {
     this->mark_failed();
     return false;
   }
+
+  Wire.setTimeOut(50);
+#else
+  Wire.begin(this->sda_pin_, this->scl_pin_);
+  Wire.setClock(this->i2c_frequency_);
+  Wire.setClockStretchLimit(50000);
+#endif
 
   wire_sda_pin_ = this->sda_pin_;
   wire_scl_pin_ = this->scl_pin_;
@@ -247,7 +266,7 @@ bool VL53L1X::recover_sensor_(const char *reason, bool power_cycle) {
   ESP_LOGW(TAG, "Recovering sensor 0x%02X after %s", this->address_, reason);
 
   this->setup_complete_ = false;
-  this->last_roi = nullptr;
+  this->has_last_roi_ = false;
 
   if (power_cycle) {
     this->disable_sensor_();
@@ -360,7 +379,15 @@ VL53L1_Error VL53L1X::init() {
   }
 
   ESP_LOGD(TAG, "Found device, initializing...");
-  status = sensor.Init();
+  counting_core::SensorInit initializer;
+  initializer.reset(millis(), this->timeout);
+  counting_core::SensorInit::Result init_result;
+  do {
+    init_result = initializer.step(sensor, millis());
+    delay(1);
+    App.feed_wdt();
+  } while (init_result == counting_core::SensorInit::WAITING);
+  status = init_result == counting_core::SensorInit::READY ? VL53L1_ERROR_NONE : VL53L1_ERROR_TIME_OUT;
   if (status != VL53L1_ERROR_NONE) {
     ESP_LOGE(TAG, "Could not initialize device, error code: %d", status);
     return status;
@@ -450,6 +477,7 @@ void VL53L1X::set_ranging_mode(const RangingMode *mode) {
 optional<uint16_t> VL53L1X::read_distance_once_(ROI *roi, VL53L1_Error &status) {
   if (this->is_failed()) {
     ESP_LOGW(TAG, "Cannot read distance while component is failed");
+    status = VL53L1_ERROR_TIME_OUT;
     return {};
   }
 
@@ -467,7 +495,7 @@ optional<uint16_t> VL53L1X::read_distance_once_(ROI *roi, VL53L1_Error &status) 
 
   ESP_LOGVV(TAG, "Beginning distance read");
 
-  if (last_roi == nullptr || *roi != *last_roi) {
+  if (!this->has_last_roi_ || *roi != this->last_roi_) {
     ESP_LOGVV(TAG, "Setting new ROI: { width: %d, height: %d, center: %d }", roi->width, roi->height, roi->center);
 
     status = this->sensor.SetROI(roi->width, roi->height);
@@ -480,15 +508,23 @@ optional<uint16_t> VL53L1X::read_distance_once_(ROI *roi, VL53L1_Error &status) 
       ESP_LOGE(TAG, "Could not set ROI center, error code: %d", status);
       return {};
     }
-    last_roi = roi;
+    this->last_roi_ = *roi;
+    this->has_last_roi_ = true;
   }
 
   status = this->sensor.StartRanging();
+  if (status != VL53L1_ERROR_NONE) return {};
+  const uint32_t started = millis();
 
   // Wait for the measurement to be ready
   // TODO use interrupt_pin, if given, to await data ready instead of polling
   uint8_t dataReady = false;
   while (!dataReady) {
+    if (millis() - started >= this->timeout) {
+      this->sensor.StopRanging();
+      status = VL53L1_ERROR_TIME_OUT;
+      return {};
+    }
     status = this->sensor.CheckForDataReady(&dataReady);
     if (status != VL53L1_ERROR_NONE) {
       ESP_LOGE(TAG, "Failed to check if data is ready, error code: %d", status);
@@ -499,8 +535,9 @@ optional<uint16_t> VL53L1X::read_distance_once_(ROI *roi, VL53L1_Error &status) 
   }
 
   // Get the results
-  uint16_t distance;
-  status = this->sensor.GetDistanceInMm(&distance);
+  VL53L1X_Result_t result{};
+  status = this->sensor.GetResult(&result);
+  const uint16_t distance = result.Distance;
   if (status != VL53L1_ERROR_NONE) {
     ESP_LOGE(TAG, "Could not get distance, error code: %d", status);
     return {};
@@ -518,6 +555,10 @@ optional<uint16_t> VL53L1X::read_distance_once_(ROI *roi, VL53L1_Error &status) 
     return {};
   }
 
+  if ((result.Status != RangeValid && result.Status != RangeValidNoWrapCheck) || distance < 30 || distance > 4000) {
+    status = VL53L1_ERROR_RANGE_ERROR;
+    return {};
+  }
   ESP_LOGV(TAG, "Finished distance read: %d", distance);
   return {distance};
 }
@@ -527,6 +568,9 @@ optional<uint16_t> VL53L1X::read_distance(ROI *roi, VL53L1_Error &status) {
   if (result.has_value()) {
     return result;
   }
+
+  // Optical rejection is not a bus failure; leave the stream running for the next sample.
+  if (status == VL53L1_ERROR_RANGE_ERROR) return {};
 
   if (!this->recover_sensor_("read failure", true)) {
     this->mark_failed();

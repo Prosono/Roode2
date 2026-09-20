@@ -4,10 +4,14 @@ on:
   pull_request:
     types: [labeled]
     branches:
-      - master
+      - main
+
+permissions:
+  contents: write
 
 jobs:
   prepare-release:
+    if: startsWith(github.event.label.name, 'release-')
     name: Prepare release
     runs-on: ubuntu-latest
 
@@ -38,25 +42,29 @@ jobs:
           tar -xvf semver.tar.gz
           sudo cp semver-tool-3.2.0/src/semver /usr/local/bin
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
       - name: Bump version
         run: |
           export CURRENT=$(grep -m1 '##' CHANGELOG.md | tr -d '## ')
           export NEW_VERSION=$(semver bump ${{ env.RELEASE }} $CURRENT)
           echo "VERSION=$NEW_VERSION" >> $GITHUB_ENV
       - name: Setup git
+        env:
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
         run: |
           git config user.email "ci@roode.de"
           git config user.name "CI"
           git fetch
-          git checkout ${{ github.event.pull_request.head.ref }}
+          git checkout "$PR_BRANCH"
       - name: Prepare CHANGELOG
+        env:
+          RELEASE_BODY: ${{ github.event.pull_request.body }}
         run: |
           echo "# Changelog
           
           ## ${{ env.VERSION }}
           " >> CHANGELOG.tmp
-          echo "${{ github.event.pull_request.body }}" >> CHANGELOG.tmp
+          printf '%s\n' "$RELEASE_BODY" >> CHANGELOG.tmp
           grep -v "^# " CHANGELOG.md >> CHANGELOG.tmp;
           cp CHANGELOG.tmp CHANGELOG.md
       - name: Prepare README

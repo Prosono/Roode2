@@ -1,3 +1,5 @@
+# LEGACY: Prefer peopleCounter32FourSensorOverdoor.yaml in count mode for robust local counting.
+# This optional HA-only monitor-mode algorithm is not the fused ROI counter.
 # Home Assistant package for counting entries/exits with the four working
 # over-door sensors. This assumes:
 # - U3 and U4 belong to one side/end of the doorway

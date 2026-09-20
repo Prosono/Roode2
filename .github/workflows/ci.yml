@@ -1,58 +1,50 @@
 name: CI
 on:
   push:
-    paths:
-      - "components/**"
-      - "ci/**"
+    paths: ["components/**", "ci/**", "tests/**", "esphome/**", "*.yaml", ".github/workflows/**"]
+  pull_request:
+    paths: ["components/**", "ci/**", "tests/**", "esphome/**", "*.yaml", ".github/workflows/**"]
   workflow_dispatch:
-
+permissions:
+  contents: read
 jobs:
-  validate:
-    strategy:
-      matrix:
-        esp: ["esp32", "esp8266"]
-    name: Validate ${{ matrix.esp }} config
+  logic:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@master
-      - name: Setup Python
-        uses: actions/setup-python@master
+      - uses: actions/checkout@v4
+      - run: tests/run.sh
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.x"
-      - name: Install ESPHome
-        run: |
-          python -m pip install --upgrade pip
-          pip install -U esphome
-          pip install -U pillow
-
-      - name: Validate ${{ matrix.esp }} default Config
-        run: esphome config ci/${{ matrix.esp }}.yaml
-
-      - name: Validate ${{ matrix.esp }} manual Config
-        run: esphome config ci/${{ matrix.esp }}_manual.yaml
-  build:
+          python-version: "3.12"
+      - run: pip install -r ci/requirements.txt
+      - run: python tests/config_test.py
+  firmware:
     strategy:
+      fail-fast: false
       matrix:
-        esp: ["esp32", "esp8266"]
-    name: Build ${{ matrix.esp }} firmware
+        profile:
+          - ci/esp32.yaml
+          - ci/esp32_manual.yaml
+          - ci/esp8266.yaml
+          - ci/esp8266_manual.yaml
+          - ci/tof_overdoor.yaml
+          - peopleCounter32Home.yaml
+          - peopleCounter32HomeDual.yaml
+          - peopleCounter32HomeTriple.yaml
+          - peopleCounter32FourSensorOverdoor.yaml
+    name: Build ${{ matrix.profile }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@master
-      - name: Setup Python
-        uses: actions/setup-python@master
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.x"
-      - name: Install ESPHome
+          python-version: "3.12"
+      - run: pip install -r ci/requirements.txt
+      - name: Supply public CI placeholders
+        run: cp ci/secrets.example.yaml secrets.yaml
+      - name: Validate and build
+        env:
+          PROFILE: ${{ matrix.profile }}
         run: |
-          python -m pip install --upgrade pip
-          pip install -U esphome
-          pip install -U pillow
-      - name: Build ${{ matrix.esp }} default config
-        run: esphome compile ci/${{ matrix.esp }}.yaml
-
-      - name: Build ${{ matrix.esp }} manual config
-        run: esphome compile ci/${{ matrix.esp }}_manual.yaml
-
-      - name: Build four-sensor fusion firmware
-        if: matrix.esp == 'esp32'
-        run: esphome compile ci/tof_overdoor.yaml
+          esphome config "$PROFILE" > /dev/null
+          esphome compile "$PROFILE"

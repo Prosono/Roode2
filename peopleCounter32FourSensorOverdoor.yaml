@@ -44,7 +44,7 @@ wifi:
   ssid: !secret roode_wifi_ssid
   password: !secret roode_wifi_password
   fast_connect: true
-  reboot_timeout: 10min
+  reboot_timeout: 0s
   use_address: 10.0.0.100
   manual_ip:
     static_ip: 10.0.0.100
@@ -120,6 +120,7 @@ tof_overdoor_counter:
   standing_timeout: 2200ms
   min_event_sensors: 3
   min_active_duration: 25ms
+  # Stable empty interval required before committing a complete passage.
   direction_window: 90ms
   # Reject boot calibration while a person/object is under a typical doorway.
   minimum_clear_distance: 1200mm
@@ -360,7 +361,7 @@ number:
           id(overdoor_counter).persist_runtime_state();
 
   - platform: template
-    name: ${friendly_name} Detection Timeout
+    name: ${friendly_name} Vote Agreement Window
     entity_category: config
     unit_of_measurement: ms
     mode: box
@@ -379,7 +380,7 @@ number:
           id(overdoor_counter).persist_runtime_state();
 
   - platform: template
-    name: ${friendly_name} Cooldown
+    name: ${friendly_name} Minimum Clear Interval
     entity_category: config
     unit_of_measurement: ms
     mode: box
@@ -453,7 +454,7 @@ number:
           id(overdoor_counter).persist_runtime_state();
 
   - platform: template
-    name: ${friendly_name} Direction Window
+    name: ${friendly_name} Clear Confirmation
     entity_category: config
     unit_of_measurement: ms
     mode: box
@@ -654,7 +655,7 @@ sensor:
       return id(overdoor_counter).get_unsure_out_count();
 
   - platform: template
-    name: ${friendly_name} Last Confidence
+    name: ${friendly_name} Last Evidence Score
     unit_of_measurement: "%"
     accuracy_decimals: 0
     update_interval: 500ms

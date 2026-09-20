@@ -806,9 +806,9 @@ const char OVERDOOR_UI_HTML[] = R"html(
           <p>Events that did not have enough agreement to count.</p>
         </article>
         <article class="metric">
-          <span>Last confidence</span>
+          <span>Last evidence score</span>
           <strong id="metric-confidence">0%</strong>
-          <p>Internal confidence for the most recent recorded event.</p>
+          <p>Heuristic evidence score for the last event; not a measured accuracy percentage.</p>
         </article>
       </div>
 
@@ -912,11 +912,11 @@ const char OVERDOOR_UI_HTML[] = R"html(
                 <input type="number" name="debounce_ms" id="setting-debounce" min="5" max="300" step="5" value="45">
               </label>
               <label class="field">
-                <span>Detection timeout (ms)</span>
+                <span>Vote agreement window (ms)</span>
                 <input type="number" name="detection_timeout_ms" id="setting-timeout" min="300" max="4000" step="50" value="1600">
               </label>
               <label class="field">
-                <span>Cooldown (ms)</span>
+                <span>Minimum clear interval (ms)</span>
                 <input type="number" name="cooldown_ms" id="setting-cooldown" min="0" max="3000" step="10" value="180">
               </label>
               <label class="field">
@@ -1616,7 +1616,8 @@ class TofOverdoorUi::Handler : public AsyncWebHandler {
   }
 
   void handle_trace_(AsyncWebServerRequest *request) {
-    const std::string body = this->parent_->counter_->get_trace_log_text();
+    const uint32_t after_ms = static_cast<uint32_t>(strtoul(request->arg("after_ms").c_str(), nullptr, 10));
+    const std::string body = this->parent_->counter_->get_trace_log_text(after_ms);
     request->send(200, "text/plain; charset=utf-8", body.c_str());
   }
 

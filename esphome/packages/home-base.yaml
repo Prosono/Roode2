@@ -17,13 +17,14 @@ logger:
   level: DEBUG
 
 api:
-  reboot_timeout: 60min
+  reboot_timeout: 0s
 
 ota:
   - platform: esphome
     password: !secret roode_ota_password
 
 wifi:
+  reboot_timeout: 0s
   ssid: !secret roode_wifi_ssid
   password: !secret roode_wifi_password
   use_address: ${devicename}

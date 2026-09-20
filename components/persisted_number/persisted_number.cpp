@@ -1,4 +1,5 @@
 #include "persisted_number.h"
+#include <cmath>
 #include "esphome/core/log.h"
 
 namespace esphome {
@@ -13,6 +14,7 @@ float default_value_for_traits(const number::NumberTraits &traits) {
 }
 
 float clamp_value_for_traits(const number::NumberTraits &traits, float value) {
+  if (!std::isfinite(value)) return default_value_for_traits(traits);
   if (value < traits.get_min_value()) {
     return traits.get_min_value();
   }

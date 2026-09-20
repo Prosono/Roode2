@@ -11,8 +11,7 @@ namespace tof_overdoor_counter {
 namespace {
 
 static const char *const TAG = "tof_overdoor_counter";
-constexpr uint8_t PERSISTED_STATE_VERSION = 6;
-constexpr uint32_t STALE_READING_MS = 450;
+constexpr uint8_t PERSISTED_STATE_VERSION = 7;
 // Keep every sensor in XSHUT while the ESP32 rail, logger and Wi-Fi radio pass
 // their cold-start/inrush phase. A warm reset does not reproduce that load.
 constexpr uint32_t COLD_BOOT_SETTLE_MS = 5000;
@@ -35,12 +34,6 @@ constexpr uint8_t ROODE_ZONE_WIDTH = 8;
 constexpr uint8_t ROODE_ZONE_HEIGHT = 16;
 constexpr uint8_t ROODE_OUT_ZONE_CENTER = 167;
 constexpr uint8_t ROODE_IN_ZONE_CENTER = 231;
-constexpr uint8_t ROODE_NOBODY = 0;
-constexpr uint8_t ROODE_SOMEONE = 1;
-constexpr uint8_t GROUP_STATE_NONE = 0;
-constexpr uint8_t GROUP_STATE_OUT_ONLY = 1;
-constexpr uint8_t GROUP_STATE_IN_ONLY = 2;
-constexpr uint8_t GROUP_STATE_BOTH = 3;
 
 const char *sensor_name_for_pin(uint8_t pin_number) {
   switch (pin_number) {
@@ -83,40 +76,12 @@ const char *group_name(SensorGroup group) {
   }
 }
 
-const char *group_debug_name(SensorGroup group) {
-  return group == GROUP_NONE ? "none" : group_name(group);
-}
-
 const char *zone_name(uint8_t zone_index) {
   return zone_index == ZONE_OUT ? "OUT-zone" : "IN-zone";
 }
 
 uint8_t roi_center_for_zone(uint8_t zone_index) {
   return zone_index == ZONE_OUT ? ROODE_OUT_ZONE_CENTER : ROODE_IN_ZONE_CENTER;
-}
-
-SensorGroup group_from_state_code(uint8_t state_code) {
-  if (state_code == GROUP_STATE_OUT_ONLY) {
-    return GROUP_OUT;
-  }
-  if (state_code == GROUP_STATE_IN_ONLY) {
-    return GROUP_IN;
-  }
-  return GROUP_NONE;
-}
-
-const char *group_state_name(uint8_t state_code) {
-  switch (state_code) {
-    case GROUP_STATE_OUT_ONLY:
-      return "OUT";
-    case GROUP_STATE_IN_ONLY:
-      return "IN";
-    case GROUP_STATE_BOTH:
-      return "BOTH";
-    case GROUP_STATE_NONE:
-    default:
-      return "CLEAR";
-  }
 }
 
 const char *range_status_name(uint8_t status) {
@@ -150,15 +115,6 @@ const char *distance_mode_name(SensorDistanceMode mode) {
     default:
       return "long";
   }
-}
-
-uint8_t popcount_u8(uint8_t value) {
-  uint8_t count = 0;
-  while (value != 0) {
-    count += value & 0x01;
-    value >>= 1;
-  }
-  return count;
 }
 
 float clampf(float value, float min_value, float max_value) {
@@ -251,6 +207,7 @@ void TofOverdoorCounter::update() {
 
   const uint32_t started = millis();
   for (auto &channel : this->channels_) {
+    for (auto &zone : channel.zones) zone.fresh = false;
     if (!channel.initialized) {
       continue;
     }
@@ -260,21 +217,22 @@ void TofOverdoorCounter::update() {
     }
     App.feed_wdt();
   }
-  this->cycle_duration_ms_ = millis() - started;
 
   this->update_sensor_health_();
   this->service_recovery_(millis());
+  this->cycle_duration_ms_ = millis() - started;
 
+  if (this->calibration_active_ && this->has_restored_calibration_()) this->calibration_active_ = false;
   if (this->calibration_active_) {
     this->process_calibration_();
     this->update_system_status_();
+    this->cycle_duration_ms_ = millis() - started;
     return;
   }
 
   this->update_sensor_states_();
-  this->record_history_snapshot_(millis());
+  this->process_calibration_();  // Calibrate a newly recovered, previously absent channel while idle.
   this->debug_log_sample_(millis());
-  this->apply_idle_baseline_tracking_();
   this->update_blocked_state_();
 
   if (this->mode_ == OperatingMode::COUNT) {
@@ -286,11 +244,14 @@ void TofOverdoorCounter::update() {
     this->phase_text_ = this->ready_for_counting_() ? "Monitoring live distances" : "Waiting for stable readings";
   }
 
+  this->record_history_snapshot_(millis());
+  this->apply_idle_baseline_tracking_();
   this->update_system_status_();
 
   if (this->state_dirty_ && this->auto_save_enabled_) {
     this->persist_runtime_state();
   }
+  this->cycle_duration_ms_ = millis() - started;
 }
 
 void TofOverdoorCounter::dump_config() {
@@ -397,7 +358,6 @@ void TofOverdoorCounter::prepare_xshut_pins_() {
     pin->pin_mode(gpio::FLAG_OUTPUT);
   }
   this->set_all_xshut_(false);
-  delay(this->wake_delay_ms_);
 }
 
 void TofOverdoorCounter::set_all_xshut_(bool state) {
@@ -413,29 +373,6 @@ void TofOverdoorCounter::set_xshut_(size_t index, bool state) {
   this->xshut_pins_[index]->digital_write(state);
 }
 
-bool TofOverdoorCounter::probe_address_(uint8_t address) {
-  Wire.beginTransmission(address);
-  const uint8_t rc = Wire.endTransmission();
-  return rc == 0;
-}
-
-bool TofOverdoorCounter::wait_for_boot_(VL53L1X_ULD &sensor) {
-  delayMicroseconds(1200);
-  uint8_t device_state = 0;
-  const uint32_t started = millis();
-  while ((millis() - started) < this->timeout_ms_) {
-    const auto status = sensor.GetBootState(&device_state);
-    if (status == VL53L1_ERROR_NONE && (device_state & 0x01) == 0x01) {
-      return true;
-    }
-    // Power-up can produce a few transient I2C failures. Keep trying for the
-    // configured deadline instead of permanently dropping the sensor.
-    delay(status == VL53L1_ERROR_NONE ? 1 : 4);
-    App.feed_wdt();
-  }
-  return false;
-}
-
 bool TofOverdoorCounter::set_temp_address_(VL53L1X_ULD &sensor, uint8_t address) {
   const auto status = sensor.SetI2CAddress(address << 1);
   if (status != VL53L1_ERROR_NONE) {
@@ -447,33 +384,7 @@ bool TofOverdoorCounter::set_temp_address_(VL53L1X_ULD &sensor, uint8_t address)
 
 bool TofOverdoorCounter::configure_sensor_(Channel &channel) {
   auto &sensor = *channel.sensor;
-  if (!this->wait_for_boot_(sensor)) {
-    channel.last_error = VL53L1_ERROR_TIME_OUT;
-    return false;
-  }
-
   VL53L1_Error status = VL53L1_ERROR_NONE;
-  const uint8_t retries = std::max<uint8_t>(1, this->init_retries_);
-  for (uint8_t attempt = 0; attempt < retries; attempt++) {
-    if (attempt > 0) {
-      delay(this->post_address_delay_ms_);
-      if (!this->wait_for_boot_(sensor)) {
-        channel.last_error = VL53L1_ERROR_TIME_OUT;
-        continue;
-      }
-    }
-    status = sensor.Init();
-    if (status == VL53L1_ERROR_NONE) {
-      break;
-    }
-    channel.last_error = status;
-  }
-
-  if (status != VL53L1_ERROR_NONE) {
-    channel.last_error = status;
-    return false;
-  }
-
   channel.current_zone = ZONE_OUT;
   if (!this->set_channel_roi_(channel, channel.current_zone)) {
     return false;
@@ -502,48 +413,10 @@ bool TofOverdoorCounter::configure_sensor_(Channel &channel) {
   }
 
   channel.initialized = true;
+  channel.initialized_ms = millis();
   channel.ranging_started = false;
   channel.last_error = 0;
   return true;
-}
-
-bool TofOverdoorCounter::start_all_ranging_() {
-  uint8_t started_count = 0;
-
-  for (auto &channel : this->channels_) {
-    if (!channel.initialized || !channel.sensor) {
-      continue;
-    }
-
-    auto &sensor = *channel.sensor;
-    if (channel.ranging_started) {
-      sensor.StopRanging();
-      delay(1);
-    }
-
-    channel.current_zone = ZONE_OUT;
-    if (!this->set_channel_roi_(channel, channel.current_zone)) {
-      ESP_LOGW(TAG, "Failed to select initial ROI on %s (err %d)", channel.source_label.c_str(), channel.last_error);
-      continue;
-    }
-
-    const auto status = sensor.StartRanging();
-    if (status != VL53L1_ERROR_NONE) {
-      channel.last_error = status;
-      channel.ranging_started = false;
-      ESP_LOGW(TAG, "Failed to start ranging on %s (err %d)", channel.source_label.c_str(), status);
-      continue;
-    }
-
-    channel.ranging_started = true;
-    channel.last_error = 0;
-    started_count++;
-    delayMicroseconds(250);
-    App.feed_wdt();
-  }
-
-  ESP_LOGI(TAG, "Started continuous ranging on %u sensors in a synchronized batch", static_cast<unsigned>(started_count));
-  return started_count >= this->min_valid_sensors_;
 }
 
 bool TofOverdoorCounter::read_channel_(Channel &channel) {
@@ -558,7 +431,7 @@ bool TofOverdoorCounter::read_channel_(Channel &channel) {
   auto status = sensor.CheckForDataReady(&ready);
   if (status != VL53L1_ERROR_NONE) {
     channel.last_error = status;
-    channel.consecutive_errors++;
+    channel.consecutive_errors = std::min<unsigned>(255, channel.consecutive_errors + 1U);
     return false;
   }
 
@@ -573,18 +446,19 @@ bool TofOverdoorCounter::read_channel_(Channel &channel) {
   status = sensor.GetResult(&result);
   if (status != VL53L1_ERROR_NONE) {
     channel.last_error = status;
-    channel.consecutive_errors++;
+    channel.consecutive_errors = std::min<unsigned>(255, channel.consecutive_errors + 1U);
     return false;
   }
 
   status = sensor.ClearInterrupt();
   if (status != VL53L1_ERROR_NONE) {
     channel.last_error = status;
-    channel.consecutive_errors++;
+    channel.consecutive_errors = std::min<unsigned>(255, channel.consecutive_errors + 1U);
     return false;
   }
 
   const uint32_t now = millis();
+  zone.fresh = true;
   zone.raw_distance = result.Distance;
   zone.range_status = result.Status;
   zone.last_update_ms = now;
@@ -599,7 +473,7 @@ bool TofOverdoorCounter::read_channel_(Channel &channel) {
   if (!this->range_result_is_valid_(result)) {
     zone.valid_measurement = false;
     zone.sample_rejected = true;
-    zone.consecutive_invalid++;
+    zone.consecutive_invalid = std::min<unsigned>(255, zone.consecutive_invalid + 1U);
     channel.last_error = 0;
     channel.consecutive_errors = 0;
     channel.last_read_duration_ms = millis() - started;
@@ -785,7 +659,11 @@ bool TofOverdoorCounter::switch_channel_zone_(Channel &channel) {
 
   auto &sensor = *channel.sensor;
   const uint8_t next_zone = channel.current_zone == ZONE_OUT ? ZONE_IN : ZONE_OUT;
-  sensor.StopRanging();
+  if (sensor.StopRanging() != VL53L1_ERROR_NONE) {
+    channel.ranging_started = false;
+    channel.consecutive_errors++;
+    return false;
+  }
   delayMicroseconds(250);
   if (!this->set_channel_roi_(channel, next_zone)) {
     channel.ranging_started = false;
@@ -825,79 +703,93 @@ bool TofOverdoorCounter::restart_ranging_(Channel &channel) {
   return true;
 }
 
-bool TofOverdoorCounter::recover_channel_(size_t index, const char *reason) {
-  if (index >= this->channels_.size() || index >= this->xshut_pins_.size()) {
-    return false;
-  }
-
-  auto &channel = this->channels_[index];
-  ESP_LOGW(TAG, "Recovering %s after %s", channel.sensor_label.c_str(), reason);
-  if (channel.sensor && channel.ranging_started) {
-    channel.sensor->StopRanging();
-  }
-  channel.ranging_started = false;
-  channel.initialized = false;
-  this->set_xshut_(index, false);
-  delay(15);
-
-  // A power-cycled VL53L1X always returns at 0x29. Recreate the ULD object so
-  // its internal address cannot remain stuck at the old runtime address.
-  channel.sensor = std::make_unique<VL53L1X_ULD>();
-  this->set_xshut_(index, true);
-  delay(this->wake_delay_ms_);
-
-  bool default_address_ready = this->probe_address_(0x29);
-  if (!default_address_ready && this->recover_wire_()) {
-    default_address_ready = this->probe_address_(0x29);
-  }
-  bool recovered = default_address_ready && this->wait_for_boot_(*channel.sensor) &&
-                   this->set_temp_address_(*channel.sensor, channel.address);
-  if (recovered) {
-    delay(this->post_address_delay_ms_);
-    recovered = this->configure_sensor_(channel) && this->restart_ranging_(channel);
-  }
-
-  if (recovered) {
-    channel.consecutive_errors = 0;
-    channel.consecutive_invalid = 0;
-    channel.recovery_attempts = 0;
-    channel.last_good_read_ms = 0;
-    channel.next_recovery_ms = millis() + 2000U;
-    ESP_LOGI(TAG, "%s recovered at 0x%02X", channel.sensor_label.c_str(), channel.address);
-    return true;
-  }
-
-  this->set_xshut_(index, false);
-  channel.initialized = false;
-  channel.ranging_started = false;
-  channel.recovery_attempts = std::min<uint8_t>(static_cast<uint8_t>(channel.recovery_attempts + 1U), 6);
-  const uint32_t backoff = std::min<uint32_t>(SENSOR_RECOVERY_MAX_MS,
-                                              SENSOR_RECOVERY_BASE_MS << channel.recovery_attempts);
-  channel.next_recovery_ms = millis() + backoff;
-  ESP_LOGW(TAG, "%s recovery failed; retrying in %u ms", channel.sensor_label.c_str(),
-           static_cast<unsigned>(backoff));
-  return false;
+void TofOverdoorCounter::fail_recovery_() {
+  auto &channel = this->channels_[this->recovery_index_];
+  this->set_xshut_(this->recovery_index_, false);
+  channel.initialized = channel.ranging_started = false;
+  channel.recovery_attempts = std::min<unsigned>(12, channel.recovery_attempts + 1U);
+  channel.next_recovery_ms = millis() + std::min<uint32_t>(SENSOR_RECOVERY_MAX_MS,
+      SENSOR_RECOVERY_BASE_MS << (channel.recovery_attempts > this->init_retries_ ? channel.recovery_attempts - this->init_retries_ : 0));
+  this->recovery_stage_ = RecoveryStage::IDLE;
+  ESP_LOGW(TAG, "%s recovery failed; retry scheduled", channel.sensor_label.c_str());
 }
 
 void TofOverdoorCounter::service_recovery_(uint32_t now) {
-  // Recover at most one channel per update so a bad cable cannot monopolize
-  // the ESP32 loop or starve Wi-Fi/API processing.
-  for (size_t index = 0; index < this->channels_.size(); index++) {
-    auto &channel = this->channels_[index];
-    const bool hard_error = channel.consecutive_errors >= ERRORS_BEFORE_POWER_CYCLE;
-    const bool long_stale = channel.initialized &&
-                            ((channel.last_good_read_ms == 0 && (now - this->last_discovery_ms_) > 2000U) ||
-                             (channel.last_good_read_ms != 0 &&
-                              (now - channel.last_good_read_ms) > (STALE_READING_MS * 4U)));
-    const bool missing = !channel.initialized;
-    if (!hard_error && !long_stale && !missing) {
-      continue;
+  if (this->recovery_stage_ == RecoveryStage::IDLE) {
+    for (size_t i = 0; i < this->channels_.size(); ++i) {
+      auto &channel = this->channels_[i];
+      const bool overdue = now - channel.initialized_ms > 2000U;
+      if (channel.initialized && channel.consecutive_errors < ERRORS_BEFORE_POWER_CYCLE &&
+          (!overdue || this->channel_healthy_(channel, now, false))) continue;
+      if (channel.next_recovery_ms && static_cast<int32_t>(now - channel.next_recovery_ms) < 0) continue;
+      this->recovery_index_ = i;
+      this->set_xshut_(i, false);
+      channel.initialized = channel.ranging_started = false;
+      channel.has_reading = channel.active = false;
+      channel.stale = true;
+      // Keep calibration, but never carry old samples or edges across reset.
+      for (auto &zone : channel.zones) {
+        const auto saved = this->build_persisted_calibration_(zone);
+        zone = ZoneState{};
+        this->restore_persisted_calibration_(channel, &zone - channel.zones, saved);
+      }
+      channel.sensor = std::make_unique<VL53L1X_ULD>();
+      this->recovery_deadline_ = now + 15;
+      this->recovery_stage_ = RecoveryStage::POWER_OFF;
+      break;
     }
-    if (channel.next_recovery_ms != 0 && static_cast<int32_t>(now - channel.next_recovery_ms) < 0) {
-      continue;
+    return;
+  }
+  auto &channel = this->channels_[this->recovery_index_];
+  auto &sensor = *channel.sensor;
+  switch (this->recovery_stage_) {
+    case RecoveryStage::POWER_OFF:
+      if (static_cast<int32_t>(now - this->recovery_deadline_) < 0) return;
+      this->set_xshut_(this->recovery_index_, true);
+      this->recovery_deadline_ = now + this->wake_delay_ms_ + this->timeout_ms_;
+      channel.initialized_ms = now + this->wake_delay_ms_;
+      this->recovery_stage_ = RecoveryStage::BOOT;
+      return;
+    case RecoveryStage::BOOT: {
+      if (static_cast<int32_t>(now - channel.initialized_ms) < 0) return;
+      if (static_cast<int32_t>(now - this->recovery_deadline_) >= 0) {
+        this->fail_recovery_();
+        // A bus reset invalidates temporal evidence, including healthy channels.
+        this->clear_event_tracking_();
+        this->startup_clear_validated_ = false;
+        this->boot_clear_since_ms_ = 0;
+        this->recover_wire_();
+        return;
+      }
+      uint8_t booted = 0;
+      if (sensor.GetBootState(&booted) != VL53L1_ERROR_NONE || !(booted & 1)) return;
+      if (!this->set_temp_address_(sensor, channel.address)) { this->fail_recovery_(); return; }
+      this->recovery_deadline_ = now + this->post_address_delay_ms_;
+      this->recovery_stage_ = RecoveryStage::ADDRESS_SETTLE;
+      return;
     }
-    this->recover_channel_(index, missing ? "sensor unavailable" : (hard_error ? "I2C errors" : "stale data"));
-    break;
+    case RecoveryStage::ADDRESS_SETTLE:
+      if (static_cast<int32_t>(now - this->recovery_deadline_) < 0) return;
+      this->sensor_init_.reset(now, this->timeout_ms_);
+      this->recovery_stage_ = RecoveryStage::INIT_REGISTERS;
+      return;
+    case RecoveryStage::INIT_REGISTERS: {
+      const auto result = this->sensor_init_.step(sensor, now);
+      if (result == counting_core::SensorInit::FAILED) { this->fail_recovery_(); return; }
+      if (result == counting_core::SensorInit::READY) this->recovery_stage_ = RecoveryStage::CONFIGURE;
+      return;
+    }
+    case RecoveryStage::CONFIGURE:
+      if (!this->configure_sensor_(channel) || !this->restart_ranging_(channel)) {
+        this->fail_recovery_(); return;
+      }
+      channel.consecutive_errors = channel.consecutive_invalid = 0;
+      channel.recovery_attempts = 0;
+      channel.next_recovery_ms = now + 2000U;
+      this->recovery_stage_ = RecoveryStage::IDLE;
+      ESP_LOGI(TAG, "%s recovered at 0x%02X", channel.sensor_label.c_str(), channel.address);
+      return;
+    default: return;
   }
 }
 
@@ -946,19 +838,14 @@ void TofOverdoorCounter::load_persisted_state_() {
 
   PersistedState state{};
   bool loaded = this->persisted_state_pref_.load(&state) &&
-                (state.version == PERSISTED_STATE_VERSION || state.version == 5);
+                (state.version == PERSISTED_STATE_VERSION || state.version == 5 || state.version == 6);
 
-  // Version 6 keeps the same persisted layout as version 5. It migrates the
-  // conservative timing values so already-installed counters receive the
-  // low-latency profile without losing counts, calibration or direction.
-  if (loaded && state.version == 5) {
+  if (loaded && state.version < PERSISTED_STATE_VERSION) {
+    // Older calibration counted scheduler ticks, not independent measurements.
+    // Retain installation tuning/counts but obtain new per-ROI statistics.
+    for (auto &sensor : state.calibrations) for (auto &zone : sensor) zone.valid = 0;
     state.version = PERSISTED_STATE_VERSION;
-    state.debounce_ms = std::min<uint16_t>(state.debounce_ms, 25);
-    state.cooldown_ms = std::min<uint16_t>(state.cooldown_ms, 80);
-    state.min_active_duration_ms = std::min<uint16_t>(state.min_active_duration_ms, 25);
     this->state_dirty_ = true;
-    ESP_LOGI(TAG, "Migrated saved counter timing from version 5 to version %u",
-             static_cast<unsigned>(PERSISTED_STATE_VERSION));
   }
 
   if (!loaded && global_preferences != nullptr) {
@@ -1176,81 +1063,30 @@ void TofOverdoorCounter::persist_runtime_state() {
 }
 
 void TofOverdoorCounter::rediscover() {
-  ESP_LOGI(TAG, "Starting four-sensor discovery");
+  // Public actions only schedule discovery; no sleeps in an HTTP callback.
+  if (this->persisted_state_loaded_) this->persist_runtime_state();
   this->channels_.clear();
   this->channels_.resize(this->xshut_pins_.size());
   this->clear_event_tracking_();
   this->startup_clear_validated_ = false;
   this->boot_clear_since_ms_ = 0;
-  this->update_passage_state_(PASSAGE_IDLE);
   this->set_all_xshut_(false);
-  delay(this->wake_delay_ms_);
-
-  for (size_t index = 0; index < this->xshut_pins_.size(); index++) {
-    auto &channel = this->channels_[index];
-    channel.pin_number = this->xshut_pin_numbers_[index];
-    // Address is tied to the physical slot, not discovery order. This makes
-    // later isolated recovery safe even if an earlier sensor was absent.
-    channel.address = static_cast<uint8_t>(this->base_address_ + index);
+  this->recovery_stage_ = RecoveryStage::IDLE;
+  const uint32_t now = millis();
+  for (size_t i = 0; i < this->channels_.size(); ++i) {
+    auto &channel = this->channels_[i];
+    channel.pin_number = this->xshut_pin_numbers_[i];
+    channel.address = this->base_address_ + i;
     channel.group = group_for_pin(channel.pin_number);
     channel.sensor_label = sensor_name_for_pin(channel.pin_number);
-    channel.source_label = channel.sensor_label + std::string(" / fused two-zone track / GPIO") +
-                           std::to_string(channel.pin_number);
-
-    this->set_xshut_(index, true);
-    delay(this->wake_delay_ms_);
-
-    if (!this->probe_address_(0x29)) {
-      ESP_LOGW(TAG, "No sensor ACK on %s", channel.source_label.c_str());
-      this->set_xshut_(index, false);
-      channel.next_recovery_ms = millis() + SENSOR_RECOVERY_BASE_MS;
-      continue;
-    }
-
-    channel.sensor = std::make_unique<VL53L1X_ULD>();
-    if (!this->wait_for_boot_(*channel.sensor)) {
-      ESP_LOGW(TAG, "%s ACKed but never reported boot-ready", channel.source_label.c_str());
-      this->set_xshut_(index, false);
-      channel.next_recovery_ms = millis() + SENSOR_RECOVERY_BASE_MS;
-      continue;
-    }
-
-    if (!this->set_temp_address_(*channel.sensor, channel.address)) {
-      ESP_LOGW(TAG, "%s address change to 0x%02X failed", channel.source_label.c_str(), channel.address);
-      this->set_xshut_(index, false);
-      channel.next_recovery_ms = millis() + SENSOR_RECOVERY_BASE_MS;
-      continue;
-    }
-
-    delay(this->post_address_delay_ms_);
-
-    if (!this->configure_sensor_(channel)) {
-      ESP_LOGW(TAG, "%s configuration failed (err %d)", channel.source_label.c_str(), channel.last_error);
-      this->set_xshut_(index, false);
-      channel.next_recovery_ms = millis() + SENSOR_RECOVERY_BASE_MS;
-      continue;
-    }
-
-    ESP_LOGI(TAG, "Discovered sensor on %s at 0x%02X", channel.source_label.c_str(), channel.address);
+    channel.source_label = channel.sensor_label + " / GPIO" + std::to_string(channel.pin_number);
+    channel.next_recovery_ms = now + this->wake_delay_ms_;
   }
-
-  this->start_all_ranging_();
-
-  this->last_discovery_ms_ = millis();
-  if (!this->persisted_state_loaded_) {
-    this->load_persisted_state_();
-    this->persisted_state_loaded_ = true;
-  }
-  if (!this->has_restored_calibration_()) {
-    this->recalibrate();
-  } else {
-    this->calibration_active_ = false;
-    this->phase_text_ = "Restored calibration, waiting for live sensor readings";
-    this->system_status_ = STATUS_BOOTING;
-    ESP_LOGI(TAG, "Restored calibration from persisted state; skipping auto recalibration on boot");
-  }
-
-  ESP_LOGI(TAG, "Discovery complete: %u sensors active", static_cast<unsigned>(this->get_discovered_sensor_count()));
+  this->load_persisted_state_();
+  this->persisted_state_loaded_ = true;
+  this->last_discovery_ms_ = now;
+  this->calibration_active_ = true;
+  this->phase_text_ = "Sensor discovery scheduled";
 }
 
 void TofOverdoorCounter::recalibrate() {
@@ -1262,7 +1098,6 @@ void TofOverdoorCounter::recalibrate() {
   this->phase_text_ = "Waiting for clear doorway to calibrate";
   this->clear_event_tracking_();
   this->update_passage_state_(PASSAGE_IDLE);
-  this->cooldown_until_ms_ = 0;
   this->boot_clear_since_ms_ = 0;
   this->startup_clear_validated_ = false;
 
@@ -1290,7 +1125,6 @@ void TofOverdoorCounter::recalibrate() {
     channel.calibration_min = NAN;
     channel.calibration_max = NAN;
     channel.calibration_samples = 0;
-    this->reset_channel_path_tracker_(channel);
     for (auto &zone : channel.zones) {
       zone = ZoneState{};
     }
@@ -1352,180 +1186,81 @@ void TofOverdoorCounter::set_invert_direction(bool invert_direction) {
     return;
   }
   this->invert_direction_ = invert_direction;
-  this->cooldown_until_ms_ = 0;
   this->person_standing_in_door_ = false;
   this->clear_event_tracking_();
-  for (auto &channel : this->channels_) {
-    this->reset_channel_path_tracker_(channel);
-  }
   this->last_reason_ = invert_direction ? "Direction reversed immediately" : "Direction restored immediately";
   this->state_dirty_ = true;
 }
 
 void TofOverdoorCounter::process_calibration_() {
   const uint32_t now = millis();
-  uint8_t healthy_sensors = 0;
-  uint8_t clear_sensors = 0;
-
-  for (auto &channel : this->channels_) {
-    if (!channel.initialized) {
-      continue;
-    }
-    bool both_zones_healthy = true;
-    bool both_zones_clear = true;
+  if (this->event_active_ || this->active_sensor_count_() > 0) return;
+  uint8_t clear = 0;
+  for (const auto &channel : this->channels_) {
+    if (!this->channel_healthy_(channel, now, false)) continue;
+    bool empty = true;
     for (const auto &zone : channel.zones) {
-      const float sample = this->zone_logic_distance_(zone);
-      const bool zone_stale = zone.last_good_read_ms == 0 || (now - zone.last_good_read_ms) > STALE_READING_MS;
-      both_zones_healthy = both_zones_healthy && zone.has_reading && !zone_stale &&
-                           zone.consecutive_invalid < 3 && !std::isnan(sample);
-      both_zones_clear = both_zones_clear && !std::isnan(sample) && sample >= this->minimum_clear_distance_mm_;
+      empty = empty && zone.raw_distance >= this->minimum_clear_distance_mm_;
+      if (zone.calibrated) empty = empty && zone.baseline - zone.raw_distance < this->adaptive_release_delta_(zone);
     }
-    if (both_zones_healthy) {
-      healthy_sensors++;
-      if (both_zones_clear) {
-        clear_sensors++;
-      }
-    }
+    if (empty) ++clear;
   }
-
-  if (healthy_sensors < this->min_valid_sensors_) {
+  if (clear < this->min_valid_sensors_) {
     this->calibration_clear_since_ms_ = 0;
-    this->phase_text_ = "Waiting for enough healthy sensors to calibrate";
+    for (auto &channel : this->channels_)
+      for (auto &zone : channel.zones) if (!zone.calibrated) { zone.calibration = {}; zone.calibration_samples = 0; }
+    if (this->calibration_active_) this->phase_text_ = "Waiting for a healthy, empty doorway";
     return;
   }
-
-  if (clear_sensors < this->min_valid_sensors_) {
-    this->calibration_clear_since_ms_ = 0;
-    this->phase_text_ = "Waiting for clear doorway to calibrate";
-    return;
-  }
-
-  if (this->calibration_clear_since_ms_ == 0) {
-    this->calibration_clear_since_ms_ = now;
-  }
-
-  const uint32_t clear_stable_ms = now - this->calibration_clear_since_ms_;
-  if (clear_stable_ms < CALIBRATION_CLEAR_SETTLE_MS) {
-    this->phase_text_ = "Waiting for doorway to stay clear (" + std::to_string(clear_stable_ms) + "/" +
-                        std::to_string(CALIBRATION_CLEAR_SETTLE_MS) + " ms)";
-    return;
-  }
-
+  if (!this->calibration_clear_since_ms_) this->calibration_clear_since_ms_ = now;
+  if (now - this->calibration_clear_since_ms_ < CALIBRATION_CLEAR_SETTLE_MS) return;
+  bool changed = false;
   for (auto &channel : this->channels_) {
-    if (!channel.initialized) {
+    if (!this->channel_healthy_(channel, now, false) || channel.calibrated) continue;
+    for (auto &zone : channel.zones) {
+      if (!zone.fresh) continue;
+      if (!zone.valid_measurement || zone.raw_distance < this->minimum_clear_distance_mm_) {
+        zone.calibration = {};
+        zone.calibration_samples = 0;
+        continue;
+      }
+      if (zone.calibration.count < this->calibration_samples_) zone.calibration.add(zone.raw_distance);
+      zone.calibration_samples = zone.calibration.count;
+    }
+    if (channel.zones[0].calibration.count < this->calibration_samples_ ||
+        channel.zones[1].calibration.count < this->calibration_samples_) continue;
+    bool stable = true;
+    for (const auto &zone : channel.zones)
+      stable = stable && zone.calibration.deviation() <= this->baseline_tolerance_mm_ &&
+          zone.calibration.high - zone.calibration.low <= this->baseline_tolerance_mm_ * 4.0f;
+    if (!stable) {
+      for (auto &zone : channel.zones) { zone.calibration = {}; zone.calibration_samples = 0; }
       continue;
     }
     for (auto &zone : channel.zones) {
-      const float sample = this->zone_logic_distance_(zone);
-      const bool zone_stale = zone.last_good_read_ms == 0 || (now - zone.last_good_read_ms) > STALE_READING_MS;
-      if (!zone.has_reading || zone_stale || zone.consecutive_invalid >= 3 || std::isnan(sample) ||
-          sample < this->minimum_clear_distance_mm_ || zone.calibration_samples >= this->calibration_samples_) {
-        continue;
-      }
-      zone.calibration_sum += sample;
-      zone.calibration_sq_sum += sample * sample;
-      zone.calibration_min = std::isnan(zone.calibration_min) ? sample : std::min(zone.calibration_min, sample);
-      zone.calibration_max = std::isnan(zone.calibration_max) ? sample : std::max(zone.calibration_max, sample);
-      zone.calibration_samples++;
-    }
-  }
-
-  std::array<uint16_t, SENSOR_COUNT> sample_counts{};
-  size_t sample_count_size = 0;
-  for (const auto &channel : this->channels_) {
-    if (!channel.initialized) {
-      continue;
-    }
-    sample_counts[sample_count_size++] =
-        std::min(channel.zones[ZONE_OUT].calibration_samples, channel.zones[ZONE_IN].calibration_samples);
-  }
-  std::sort(sample_counts.begin(), sample_counts.begin() + sample_count_size, std::greater<uint16_t>());
-  const size_t required_rank = std::min<size_t>(std::max<uint8_t>(1, this->min_valid_sensors_), sample_count_size);
-  const uint16_t samples = sample_count_size == 0 ? 0 : sample_counts[required_rank - 1];
-  this->phase_text_ =
-      "Collecting calibration samples (" + std::to_string(samples) + "/" + std::to_string(this->calibration_samples_) + ")";
-
-  if (samples < this->calibration_samples_) {
-    return;
-  }
-
-  uint8_t stable_channels = 0;
-  std::array<std::array<float, SENSOR_ZONE_COUNT>, SENSOR_COUNT> baselines{};
-  std::array<std::array<float, SENSOR_ZONE_COUNT>, SENSOR_COUNT> noises{};
-  std::array<std::array<uint8_t, SENSOR_ZONE_COUNT>, SENSOR_COUNT> qualities{};
-  for (auto &sensor_values : baselines) sensor_values.fill(NAN);
-  for (auto &sensor_values : noises) sensor_values.fill(NAN);
-  for (size_t index = 0; index < this->channels_.size(); index++) {
-    auto &channel = this->channels_[index];
-    if (!channel.initialized) {
-      continue;
-    }
-    bool channel_stable = true;
-    for (size_t zone_index = 0; zone_index < SENSOR_ZONE_COUNT; zone_index++) {
-      auto &zone = channel.zones[zone_index];
-      if (zone.calibration_samples < this->calibration_samples_) {
-        channel_stable = false;
-        break;
-      }
-      const float count = static_cast<float>(zone.calibration_samples);
-      const float mean = zone.calibration_sum / count;
-      const float variance = std::max(0.0f, (zone.calibration_sq_sum / count) - (mean * mean));
-      const float stddev = sqrtf(variance);
-      const float span = zone.calibration_max - zone.calibration_min;
-      if (span > static_cast<float>(this->baseline_tolerance_mm_ * 4U) ||
-          stddev > static_cast<float>(this->baseline_tolerance_mm_)) {
-        ESP_LOGW(TAG, "Calibration unstable on %s %s: mean=%.1f stddev=%.1f span=%.1f",
-                 channel.sensor_label.c_str(), zone_name(zone_index), mean, stddev, span);
-        channel_stable = false;
-        break;
-      }
-      baselines[index][zone_index] = mean;
-      noises[index][zone_index] = std::max(1.0f, stddev);
-      qualities[index][zone_index] = clamp_quality(100.0f - (stddev * 2.5f) - (span * 0.3f));
-    }
-    if (channel_stable) {
-      stable_channels++;
-    } else {
-      for (auto &zone : channel.zones) {
-        zone.calibration_sum = 0.0f;
-        zone.calibration_sq_sum = 0.0f;
-        zone.calibration_min = NAN;
-        zone.calibration_max = NAN;
-        zone.calibration_samples = 0;
-      }
-    }
-  }
-
-  if (stable_channels < this->min_valid_sensors_) {
-    this->phase_text_ = "Calibration still collecting stable samples";
-    return;
-  }
-
-  for (size_t index = 0; index < this->channels_.size(); index++) {
-    auto &channel = this->channels_[index];
-    if (!channel.initialized || std::isnan(baselines[index][ZONE_OUT]) || std::isnan(baselines[index][ZONE_IN])) {
-      continue;
-    }
-    for (size_t zone_index = 0; zone_index < SENSOR_ZONE_COUNT; zone_index++) {
-      auto &zone = channel.zones[zone_index];
-      zone.baseline = baselines[index][zone_index];
-      zone.noise = noises[index][zone_index];
-      zone.calibration_quality = qualities[index][zone_index];
+      zone.baseline = zone.calibration.mean;
+      zone.noise = std::max(1.0f, zone.calibration.deviation());
+      zone.calibration_quality = clamp_quality(100.0f - zone.noise * 2.5f -
+          (zone.calibration.high - zone.calibration.low) * 0.3f);
       zone.calibrated = true;
     }
-    channel.baseline = (baselines[index][ZONE_OUT] + baselines[index][ZONE_IN]) * 0.5f;
-    channel.noise = std::max(noises[index][ZONE_OUT], noises[index][ZONE_IN]);
-    channel.calibration_quality = std::min(qualities[index][ZONE_OUT], qualities[index][ZONE_IN]);
     channel.calibrated = true;
+    channel.baseline = (channel.zones[0].baseline + channel.zones[1].baseline) * 0.5f;
+    channel.noise = std::max(channel.zones[0].noise, channel.zones[1].noise);
+    channel.calibration_quality = std::min(channel.zones[0].calibration_quality, channel.zones[1].calibration_quality);
+    changed = true;
   }
-
-  this->calibration_active_ = false;
-  this->calibration_clear_since_ms_ = 0;
-  this->phase_text_ = "Calibration completed";
-  this->last_reason_ = "Calibration completed successfully";
-  this->state_dirty_ = true;
-  this->persist_runtime_state();
-  ESP_LOGI(TAG, "Calibration completed successfully");
+  if (this->calibration_active_ && this->has_restored_calibration_()) {
+    this->calibration_active_ = false;
+    this->startup_clear_validated_ = false;
+    this->boot_clear_since_ms_ = 0;
+    this->phase_text_ = "Calibration complete; verifying clear doorway";
+    this->last_reason_ = "Calibrated with independent, valid ROI measurements";
+  }
+  if (changed) {
+    this->state_dirty_ = true;
+    if (this->auto_save_enabled_) this->persist_runtime_state();
+  }
 }
 
 void TofOverdoorCounter::update_sensor_states_() {
@@ -1539,6 +1274,7 @@ void TofOverdoorCounter::update_sensor_states_() {
 
     if (!channel.initialized || !channel.has_reading || channel.stale || channel.consecutive_invalid >= 3) {
       for (auto &zone : channel.zones) {
+        zone.debounce = {};
         zone.rising_edge = false;
         zone.falling_edge = false;
         zone.active = false;
@@ -1564,58 +1300,33 @@ void TofOverdoorCounter::update_sensor_states_() {
       zone.rising_edge = false;
       zone.falling_edge = false;
       const float distance = this->zone_logic_distance_(zone);
-      const bool zone_stale = zone.last_good_read_ms == 0 || (now - zone.last_good_read_ms) > STALE_READING_MS;
+      const bool zone_stale = zone.last_good_read_ms == 0 || (now - zone.last_good_read_ms) > this->stale_reading_ms_();
 
-      if (!zone.has_reading || !zone.calibrated || std::isnan(zone.baseline) || zone_stale ||
+      if (!zone.has_reading || !zone.calibrated || !zone.valid_measurement || std::isnan(zone.baseline) || zone_stale ||
           zone.consecutive_invalid >= 3 || std::isnan(distance)) {
-        if (zone.active) {
-          zone.falling_edge = true;
-          zone.last_falling_ms = now;
-        }
+        zone.debounce = {};
         zone.active = false;
         zone.blocked = false;
-        zone.active_candidate_since_ms = 0;
-        zone.clear_candidate_since_ms = 0;
         zone.active_since_ms = 0;
-        zone.active_duration_ms = 0;
         continue;
       }
-
-      const float drop = zone.baseline - distance;
-      const float trigger_delta = this->adaptive_trigger_delta_(zone);
-      const float release_delta = this->adaptive_release_delta_(zone);
-
-      if (!zone.active) {
-        if (drop >= trigger_delta) {
-          if (zone.active_candidate_since_ms == 0) {
-            zone.active_candidate_since_ms = now;
-          } else if ((now - zone.active_candidate_since_ms) >= this->debounce_ms_) {
-            zone.active = true;
-            zone.active_since_ms = zone.active_candidate_since_ms;
-            zone.last_rising_ms = zone.active_since_ms;
-            zone.active_duration_ms = 0;
+      if (zone.fresh) {
+        const float drop = zone.baseline - distance;
+        const bool target = zone.active ? drop > this->adaptive_release_delta_(zone)
+                                        : drop >= this->adaptive_trigger_delta_(zone);
+        if (zone.debounce.update(target, now, this->debounce_ms_)) {
+          zone.active = zone.debounce.active;
+          if (zone.active) {
+            zone.active_since_ms = zone.debounce.since;
+            zone.last_rising_ms = now;
             zone.rising_edge = true;
-            zone.clear_candidate_since_ms = 0;
-          }
-        } else {
-          zone.active_candidate_since_ms = 0;
-        }
-      } else {
-        if (drop <= release_delta) {
-          if (zone.clear_candidate_since_ms == 0) {
-            zone.clear_candidate_since_ms = now;
-          } else if ((now - zone.clear_candidate_since_ms) >= this->debounce_ms_) {
-            zone.active = false;
-            zone.blocked = false;
+          } else {
             zone.last_falling_ms = now;
-            zone.active_duration_ms = zone.active_since_ms == 0 ? 0 : now - zone.active_since_ms;
             zone.falling_edge = true;
-            zone.active_candidate_since_ms = 0;
-            zone.clear_candidate_since_ms = 0;
+            zone.active_duration_ms = now - zone.active_since_ms;
             zone.active_since_ms = 0;
+            zone.blocked = false;
           }
-        } else {
-          zone.clear_candidate_since_ms = 0;
         }
       }
 
@@ -1660,7 +1371,7 @@ void TofOverdoorCounter::update_sensor_states_() {
   }
 
   if (!this->startup_clear_validated_) {
-    if (this->active_sensor_count_() == 0 && this->reporting_sensor_count_() >= this->min_valid_sensors_) {
+    if (this->active_sensor_count_() == 0 && this->healthy_sensor_count_() >= std::max(this->min_valid_sensors_, this->min_event_sensors_)) {
       if (this->boot_clear_since_ms_ == 0) {
         this->boot_clear_since_ms_ = now;
       } else if ((now - this->boot_clear_since_ms_) >= BOOT_CLEAR_SETTLE_MS) {
@@ -1673,7 +1384,7 @@ void TofOverdoorCounter::update_sensor_states_() {
 }
 
 void TofOverdoorCounter::apply_idle_baseline_tracking_() {
-  if (this->event_active_ || this->calibration_active_) {
+  if (this->event_active_ || this->calibration_active_ || !this->startup_clear_validated_ || this->active_sensor_count_() > 0) {
     return;
   }
 
@@ -1682,8 +1393,8 @@ void TofOverdoorCounter::apply_idle_baseline_tracking_() {
       continue;
     }
     for (auto &zone : channel.zones) {
-      const float distance = this->zone_logic_distance_(zone);
-      if (!zone.calibrated || zone.active || std::isnan(distance) || std::isnan(zone.baseline)) {
+      const float distance = zone.raw_distance;
+      if (!zone.fresh || !zone.valid_measurement || !zone.calibrated || zone.active || std::isnan(distance) || std::isnan(zone.baseline)) {
         continue;
       }
       const float delta = fabsf(distance - zone.baseline);
@@ -1718,165 +1429,10 @@ void TofOverdoorCounter::update_blocked_state_() {
 }
 
 void TofOverdoorCounter::clear_event_tracking_() {
+  this->fusion_.reset();
   this->event_active_ = false;
   this->event_started_ms_ = 0;
-  this->event_last_activity_ms_ = 0;
-  this->standing_clear_since_ms_ = 0;
-  this->event_first_group_ = GROUP_NONE;
-  this->event_second_group_ = GROUP_NONE;
-  this->event_direction_group_ = GROUP_NONE;
-  this->event_sensor_mask_ = 0;
-  this->event_rising_mask_ = 0;
-  this->event_falling_mask_ = 0;
-  this->event_peak_active_count_ = 0;
-  this->event_peak_group_counts_[0] = 0;
-  this->event_peak_group_counts_[1] = 0;
-  this->event_group_confirmed_ms_[GROUP_OUT] = 0;
-  this->event_group_confirmed_ms_[GROUP_IN] = 0;
-  this->event_direction_decided_ms_ = 0;
-  this->event_first_edge_ms_ = 0;
-  this->event_last_edge_ms_ = 0;
-  this->event_edge_count_ = 0;
-  this->sensor_vote_count_ = 0;
-  this->event_path_size_ = 0;
-  this->event_last_state_code_ = GROUP_STATE_NONE;
-  std::fill(std::begin(this->event_path_), std::end(this->event_path_), GROUP_STATE_NONE);
-  std::fill(std::begin(this->event_edges_), std::end(this->event_edges_), EventEdge{});
-  std::fill(std::begin(this->sensor_votes_), std::end(this->sensor_votes_), SensorVote{});
-  for (auto &channel : this->channels_) {
-    channel.first_trigger_in_event_ms = 0;
-    channel.pending_vote = GROUP_NONE;
-    channel.pending_vote_ms = 0;
-    channel.pending_vote_path.clear();
-  }
-}
-
-SensorGroup TofOverdoorCounter::determine_first_group_from_current_state_() const {
-  uint32_t out_ts = 0;
-  uint32_t in_ts = 0;
-
-  for (size_t index = 0; index < this->channels_.size(); index++) {
-    const auto &channel = this->channels_[index];
-    if (!channel.initialized || !channel.active) {
-      continue;
-    }
-    if (channel.group == GROUP_OUT) {
-      if (out_ts == 0 || (channel.active_since_ms != 0 && channel.active_since_ms < out_ts)) {
-        out_ts = channel.active_since_ms != 0 ? channel.active_since_ms : millis();
-      }
-    } else if (channel.group == GROUP_IN) {
-      if (in_ts == 0 || (channel.active_since_ms != 0 && channel.active_since_ms < in_ts)) {
-        in_ts = channel.active_since_ms != 0 ? channel.active_since_ms : millis();
-      }
-    }
-  }
-
-  if (out_ts != 0 && in_ts == 0) {
-    return GROUP_OUT;
-  }
-  if (in_ts != 0 && out_ts == 0) {
-    return GROUP_IN;
-  }
-  if (out_ts != 0 && in_ts != 0) {
-    if (out_ts < in_ts) {
-      return GROUP_OUT;
-    }
-    if (in_ts < out_ts) {
-      return GROUP_IN;
-    }
-  }
-
-  const uint8_t active_out = this->active_sensor_count_for_group_(GROUP_OUT);
-  const uint8_t active_in = this->active_sensor_count_for_group_(GROUP_IN);
-  if (active_out > active_in) {
-    return GROUP_OUT;
-  }
-  if (active_in > active_out) {
-    return GROUP_IN;
-  }
-  return GROUP_NONE;
-}
-
-SensorGroup TofOverdoorCounter::resolve_event_first_group_() const {
-  const uint32_t out_ts = this->first_trigger_ts_for_group_(GROUP_OUT);
-  const uint32_t in_ts = this->first_trigger_ts_for_group_(GROUP_IN);
-  const uint32_t out_confirmed_ts = this->event_group_confirmed_ms_[GROUP_OUT];
-  const uint32_t in_confirmed_ts = this->event_group_confirmed_ms_[GROUP_IN];
-  const SensorGroup path_first_group = this->first_group_from_path_();
-
-  // If the compressed path starts as OUT-only or IN-only, that is the clearest
-  // physical ordering signal. Do not let a later two-sensor confirmation on the
-  // other side rewrite the event; that produced misleading logs like
-  // "IN side first, path CLEAR->OUT->BOTH->CLEAR".
-  if (path_first_group != GROUP_NONE) {
-    return path_first_group;
-  }
-
-  if (out_ts != 0 && in_ts == 0) {
-    return GROUP_OUT;
-  }
-  if (in_ts != 0 && out_ts == 0) {
-    return GROUP_IN;
-  }
-  if (out_ts != 0 && in_ts != 0) {
-    const uint32_t delta = out_ts > in_ts ? (out_ts - in_ts) : (in_ts - out_ts);
-    if (delta > this->direction_window_ms_) {
-      if (out_ts < in_ts) {
-        return GROUP_OUT;
-      }
-      if (in_ts < out_ts) {
-        return GROUP_IN;
-      }
-    }
-
-    if (out_confirmed_ts != 0 && in_confirmed_ts == 0) {
-      return GROUP_OUT;
-    }
-    if (in_confirmed_ts != 0 && out_confirmed_ts == 0) {
-      return GROUP_IN;
-    }
-    if (out_confirmed_ts != 0 && in_confirmed_ts != 0) {
-      if (out_confirmed_ts < in_confirmed_ts) {
-        return GROUP_OUT;
-      }
-      if (in_confirmed_ts < out_confirmed_ts) {
-        return GROUP_IN;
-      }
-    }
-  }
-
-  if (this->event_peak_group_counts_[GROUP_OUT] > this->event_peak_group_counts_[GROUP_IN]) {
-    return GROUP_OUT;
-  }
-  if (this->event_peak_group_counts_[GROUP_IN] > this->event_peak_group_counts_[GROUP_OUT]) {
-    return GROUP_IN;
-  }
-
-  return this->event_first_group_;
-}
-
-SensorGroup TofOverdoorCounter::map_physical_group_to_direction_(SensorGroup physical_group) const {
-  if (!this->invert_direction_) {
-    return physical_group;
-  }
-  if (physical_group == GROUP_OUT) {
-    return GROUP_IN;
-  }
-  if (physical_group == GROUP_IN) {
-    return GROUP_OUT;
-  }
-  return GROUP_NONE;
-}
-
-std::string TofOverdoorCounter::direction_text_for_group_(SensorGroup physical_group, bool unsure) const {
-  const auto mapped = this->map_physical_group_to_direction_(physical_group);
-  if (mapped == GROUP_IN) {
-    return unsure ? "UNSURE_IN" : "IN";
-  }
-  if (mapped == GROUP_OUT) {
-    return unsure ? "UNSURE_OUT" : "OUT";
-  }
-  return unsure ? "UNSURE" : "UNKNOWN";
+  this->person_standing_in_door_ = false;
 }
 
 std::string TofOverdoorCounter::passage_state_text_(PassageState state) const {
@@ -1902,410 +1458,57 @@ std::string TofOverdoorCounter::passage_state_text_(PassageState state) const {
   }
 }
 
-void TofOverdoorCounter::reset_channel_path_tracker_(Channel &channel) {
-  channel.roode_path[0] = 0;
-  channel.roode_path[1] = 0;
-  channel.roode_path[2] = 0;
-  channel.roode_path[3] = 0;
-  channel.roode_path_filling_size = 1;
-  // Synchronize to the live state. This is important when a quorum is reached
-  // before the person has left the second ROI: resetting to CLEAR here would
-  // turn the later falling edge into a second artificial passage.
-  channel.roode_previous_status[ZONE_OUT] = channel.zones[ZONE_OUT].active ? ROODE_SOMEONE : ROODE_NOBODY;
-  channel.roode_previous_status[ZONE_IN] = channel.zones[ZONE_IN].active ? ROODE_SOMEONE : ROODE_NOBODY;
-  channel.roode_event_started_ms = 0;
-  channel.roode_last_activity_ms = 0;
-  channel.roode_first_zone = GROUP_NONE;
-  channel.roode_last_solo_zone = GROUP_NONE;
-  channel.roode_seen_out = false;
-  channel.roode_seen_in = false;
-  channel.roode_seen_both = false;
-  channel.roode_vote_latched = false;
-  channel.roode_transition_count = 0;
-  channel.pending_vote = GROUP_NONE;
-  channel.pending_vote_ms = 0;
-  channel.pending_vote_path.clear();
-  channel.last_path_text = "CLEAR";
-}
-
-std::string TofOverdoorCounter::roode_path_text_(const Channel &channel) const {
-  std::ostringstream oss;
-  oss << "0";
-  for (uint8_t index = 1; index < channel.roode_path_filling_size && index < 4; index++) {
-    oss << "->" << static_cast<unsigned>(channel.roode_path[index]);
-  }
-  if (channel.roode_previous_status[ZONE_OUT] == ROODE_NOBODY &&
-      channel.roode_previous_status[ZONE_IN] == ROODE_NOBODY &&
-      (channel.roode_path_filling_size == 1 || channel.roode_path[channel.roode_path_filling_size - 1] != 0)) {
-    oss << "->0";
-  }
-  return oss.str();
-}
-
-void TofOverdoorCounter::update_channel_path_tracker_(Channel &channel, size_t index, uint32_t now) {
-  if (!channel.initialized || index >= SENSOR_COUNT) {
-    return;
-  }
-
-  const bool has_edge = channel.zones[ZONE_OUT].rising_edge || channel.zones[ZONE_OUT].falling_edge ||
-                        channel.zones[ZONE_IN].rising_edge || channel.zones[ZONE_IN].falling_edge;
-  if (!has_edge) {
-    return;
-  }
-
-  // Consume both ROI edges atomically. Processing OUT and IN one by one could
-  // briefly manufacture a CLEAR state when one ROI fell in the same update in
-  // which the other rose, causing fast walkers to be rejected.
-  const uint8_t previous_state =
-      (channel.roode_previous_status[ZONE_OUT] == ROODE_SOMEONE ? GROUP_STATE_OUT_ONLY : 0) |
-      (channel.roode_previous_status[ZONE_IN] == ROODE_SOMEONE ? GROUP_STATE_IN_ONLY : 0);
-  const uint8_t current_state = (channel.zones[ZONE_OUT].active ? GROUP_STATE_OUT_ONLY : 0) |
-                                (channel.zones[ZONE_IN].active ? GROUP_STATE_IN_ONLY : 0);
-  if (current_state == previous_state) {
-    return;
-  }
-
-  channel.roode_previous_status[ZONE_OUT] = channel.zones[ZONE_OUT].active ? ROODE_SOMEONE : ROODE_NOBODY;
-  channel.roode_previous_status[ZONE_IN] = channel.zones[ZONE_IN].active ? ROODE_SOMEONE : ROODE_NOBODY;
-  channel.roode_last_activity_ms = now;
-
-  if (current_state != GROUP_STATE_NONE && channel.roode_event_started_ms == 0) {
-    uint32_t first_edge_ms = now;
-    if (channel.zones[ZONE_OUT].active && channel.zones[ZONE_OUT].last_rising_ms != 0) {
-      first_edge_ms = std::min(first_edge_ms, channel.zones[ZONE_OUT].last_rising_ms);
-    }
-    if (channel.zones[ZONE_IN].active && channel.zones[ZONE_IN].last_rising_ms != 0) {
-      first_edge_ms = std::min(first_edge_ms, channel.zones[ZONE_IN].last_rising_ms);
-    }
-    channel.roode_event_started_ms = first_edge_ms;
-    channel.roode_path[0] = GROUP_STATE_NONE;
-    channel.roode_path_filling_size = 1;
-  }
-
-  if (current_state == GROUP_STATE_OUT_ONLY) {
-    channel.roode_seen_out = true;
-    channel.roode_last_solo_zone = GROUP_OUT;
-    if (channel.roode_first_zone == GROUP_NONE && !channel.roode_seen_both) {
-      channel.roode_first_zone = GROUP_OUT;
-    }
-  } else if (current_state == GROUP_STATE_IN_ONLY) {
-    channel.roode_seen_in = true;
-    channel.roode_last_solo_zone = GROUP_IN;
-    if (channel.roode_first_zone == GROUP_NONE && !channel.roode_seen_both) {
-      channel.roode_first_zone = GROUP_IN;
-    }
-  } else if (current_state == GROUP_STATE_BOTH) {
-    channel.roode_seen_out = true;
-    channel.roode_seen_in = true;
-    channel.roode_seen_both = true;
-  }
-
-  channel.roode_transition_count = std::min<uint8_t>(channel.roode_transition_count + 1U, 255);
-  if (current_state != GROUP_STATE_NONE) {
-    if (channel.roode_path_filling_size < 4) {
-      channel.roode_path[channel.roode_path_filling_size++] = current_state;
-    } else {
-      channel.roode_path[3] = current_state;
-    }
-  }
-
-  const bool visited_both_sides = channel.roode_seen_out && channel.roode_seen_in;
-  const bool ended_opposite = channel.roode_first_zone != GROUP_NONE &&
-                              channel.roode_last_solo_zone != GROUP_NONE &&
-                              channel.roode_last_solo_zone != channel.roode_first_zone;
-  const uint32_t duration = channel.roode_event_started_ms == 0 ? 0 : now - channel.roode_event_started_ms;
-  const bool crossing_committed = current_state != GROUP_STATE_NONE && current_state != GROUP_STATE_BOTH &&
-                                  visited_both_sides && ended_opposite &&
-                                  duration >= this->min_active_duration_ms_;
-
-  // Emit as soon as the person has left the starting ROI and occupies only the
-  // opposite ROI. Waiting for the opposite ROI to clear added human dwell time
-  // to every result. The latch prevents a second vote until the field is clear.
-  if (!channel.roode_vote_latched && crossing_committed) {
-    const SensorGroup vote = channel.roode_first_zone;
-    const std::string path = this->roode_path_text_(channel);
-    const std::string vote_text = std::string(group_name(vote)) + " early path " + path + " duration " +
-                                  std::to_string(duration) + "ms transitions " +
-                                  std::to_string(channel.roode_transition_count);
-    channel.pending_vote = vote;
-    channel.pending_vote_ms = now;
-    channel.pending_vote_path = path;
-    channel.last_vote_text = vote_text;
-    channel.last_path_text = path;
-    channel.roode_vote_latched = true;
-    if (this->debug_logging_) {
-      ESP_LOGD(TAG, "%s early per-sensor vote %s (%s)", channel.sensor_label.c_str(), group_name(vote),
-               vote_text.c_str());
-    }
-  }
-
-  if (current_state != GROUP_STATE_NONE) {
-    channel.last_path_text = this->roode_path_text_(channel);
-    return;
-  }
-
-  const std::string completed_path = this->roode_path_text_(channel);
-  const bool fallback_vote = !channel.roode_vote_latched && visited_both_sides && ended_opposite &&
-                             duration >= this->min_active_duration_ms_;
-  const bool turned_back = visited_both_sides && channel.roode_first_zone != GROUP_NONE &&
-                           channel.roode_last_solo_zone == channel.roode_first_zone;
-  const SensorGroup vote = fallback_vote ? channel.roode_first_zone : GROUP_NONE;
-  const std::string vote_text = vote != GROUP_NONE
-                                    ? std::string(group_name(vote)) + " clear path " + completed_path + " duration " +
-                                          std::to_string(duration) + "ms"
-                                    : std::string(turned_back ? "turn-around " : "rejected ") + "path " +
-                                          completed_path + " duration " + std::to_string(duration) + "ms";
-  if (this->debug_logging_ && vote == GROUP_NONE && !channel.roode_vote_latched) {
-    ESP_LOGD(TAG, "%s per-sensor path rejected (%s)", channel.sensor_label.c_str(), vote_text.c_str());
-  }
-
-  const bool already_voted = channel.roode_vote_latched;
-  this->reset_channel_path_tracker_(channel);
-  channel.last_path_text = completed_path;
-  if (vote != GROUP_NONE && !already_voted) {
-    channel.pending_vote = vote;
-    channel.pending_vote_ms = now;
-    channel.pending_vote_path = completed_path;
-    channel.last_vote_text = vote_text;
-  } else if (!already_voted) {
-    channel.last_vote_text = vote_text;
-  }
-}
-
-void TofOverdoorCounter::clear_sensor_vote_window_() {
-  this->sensor_vote_count_ = 0;
-  std::fill(std::begin(this->sensor_votes_), std::end(this->sensor_votes_), SensorVote{});
-}
-
-void TofOverdoorCounter::collect_pending_sensor_votes_(uint32_t now) {
-  for (size_t index = 0; index < this->channels_.size() && index < SENSOR_COUNT; index++) {
-    auto &channel = this->channels_[index];
-    if (channel.pending_vote == GROUP_NONE) {
-      continue;
-    }
-
-    bool replaced_existing = false;
-    for (uint8_t vote_index = 0; vote_index < this->sensor_vote_count_; vote_index++) {
-      if (this->sensor_votes_[vote_index].sensor_index == index) {
-        auto &vote = this->sensor_votes_[vote_index];
-        vote.timestamp_ms = channel.pending_vote_ms == 0 ? now : channel.pending_vote_ms;
-        vote.direction = channel.pending_vote;
-        vote.sensor_label = channel.sensor_label;
-        vote.path_text = channel.pending_vote_path;
-        vote.reason = channel.last_vote_text;
-        replaced_existing = true;
-        break;
-      }
-    }
-
-    if (!replaced_existing && this->sensor_vote_count_ < SENSOR_COUNT) {
-      auto &vote = this->sensor_votes_[this->sensor_vote_count_++];
-      vote.timestamp_ms = channel.pending_vote_ms == 0 ? now : channel.pending_vote_ms;
-      vote.sensor_index = static_cast<uint8_t>(index);
-      vote.direction = channel.pending_vote;
-      vote.sensor_label = channel.sensor_label;
-      vote.path_text = channel.pending_vote_path;
-      vote.reason = channel.last_vote_text;
-    }
-
-    channel.pending_vote = GROUP_NONE;
-    channel.pending_vote_ms = 0;
-    channel.pending_vote_path.clear();
-  }
-
-  if (this->sensor_vote_count_ == 0) {
-    return;
-  }
-
-  uint8_t write_index = 0;
-  for (uint8_t read_index = 0; read_index < this->sensor_vote_count_; read_index++) {
-    const auto &vote = this->sensor_votes_[read_index];
-    if (vote.timestamp_ms != 0 && (now - vote.timestamp_ms) <= this->detection_timeout_ms_) {
-      if (write_index != read_index) {
-        this->sensor_votes_[write_index] = vote;
-      }
-      write_index++;
-    }
-  }
-  for (uint8_t index = write_index; index < SENSOR_COUNT; index++) {
-    this->sensor_votes_[index] = SensorVote{};
-  }
-  this->sensor_vote_count_ = write_index;
-}
-
-std::string TofOverdoorCounter::sensor_vote_text_() const {
-  if (this->sensor_vote_count_ == 0) {
-    return "none";
-  }
-  std::ostringstream oss;
-  for (uint8_t index = 0; index < this->sensor_vote_count_; index++) {
-    if (index > 0) {
-      oss << " ";
-    }
-    const auto &vote = this->sensor_votes_[index];
-    oss << vote.sensor_label << "=" << group_name(vote.direction) << "(" << vote.path_text << ")";
-  }
-  return oss.str();
-}
-
 void TofOverdoorCounter::update_detection_state_machine_() {
   const uint32_t now = millis();
-
-  if (!this->ready_for_counting_()) {
-    this->phase_text_ = "Waiting for stable calibration";
-    this->clear_event_tracking_();
-    this->person_standing_in_door_ = false;
-    this->update_passage_state_(PASSAGE_IDLE);
-    return;
-  }
-
-  for (size_t index = 0; index < this->channels_.size() && index < SENSOR_COUNT; index++) {
-    this->update_channel_path_tracker_(this->channels_[index], index, now);
-  }
-
-  if (this->cooldown_until_ms_ != 0 && static_cast<int32_t>(now - this->cooldown_until_ms_) < 0) {
-    this->phase_text_ = "Cooldown after last detection";
-    this->clear_sensor_vote_window_();
-    for (auto &channel : this->channels_) {
-      this->reset_channel_path_tracker_(channel);
-    }
-    return;
-  }
-  if (this->cooldown_until_ms_ != 0 && static_cast<int32_t>(now - this->cooldown_until_ms_) >= 0) {
-    this->cooldown_until_ms_ = 0;
-  }
-
-  const uint8_t active_count = this->active_sensor_count_();
-  if (active_count > 0) {
-    if (!this->event_active_) {
-      this->event_active_ = true;
-      this->event_started_ms_ = now;
-      this->event_last_activity_ms_ = now;
-      this->event_peak_active_count_ = active_count;
-      this->update_passage_state_(PASSAGE_POSSIBLE);
-    } else {
-      this->event_last_activity_ms_ = now;
-      this->event_peak_active_count_ = std::max(this->event_peak_active_count_, active_count);
-      this->update_passage_state_(active_count >= 2 ? PASSAGE_OCCUPIED : PASSAGE_POSSIBLE);
+  std::array<uint8_t, SENSOR_COUNT> states{}, fresh{};
+  uint8_t healthy = 0;
+  bool unsettled = false;
+  for (size_t i = 0; i < this->channels_.size(); ++i) {
+    auto &channel = this->channels_[i];
+    if (this->channel_healthy_(channel, now)) healthy |= 1U << i;
+    for (size_t z = 0; z < SENSOR_ZONE_COUNT; ++z) {
+      if ((healthy & (1U << i)) && channel.zones[z].debounce.hits) unsettled = true;
+      if (channel.zones[z].active) states[i] |= 1U << z;
+      if (channel.zones[z].fresh && channel.zones[z].valid_measurement) fresh[i] |= 1U << z;
     }
   }
-
-  this->collect_pending_sensor_votes_(now);
-
-  if (this->sensor_vote_count_ > 0 && !this->event_active_) {
-    this->event_active_ = true;
-    this->event_started_ms_ = this->sensor_votes_[0].timestamp_ms;
-    this->event_last_activity_ms_ = now;
-    this->event_peak_active_count_ = std::max<uint8_t>(this->event_peak_active_count_, active_count);
-    this->update_passage_state_(PASSAGE_SEQUENCE);
+  this->fusion_.required = std::max(this->min_event_sensors_, this->min_valid_sensors_);
+  this->fusion_.clear_ms = std::max(this->direction_window_ms_, this->cooldown_ms_);
+  this->fusion_.minimum_ms = this->min_active_duration_ms_;
+  this->fusion_.agreement_ms = this->detection_timeout_ms_;
+  this->fusion_.invert = this->invert_direction_;
+  const auto result = this->fusion_.update(now, this->startup_clear_validated_ ? healthy : 0, states, fresh, unsettled);
+  this->event_active_ = this->fusion_.active();
+  this->event_started_ms_ = this->fusion_.started();
+  this->person_standing_in_door_ = this->event_active_ && now - this->event_started_ms_ >= this->standing_timeout_ms_;
+  for (size_t i = 0; i < this->channels_.size(); ++i) {
+    const auto &path = this->fusion_.path(i);
+    this->channels_[i].last_path_text = "first=" + std::to_string(path.first) + " last=" +
+        std::to_string(path.last) + " seen=" + std::to_string(path.seen) + (path.ambiguous ? " ambiguous" : "");
   }
-
-  uint8_t physical_in_votes = 0;
-  uint8_t physical_out_votes = 0;
-  uint8_t vote_mask = 0;
-  for (uint8_t index = 0; index < this->sensor_vote_count_; index++) {
-    const auto &vote = this->sensor_votes_[index];
-    if (vote.direction == GROUP_IN) {
-      physical_in_votes++;
-    } else if (vote.direction == GROUP_OUT) {
-      physical_out_votes++;
-    }
-    vote_mask |= (1U << vote.sensor_index);
-  }
-
-  const uint8_t healthy = std::max<uint8_t>(2, this->healthy_sensor_count_());
-  const uint8_t required = std::min<uint8_t>(std::max<uint8_t>(2, this->min_event_sensors_), healthy);
-  const uint8_t logical_in_votes = this->invert_direction_ ? physical_out_votes : physical_in_votes;
-  const uint8_t logical_out_votes = this->invert_direction_ ? physical_in_votes : physical_out_votes;
-
-  if (logical_in_votes >= required || logical_out_votes >= required) {
+  if (result.decision != counting_core::Decision::NONE) {
     DetectionOutcome outcome = OUTCOME_NONE;
-    std::string reason;
-
-    if (logical_in_votes >= required && logical_out_votes >= required) {
-      reason = "Detection cancelled: conflicting per-sensor votes (" + this->sensor_vote_text_() + ")";
-    } else if (logical_in_votes >= required) {
-      outcome = OUTCOME_IN;
-      reason = "Detection approved: " + std::to_string(logical_in_votes) + "/" + std::to_string(healthy) +
-               " sensors voted IN (" + this->sensor_vote_text_() + ")";
-    } else {
-      outcome = OUTCOME_OUT;
-      reason = "Detection approved: " + std::to_string(logical_out_votes) + "/" + std::to_string(healthy) +
-               " sensors voted OUT (" + this->sensor_vote_text_() + ")";
+    switch (result.decision) {
+      case counting_core::Decision::IN: outcome = OUTCOME_IN; break;
+      case counting_core::Decision::OUT: outcome = OUTCOME_OUT; break;
+      case counting_core::Decision::UNSURE_IN: outcome = OUTCOME_UNSURE_IN; break;
+      case counting_core::Decision::UNSURE_OUT: outcome = OUTCOME_UNSURE_OUT; break;
+      default: break;
     }
-
-    const uint8_t agreeing_votes = std::max(logical_in_votes, logical_out_votes);
-    float quality_sum = 0.0f;
-    uint8_t quality_count = 0;
-    for (uint8_t vote_index = 0; vote_index < this->sensor_vote_count_; vote_index++) {
-      const auto sensor_index = this->sensor_votes_[vote_index].sensor_index;
-      if (sensor_index >= this->channels_.size()) continue;
-      const auto &channel = this->channels_[sensor_index];
-      quality_sum += std::min(channel.zones[ZONE_OUT].calibration_quality,
-                              channel.zones[ZONE_IN].calibration_quality);
-      quality_count++;
-    }
-    const float average_quality = quality_count == 0 ? 0.0f : quality_sum / quality_count;
-    uint8_t confidence = outcome == OUTCOME_NONE
-                             ? 0
-                             : clamp_quality(35.0f + (static_cast<float>(agreeing_votes) * 15.0f) +
-                                             (average_quality * 0.20f) -
-                                             (static_cast<float>(std::min(logical_in_votes, logical_out_votes)) * 20.0f));
-
-    this->last_decision_latency_ms_ = this->event_started_ms_ == 0 ? 0 : now - this->event_started_ms_;
-    reason += "; decision latency " + std::to_string(this->last_decision_latency_ms_) + "ms";
-    this->event_sensor_mask_ = vote_mask;
-    this->update_passage_state_(outcome == OUTCOME_NONE ? PASSAGE_CANCELLED : PASSAGE_COMPLETED);
-    this->register_detection_(outcome, confidence, reason);
-    this->cooldown_until_ms_ = now + this->cooldown_ms_;
-    this->person_standing_in_door_ = false;
-    this->clear_event_tracking_();
-    for (auto &channel : this->channels_) {
-      this->reset_channel_path_tracker_(channel);
-    }
-    this->phase_text_ = outcome == OUTCOME_NONE ? "Detection cancelled" : "Detection recorded";
-    return;
+    this->last_decision_latency_ms_ = result.duration_ms;
+    const auto votes = std::max(result.in_votes, result.out_votes);
+    const uint8_t confidence = outcome == OUTCOME_NONE ? 0 : std::min<unsigned>(99, votes * 25);
+    this->register_detection_(outcome, confidence, std::string(this->ready_for_counting_() ? "Completed clear-doorway episode: " : "Sensor health interrupted episode: ") +
+        std::to_string(result.in_votes) + " IN, " + std::to_string(result.out_votes) +
+        " OUT; required=" + std::to_string(this->fusion_.required) +
+        "; duration=" + std::to_string(result.duration_ms) + "ms; score is heuristic, not accuracy");
+    this->update_passage_state_(outcome == OUTCOME_IN || outcome == OUTCOME_OUT ? PASSAGE_COMPLETED : PASSAGE_CANCELLED);
+  } else {
+    this->update_passage_state_(this->event_active_ ? PASSAGE_OCCUPIED : PASSAGE_IDLE);
   }
-
-  const bool vote_window_timed_out =
-      this->event_active_ && this->event_started_ms_ != 0 && (now - this->event_started_ms_) >= this->detection_timeout_ms_;
-  const bool standing =
-      active_count > 0 && this->event_started_ms_ != 0 && (now - this->event_started_ms_) >= this->standing_timeout_ms_;
-
-  if (vote_window_timed_out && active_count == 0) {
-    std::string reason = "Detection cancelled: fewer than " + std::to_string(required) +
-                         " sensors agreed before timeout (votes " + this->sensor_vote_text_() + ")";
-    this->update_passage_state_(PASSAGE_TIMEOUT);
-    this->register_detection_(OUTCOME_NONE, 0, reason);
-    this->cooldown_until_ms_ = now + this->cooldown_ms_;
-    this->person_standing_in_door_ = false;
-    this->clear_event_tracking_();
-    this->phase_text_ = "Detection cancelled";
-    return;
-  }
-
-  if (standing) {
-    this->person_standing_in_door_ = true;
-    this->phase_text_ = "Person standing in doorway";
-    this->update_passage_state_(PASSAGE_OCCUPIED);
-    return;
-  }
-
-  if (active_count == 0 && this->sensor_vote_count_ == 0) {
-    this->person_standing_in_door_ = false;
-    this->standing_clear_since_ms_ = 0;
-    this->event_active_ = false;
-    this->event_started_ms_ = 0;
-    this->event_last_activity_ms_ = 0;
-    this->event_peak_active_count_ = 0;
-    this->phase_text_ = "Ready - waiting for fused passage tracks";
-    this->update_passage_state_(PASSAGE_IDLE);
-    return;
-  }
-
-  this->phase_text_ = "Waiting for " + std::to_string(required) + " sensors to agree (" +
-                      std::to_string(logical_in_votes) + " IN, " + std::to_string(logical_out_votes) + " OUT)";
-  this->update_passage_state_(this->sensor_vote_count_ > 0 ? PASSAGE_SEQUENCE : PASSAGE_POSSIBLE);
+  this->phase_text_ = !this->ready_for_counting_() ? "Waiting for healthy sensors and clear doorway" :
+      this->person_standing_in_door_ ? "Person standing in doorway" :
+      this->event_active_ ? "Tracking passage; waiting for doorway to clear" : "Ready";
 }
 
 void TofOverdoorCounter::register_detection_(DetectionOutcome outcome, uint8_t confidence, const std::string &reason) {
@@ -2342,229 +1545,42 @@ void TofOverdoorCounter::register_detection_(DetectionOutcome outcome, uint8_t c
   }
 
   this->log_event_(this->format_uptime_(this->last_detection_ms_) + " - " + this->last_direction_ + " - " + reason +
-                   " - confidence " + std::to_string(confidence) + "%");
+                   " - evidence score " + std::to_string(confidence) + "/100");
   this->state_dirty_ = true;
 }
 
-void TofOverdoorCounter::finalize_event_(bool timed_out) {
-  const uint8_t distinct_triggered = popcount_u8(this->event_sensor_mask_);
-  const uint8_t out_triggered = this->triggered_sensor_count_for_group_(GROUP_OUT);
-  const uint8_t in_triggered = this->triggered_sensor_count_for_group_(GROUP_IN);
-  const bool both_groups_seen = out_triggered > 0 && in_triggered > 0;
-  const uint8_t healthy = std::max<uint8_t>(2, this->healthy_sensor_count_());
-  const uint8_t required = std::min<uint8_t>(std::max<uint8_t>(2, this->min_event_sensors_), healthy);
-  const SensorGroup resolved_first_group = this->resolve_event_first_group_();
-  const uint32_t event_duration_ms = this->event_started_ms_ == 0 ? 0 : millis() - this->event_started_ms_;
-  const bool long_enough =
-      event_duration_ms >= this->min_active_duration_ms_ || this->event_peak_active_count_ >= 2 ||
-      (this->event_last_edge_ms_ > this->event_first_edge_ms_ &&
-       (this->event_last_edge_ms_ - this->event_first_edge_ms_) >= this->min_active_duration_ms_);
-
-  uint8_t first_state = GROUP_STATE_NONE;
-  uint8_t last_state = GROUP_STATE_NONE;
-  bool saw_both_state = false;
-  bool saw_same_side_after_both = false;
-  bool saw_opposite_side_after_both = false;
-
-  for (uint8_t index = 0; index < this->event_path_size_; index++) {
-    const uint8_t state = this->event_path_[index];
-    if (first_state == GROUP_STATE_NONE) {
-      first_state = state;
-    }
-    last_state = state;
-    if (state == GROUP_STATE_BOTH) {
-      saw_both_state = true;
-    } else if (state == GROUP_STATE_OUT_ONLY) {
-      if (saw_both_state && resolved_first_group == GROUP_OUT) {
-        saw_same_side_after_both = true;
-      }
-      if (saw_both_state && resolved_first_group == GROUP_IN) {
-        saw_opposite_side_after_both = true;
-      }
-    } else if (state == GROUP_STATE_IN_ONLY) {
-      if (saw_both_state && resolved_first_group == GROUP_IN) {
-        saw_same_side_after_both = true;
-      }
-      if (saw_both_state && resolved_first_group == GROUP_OUT) {
-        saw_opposite_side_after_both = true;
-      }
-    }
-  }
-
-  bool path_crossed_doorway = false;
-  if (resolved_first_group == GROUP_OUT) {
-    path_crossed_doorway = saw_opposite_side_after_both || (first_state == GROUP_STATE_OUT_ONLY && last_state == GROUP_STATE_IN_ONLY);
-  } else if (resolved_first_group == GROUP_IN) {
-    path_crossed_doorway = saw_opposite_side_after_both || (first_state == GROUP_STATE_IN_ONLY && last_state == GROUP_STATE_OUT_ONLY);
-  }
-
-  const bool fast_cross_path = (resolved_first_group == GROUP_OUT && first_state == GROUP_STATE_OUT_ONLY && last_state == GROUP_STATE_IN_ONLY) ||
-                               (resolved_first_group == GROUP_IN && first_state == GROUP_STATE_IN_ONLY && last_state == GROUP_STATE_OUT_ONLY);
-  const bool clean_one_sided_start =
-      (resolved_first_group == GROUP_OUT && first_state == GROUP_STATE_OUT_ONLY) ||
-      (resolved_first_group == GROUP_IN && first_state == GROUP_STATE_IN_ONLY);
-  const bool overlap_after_clean_start = clean_one_sided_start && saw_both_state;
-  const bool direction_shape_is_clear = path_crossed_doorway || fast_cross_path || overlap_after_clean_start;
-  const bool ambiguous_both_start = first_state == GROUP_STATE_BOTH;
-  const bool ordered_two_group_sequence = resolved_first_group != GROUP_NONE && this->event_second_group_ != GROUP_NONE &&
-                                          this->event_second_group_ != resolved_first_group;
-  const bool valid_crossing = both_groups_seen && ordered_two_group_sequence && distinct_triggered >= required &&
-                              long_enough && direction_shape_is_clear && !ambiguous_both_start;
-  const bool backed_out_after_both = saw_same_side_after_both && !saw_opposite_side_after_both;
-
-  DetectionOutcome outcome = OUTCOME_NONE;
-  std::string reason = "Detection cancelled";
-
-  if (backed_out_after_both && resolved_first_group != GROUP_NONE) {
-    reason = "Detection cancelled: returned to the " + std::string(group_name(resolved_first_group)) +
-             " side after entering the doorway (path " + this->event_path_text_() + ")";
-  } else if (resolved_first_group != GROUP_NONE && valid_crossing) {
-    const SensorGroup direction_group = this->map_physical_group_to_direction_(resolved_first_group);
-    outcome = direction_group == GROUP_IN ? OUTCOME_IN : OUTCOME_OUT;
-    reason = "Detection approved: " + std::to_string(distinct_triggered) + "/" + std::to_string(healthy) +
-             " sensors triggered, " + std::string(group_name(resolved_first_group)) +
-             " side first, path " + this->event_path_text_() + ", " +
-             this->event_timing_text_(resolved_first_group) + ", edges " + this->event_edge_text_();
-  } else if (resolved_first_group != GROUP_NONE && both_groups_seen && distinct_triggered >= 2 && long_enough) {
-    const SensorGroup direction_group = this->map_physical_group_to_direction_(resolved_first_group);
-    outcome = direction_group == GROUP_IN ? OUTCOME_UNSURE_IN : OUTCOME_UNSURE_OUT;
-    reason = "Unsure detection: " + std::to_string(distinct_triggered) + "/" + std::to_string(healthy) +
-             " sensors triggered, " + std::string(group_name(resolved_first_group)) +
-             " side first, path " + this->event_path_text_() + ", " +
-             this->event_timing_text_(resolved_first_group) + ", edges " + this->event_edge_text_();
-  } else if (resolved_first_group != GROUP_NONE && !both_groups_seen) {
-    reason = "Detection cancelled: only one physical side triggered (sensors " +
-             this->sensor_mask_text_(this->event_sensor_mask_) + ", path " + this->event_path_text_() + ")";
-  } else if (!long_enough) {
-    reason = "Detection cancelled: trigger was shorter than " + std::to_string(this->min_active_duration_ms_) +
-             " ms (path " + this->event_path_text_() + ")";
-  } else if (timed_out && resolved_first_group != GROUP_NONE) {
-    reason = "Timed out before enough sensors agreed (path " + this->event_path_text_() + ")";
-  } else if (this->person_standing_in_door_) {
-    reason = "Doorway stayed occupied too long (path " + this->event_path_text_() + ")";
-  }
-
-  uint8_t confidence = 0;
-  if (outcome != OUTCOME_NONE) {
-    float raw_confidence = static_cast<float>(distinct_triggered) * 20.0f;
-    raw_confidence += both_groups_seen ? 18.0f : 0.0f;
-    raw_confidence += saw_both_state ? 14.0f : 0.0f;
-    raw_confidence += path_crossed_doorway ? 14.0f : 0.0f;
-    raw_confidence += std::min<uint8_t>(20, this->event_peak_active_count_ * 5U);
-    if (!path_crossed_doorway && !fast_cross_path) {
-      raw_confidence -= 12.0f;
-    }
-    if (ambiguous_both_start) {
-      raw_confidence -= 30.0f;
-    }
-    if (timed_out) {
-      raw_confidence -= 15.0f;
-    }
-    if (this->person_standing_in_door_) {
-      raw_confidence -= 8.0f;
-    }
-    if (backed_out_after_both) {
-      raw_confidence -= 35.0f;
-    }
-    if (outcome == OUTCOME_UNSURE_IN || outcome == OUTCOME_UNSURE_OUT) {
-      raw_confidence -= 22.0f;
-    }
-    if (healthy < SENSOR_COUNT) {
-      raw_confidence -= 10.0f;
-    }
-    confidence = clamp_quality(raw_confidence);
-  }
-
-  this->update_passage_state_(outcome == OUTCOME_NONE ? (timed_out ? PASSAGE_TIMEOUT : PASSAGE_CANCELLED)
-                                                       : PASSAGE_COMPLETED);
-  this->register_detection_(outcome, confidence, reason);
-  this->cooldown_until_ms_ = millis() + this->cooldown_ms_;
-  this->person_standing_in_door_ = false;
-  this->clear_event_tracking_();
-  this->phase_text_ = outcome == OUTCOME_NONE ? "Detection cancelled" : "Detection recorded";
-}
-
 void TofOverdoorCounter::record_history_snapshot_(uint32_t now) {
-  bool has_edge = false;
-  for (const auto &channel : this->channels_) {
-    if (channel.rising_edge || channel.falling_edge) {
-      has_edge = true;
-      break;
-    }
-  }
-  if (!has_edge && this->history_count_ > 0) {
-    const auto &previous = this->history_[(this->history_head_ + HISTORY_SIZE - 1) % HISTORY_SIZE];
-    if ((now - previous.timestamp_ms) < TRACE_SAMPLE_INTERVAL_MS) {
-      return;
-    }
-  }
-
+  bool fresh = false;
+  for (const auto &channel : this->channels_) for (const auto &zone : channel.zones) fresh |= zone.fresh;
+  if (!fresh && this->history_count_ &&
+      now - this->history_[(this->history_head_ + HISTORY_SIZE - 1) % HISTORY_SIZE].timestamp_ms < TRACE_SAMPLE_INTERVAL_MS) return;
   auto &snapshot = this->history_[this->history_head_];
   snapshot = HistorySample{};
   snapshot.timestamp_ms = now;
   snapshot.passage_state = this->passage_state_;
-
-  for (size_t index = 0; index < this->channels_.size() && index < SENSOR_COUNT; index++) {
-    const auto &channel = this->channels_[index];
-    snapshot.raw_distance[index] = channel.raw_distance;
-    const float logic_distance = this->channel_logic_distance_(channel);
-    snapshot.filtered_distance[index] = std::isnan(logic_distance) ? 0 : static_cast<uint16_t>(logic_distance);
-    snapshot.range_status[index] = channel.range_status;
-    if (channel.initialized && channel.has_reading && !channel.stale && channel.valid_measurement) {
-      snapshot.valid_mask |= (1U << index);
-    }
-    if (channel.initialized && channel.active) {
-      snapshot.active_mask |= (1U << index);
-    }
-    if (channel.rising_edge) {
-      snapshot.rising_mask |= (1U << index);
-    }
-    if (channel.falling_edge) {
-      snapshot.falling_mask |= (1U << index);
+  snapshot.outcome = this->last_detection_outcome_;
+  for (size_t i = 0; i < this->channels_.size(); ++i) {
+    const auto &channel = this->channels_[i];
+    if (this->channel_healthy_(channel, now)) snapshot.healthy_mask |= 1U << i;
+    for (size_t z = 0; z < SENSOR_ZONE_COUNT; ++z) {
+      const auto &zone = channel.zones[z];
+      const size_t k = i * SENSOR_ZONE_COUNT + z;
+      snapshot.sample_ms[k] = zone.last_update_ms;
+      snapshot.raw_distance[k] = zone.raw_distance;
+      snapshot.filtered_distance[k] = std::isfinite(zone.filtered_distance) ? zone.filtered_distance : 0;
+      snapshot.baseline[k] = std::isfinite(zone.baseline) ? zone.baseline : 0;
+      snapshot.trigger[k] = this->adaptive_trigger_delta_(zone);
+      snapshot.release[k] = this->adaptive_release_delta_(zone);
+      snapshot.range_status[k] = zone.range_status;
+      if (zone.valid_measurement && now - zone.last_good_read_ms <= this->stale_reading_ms_()) snapshot.valid_mask |= 1U << k;
+      if (zone.fresh) snapshot.fresh_mask |= 1U << k;
+      if (zone.active) snapshot.active_mask |= 1U << k;
+      if (zone.rising_edge) snapshot.rising_mask |= 1U << k;
+      if (zone.falling_edge) snapshot.falling_mask |= 1U << k;
     }
   }
-
   this->history_head_ = (this->history_head_ + 1) % HISTORY_SIZE;
-  if (this->history_count_ < HISTORY_SIZE) {
-    this->history_count_++;
-  }
-}
-
-void TofOverdoorCounter::record_event_edge_(size_t index, const Channel &channel, bool rising, uint32_t now,
-                                            uint8_t active_mask) {
-  if (index >= SENSOR_COUNT) {
-    return;
-  }
-  if (this->event_edge_count_ < EVENT_EDGE_SIZE) {
-    auto &edge = this->event_edges_[this->event_edge_count_++];
-    edge.timestamp_ms = now;
-    edge.sensor_index = static_cast<uint8_t>(index);
-    edge.group = channel.group;
-    edge.rising = rising;
-    edge.active_mask = active_mask;
-  } else {
-    for (size_t i = 1; i < EVENT_EDGE_SIZE; i++) {
-      this->event_edges_[i - 1] = this->event_edges_[i];
-    }
-    auto &edge = this->event_edges_[EVENT_EDGE_SIZE - 1];
-    edge.timestamp_ms = now;
-    edge.sensor_index = static_cast<uint8_t>(index);
-    edge.group = channel.group;
-    edge.rising = rising;
-    edge.active_mask = active_mask;
-  }
-
-  if (this->event_first_edge_ms_ == 0 || now < this->event_first_edge_ms_) {
-    this->event_first_edge_ms_ = now;
-  }
-  this->event_last_edge_ms_ = now;
-  this->event_last_activity_ms_ = now;
-
-  if (this->debug_logging_) {
-    ESP_LOGD(TAG, "%s edge %s at %u ms group=%s active=%s", channel.sensor_label.c_str(),
-             rising ? "rising" : "falling", static_cast<unsigned>(now), group_name(channel.group),
-             this->sensor_mask_text_(active_mask).c_str());
-  }
+  if (this->history_count_ < HISTORY_SIZE) ++this->history_count_;
 }
 
 void TofOverdoorCounter::update_passage_state_(PassageState state) {
@@ -2640,7 +1656,8 @@ void TofOverdoorCounter::update_sensor_health_() {
     if (!channel.initialized) {
       continue;
     }
-    channel.stale = channel.last_good_read_ms == 0 || (now - channel.last_good_read_ms) > STALE_READING_MS;
+    channel.stale = false;
+    for (const auto &zone : channel.zones) channel.stale = channel.stale || !zone.has_reading || (now - zone.last_good_read_ms) > this->stale_reading_ms_();
   }
 }
 
@@ -2662,10 +1679,12 @@ void TofOverdoorCounter::update_system_status_() {
     if (channel.initialized && channel.zones[ZONE_OUT].calibrated && channel.zones[ZONE_IN].calibrated) calibrated++;
   }
 
-  if (reporting < this->min_valid_sensors_ || healthy < this->min_valid_sensors_) {
+  if (reporting < this->min_valid_sensors_ || healthy < std::max(this->min_valid_sensors_, this->min_event_sensors_)) {
     this->system_status_ = STATUS_ERROR;
     return;
   }
+
+  if (!this->startup_clear_validated_) { this->system_status_ = STATUS_BOOTING; return; }
 
   if (this->person_standing_in_door_ || this->blocked_sensor_text_ != "None") {
     this->system_status_ = STATUS_BLOCKED;
@@ -2677,7 +1696,7 @@ void TofOverdoorCounter::update_system_status_() {
     return;
   }
 
-  if (healthy < this->get_discovered_sensor_count() || calibrated < this->get_discovered_sensor_count()) {
+  if (healthy < SENSOR_COUNT || calibrated < SENSOR_COUNT) {
     this->system_status_ = STATUS_DEGRADED;
     return;
   }
@@ -2685,18 +1704,18 @@ void TofOverdoorCounter::update_system_status_() {
   this->system_status_ = STATUS_READY;
 }
 
+bool TofOverdoorCounter::channel_healthy_(const Channel &channel, uint32_t now, bool calibrated) const {
+  if (!channel.initialized || !channel.ranging_started || channel.consecutive_errors != 0) return false;
+  for (const auto &zone : channel.zones) {
+    if (!zone.has_reading || !zone.valid_measurement || now - zone.last_good_read_ms > this->stale_reading_ms_() ||
+        (calibrated && (!zone.calibrated || !std::isfinite(zone.baseline)))) return false;
+  }
+  return true;
+}
+
 bool TofOverdoorCounter::ready_for_counting_() const {
-  if (this->calibration_active_) {
-    return false;
-  }
-  uint8_t calibrated = 0;
-  for (const auto &channel : this->channels_) {
-    if (channel.initialized && channel.zones[ZONE_OUT].calibrated && channel.zones[ZONE_IN].calibrated) {
-      calibrated++;
-    }
-  }
-  return calibrated >= this->min_valid_sensors_ && this->reporting_sensor_count_() >= this->min_valid_sensors_ &&
-         this->startup_clear_validated_;
+  return !this->calibration_active_ && this->startup_clear_validated_ &&
+      this->healthy_sensor_count_() >= std::max(this->min_valid_sensors_, this->min_event_sensors_);
 }
 
 bool TofOverdoorCounter::has_restored_calibration_() const {
@@ -2710,28 +1729,15 @@ bool TofOverdoorCounter::has_restored_calibration_() const {
   return calibrated >= this->min_valid_sensors_;
 }
 
-bool TofOverdoorCounter::all_reporting_() const { return this->reporting_sensor_count_() == this->get_discovered_sensor_count(); }
-
 uint8_t TofOverdoorCounter::healthy_sensor_count_() const {
   uint8_t count = 0;
-  for (const auto &channel : this->channels_) {
-    if (!channel.initialized) {
-      continue;
-    }
-    if (channel.has_reading && !channel.stale && channel.consecutive_errors < 3 && channel.consecutive_invalid < 3) {
-      count++;
-    }
-  }
+  for (const auto &channel : this->channels_) if (this->channel_healthy_(channel, millis())) ++count;
   return count;
 }
 
 uint8_t TofOverdoorCounter::reporting_sensor_count_() const {
   uint8_t count = 0;
-  for (const auto &channel : this->channels_) {
-    if (channel.initialized && channel.has_reading && channel.consecutive_invalid < 3) {
-      count++;
-    }
-  }
+  for (const auto &channel : this->channels_) if (this->channel_healthy_(channel, millis(), false)) ++count;
   return count;
 }
 
@@ -2759,94 +1765,8 @@ uint8_t TofOverdoorCounter::active_sensor_count_for_group_(SensorGroup group) co
   return count;
 }
 
-uint8_t TofOverdoorCounter::triggered_sensor_count_for_group_(SensorGroup group) const {
-  uint8_t count = 0;
-  for (const auto &channel : this->channels_) {
-    if (channel.initialized && channel.group == group && channel.first_trigger_in_event_ms != 0) {
-      count++;
-    }
-  }
-  return count;
-}
-
-uint32_t TofOverdoorCounter::first_trigger_ts_for_group_(SensorGroup group) const {
-  uint32_t earliest = 0;
-  for (const auto &channel : this->channels_) {
-    if (!channel.initialized || channel.group != group || channel.first_trigger_in_event_ms == 0) {
-      continue;
-    }
-    if (earliest == 0 || channel.first_trigger_in_event_ms < earliest) {
-      earliest = channel.first_trigger_in_event_ms;
-    }
-  }
-  return earliest;
-}
-
 bool TofOverdoorCounter::group_is_active_(SensorGroup group) const {
   return this->active_sensor_count_for_group_(group) > 0;
-}
-
-uint8_t TofOverdoorCounter::current_group_state_code_(uint8_t active_out, uint8_t active_in) const {
-  const bool out_active = active_out > 0;
-  const bool in_active = active_in > 0;
-  if (out_active && in_active) {
-    return GROUP_STATE_BOTH;
-  }
-  if (out_active) {
-    return GROUP_STATE_OUT_ONLY;
-  }
-  if (in_active) {
-    return GROUP_STATE_IN_ONLY;
-  }
-  return GROUP_STATE_NONE;
-}
-
-void TofOverdoorCounter::append_event_path_state_(uint8_t state_code, uint32_t now) {
-  if (state_code == this->event_last_state_code_) {
-    return;
-  }
-
-  this->event_last_state_code_ = state_code;
-  this->event_last_activity_ms_ = now;
-
-  if (state_code == GROUP_STATE_NONE) {
-    return;
-  }
-
-  if (this->event_path_size_ < sizeof(this->event_path_)) {
-    this->event_path_[this->event_path_size_++] = state_code;
-    return;
-  }
-
-  for (size_t index = 1; index < sizeof(this->event_path_); index++) {
-    this->event_path_[index - 1] = this->event_path_[index];
-  }
-  this->event_path_[sizeof(this->event_path_) - 1] = state_code;
-}
-
-std::string TofOverdoorCounter::event_path_text_() const {
-  if (this->event_path_size_ == 0) {
-    return "CLEAR";
-  }
-
-  std::ostringstream oss;
-  oss << "CLEAR";
-  for (uint8_t index = 0; index < this->event_path_size_; index++) {
-    oss << "->" << group_state_name(this->event_path_[index]);
-  }
-  oss << "->CLEAR";
-  return oss.str();
-}
-
-SensorGroup TofOverdoorCounter::first_group_from_path_() const {
-  if (this->event_path_size_ == 0) {
-    return GROUP_NONE;
-  }
-
-  // A BOTH-first path means the two physical sides overlapped before the state
-  // machine saw a clean side lead. Later one-sided states are useful for path
-  // shape, but they should not be rewritten as "first".
-  return group_from_state_code(this->event_path_[0]);
 }
 
 float TofOverdoorCounter::group_distance_internal_(SensorGroup group) const {
@@ -2900,13 +1820,6 @@ float TofOverdoorCounter::group_drop_internal_(SensorGroup group) const {
   return drop;
 }
 
-SensorGroup TofOverdoorCounter::group_for_index_(size_t index) const {
-  if (index >= this->channels_.size()) {
-    return GROUP_NONE;
-  }
-  return this->channels_[index].group;
-}
-
 std::string TofOverdoorCounter::system_status_text_(SystemStatus status) const {
   switch (status) {
     case STATUS_CALIBRATING:
@@ -2928,43 +1841,23 @@ std::string TofOverdoorCounter::system_status_text_(SystemStatus status) const {
 }
 
 std::string TofOverdoorCounter::health_text_for_(const Channel &channel) const {
-  if (!channel.initialized) {
-    return "Error";
-  }
-  if (channel.stale || channel.consecutive_errors >= 3) {
-    return "Error";
-  }
-  if (channel.consecutive_invalid >= 3) {
-    return "Warning";
-  }
-  if (channel.blocked || channel.last_error != 0) {
-    return "Warning";
-  }
+  if (!this->channel_healthy_(channel, millis(), false)) return "Error";
+  if (!channel.calibrated || channel.blocked) return "Warning";
   return "OK";
 }
 
 std::string TofOverdoorCounter::status_text_for_(const Channel &channel) const {
-  if (!channel.initialized) {
-    return "Missing";
+  if (!channel.initialized) return "Missing / recovering";
+  if (channel.consecutive_errors) return "Read error " + std::to_string(channel.last_error);
+  for (size_t z = 0; z < SENSOR_ZONE_COUNT; ++z) {
+    const auto &zone = channel.zones[z];
+    if (!zone.has_reading) return std::string(zone_name(z)) + " waiting";
+    if (millis() - zone.last_good_read_ms > this->stale_reading_ms_()) return std::string(zone_name(z)) + " stale";
+    if (!zone.valid_measurement) return std::string(zone_name(z)) + " invalid range " + range_status_name(zone.range_status);
   }
-  if (channel.consecutive_errors >= 3) {
-    return "Read error " + std::to_string(channel.last_error);
-  }
-  if (channel.consecutive_invalid >= 3) {
-    return "Invalid range " + std::string(range_status_name(channel.range_status));
-  }
-  if (!channel.has_reading) {
-    return "Waiting";
-  }
-  if (this->calibration_active_) {
-    return "Calibrating";
-  }
-  if (channel.blocked) {
-    return "Blocked";
-  }
-  if (channel.active) {
-    return "Triggered";
-  }
+  if (!channel.calibrated || this->calibration_active_) return "Calibrating";
+  if (channel.blocked) return "Blocked";
+  if (channel.active) return "Triggered";
   return "Clear";
 }
 
@@ -2996,48 +1889,6 @@ std::string TofOverdoorCounter::sensor_mask_text_(uint8_t mask) const {
     first = false;
   }
   return first ? "none" : oss.str();
-}
-
-std::string TofOverdoorCounter::event_edge_text_() const {
-  if (this->event_edge_count_ == 0) {
-    return "none";
-  }
-  std::ostringstream oss;
-  for (uint8_t index = 0; index < this->event_edge_count_; index++) {
-    if (index > 0) {
-      oss << " ";
-    }
-    const auto &edge = this->event_edges_[index];
-    const char *label = edge.sensor_index < this->channels_.size()
-                            ? this->channels_[edge.sensor_index].sensor_label.c_str()
-                            : "S?";
-    oss << (edge.timestamp_ms - this->event_started_ms_) << "ms:" << label << (edge.rising ? "+" : "-");
-  }
-  return oss.str();
-}
-
-std::string TofOverdoorCounter::event_timing_text_(SensorGroup resolved_first_group) const {
-  const uint32_t out_ts = this->first_trigger_ts_for_group_(GROUP_OUT);
-  const uint32_t in_ts = this->first_trigger_ts_for_group_(GROUP_IN);
-  const uint32_t out_confirmed_ts = this->event_group_confirmed_ms_[GROUP_OUT];
-  const uint32_t in_confirmed_ts = this->event_group_confirmed_ms_[GROUP_IN];
-  const SensorGroup path_first_group = this->first_group_from_path_();
-
-  auto relative_text = [this](uint32_t timestamp) -> std::string {
-    if (timestamp == 0 || this->event_started_ms_ == 0) {
-      return "n/a";
-    }
-    return std::to_string(timestamp - this->event_started_ms_) + "ms";
-  };
-
-  std::ostringstream oss;
-  oss << "timing first=" << group_debug_name(resolved_first_group)
-      << " path_first=" << group_debug_name(path_first_group)
-      << " edge_out=" << relative_text(out_ts)
-      << " edge_in=" << relative_text(in_ts)
-      << " pair_out=" << relative_text(out_confirmed_ts)
-      << " pair_in=" << relative_text(in_confirmed_ts);
-  return oss.str();
 }
 
 void TofOverdoorCounter::log_event_(const std::string &message) {
@@ -3382,42 +2233,34 @@ std::string TofOverdoorCounter::get_compact_state_text() const {
   return oss.str();
 }
 
-std::string TofOverdoorCounter::get_trace_log_text() const {
+std::string TofOverdoorCounter::get_trace_log_text(uint32_t after_ms, size_t limit) const {
+  limit = std::max<size_t>(1, std::min<size_t>(64, limit));
   std::ostringstream oss;
-  oss << "# Roode compact trace\n";
-  oss << "# " << this->get_compact_state_text() << "\n";
+  oss << "# uptime_ms=" << millis() << "\n";
+  oss << "# Roode ROI trace v2; masks use sensor_index*2+zone (OUT=0, IN=1)\n";
+  oss << "# debounce_ms=" << this->debounce_ms_ << " clear_ms=" << std::max(this->direction_window_ms_, this->cooldown_ms_)
+      << " quorum=" << unsigned(std::max(this->min_event_sensors_, this->min_valid_sensors_))
+      << " agreement_ms=" << this->detection_timeout_ms_ << " invert=" << this->invert_direction_ << "\n";
   oss << "# event_log_begin\n" << this->get_event_log() << "\n# event_log_end\n";
-  oss << "t_ms\tstate\tactive\trising\tfalling";
-  for (size_t index = 0; index < this->channels_.size() && index < SENSOR_COUNT; index++) {
-    const auto &channel = this->channels_[index];
-    oss << "\t" << channel.sensor_label << "_raw"
-        << "\t" << channel.sensor_label << "_filtered"
-        << "\t" << channel.sensor_label << "_drop"
-        << "\t" << channel.sensor_label << "_status";
+  oss << "t_ms\tstate\toutcome\thealthy\tvalid\tfresh\tactive\trising\tfalling";
+  for (size_t i = 0; i < this->channels_.size(); ++i) for (size_t z = 0; z < SENSOR_ZONE_COUNT; ++z) {
+    const std::string label = this->channels_[i].sensor_label + (z == 0 ? "_out" : "_in");
+    for (const char *field : {"sample_ms", "raw", "filtered", "baseline", "drop", "trigger", "release", "status"})
+      oss << "\t" << label << "_" << field;
   }
   oss << "\n";
-
-  const uint32_t count = std::min<uint32_t>(this->history_count_, HISTORY_SIZE);
-  for (uint32_t offset = 0; offset < count; offset++) {
-    const uint32_t index = (this->history_head_ + HISTORY_SIZE - count + offset) % HISTORY_SIZE;
-    const auto &snapshot = this->history_[index];
-    oss << snapshot.timestamp_ms << "\t" << this->passage_state_text_(static_cast<PassageState>(snapshot.passage_state))
-        << "\t" << this->sensor_mask_text_(snapshot.active_mask)
-        << "\t" << this->sensor_mask_text_(snapshot.rising_mask)
-        << "\t" << this->sensor_mask_text_(snapshot.falling_mask);
-
-    for (size_t sensor_index = 0; sensor_index < this->channels_.size() && sensor_index < SENSOR_COUNT; sensor_index++) {
-      const auto &channel = this->channels_[sensor_index];
-      const int filtered = snapshot.filtered_distance[sensor_index] == 0 ? -1 : snapshot.filtered_distance[sensor_index];
-      int drop = -9999;
-      if (!std::isnan(channel.baseline) && filtered >= 0) {
-        drop = static_cast<int>(channel.baseline) - filtered;
-      }
-      oss << "\t" << snapshot.raw_distance[sensor_index]
-          << "\t" << filtered
-          << "\t" << drop
-          << "\t" << range_status_name(snapshot.range_status[sensor_index]);
-    }
+  size_t emitted = 0;
+  for (size_t offset = 0; offset < this->history_count_ && emitted < limit; ++offset) {
+    const auto &v = this->history_[(this->history_head_ + HISTORY_SIZE - this->history_count_ + offset) % HISTORY_SIZE];
+    if (after_ms && static_cast<int32_t>(v.timestamp_ms - after_ms) <= 0) continue;
+    ++emitted;
+    oss << v.timestamp_ms << "\t" << unsigned(v.passage_state) << "\t" << unsigned(v.outcome)
+        << "\t" << unsigned(v.healthy_mask) << "\t" << unsigned(v.valid_mask) << "\t" << unsigned(v.fresh_mask)
+        << "\t" << unsigned(v.active_mask) << "\t" << unsigned(v.rising_mask) << "\t" << unsigned(v.falling_mask);
+    for (size_t k = 0; k < this->channels_.size() * SENSOR_ZONE_COUNT; ++k)
+      oss << "\t" << v.sample_ms[k] << "\t" << v.raw_distance[k] << "\t" << v.filtered_distance[k]
+          << "\t" << v.baseline[k] << "\t" << (int(v.baseline[k]) - int(v.filtered_distance[k]))
+          << "\t" << v.trigger[k] << "\t" << v.release[k] << "\t" << unsigned(v.range_status[k]);
     oss << "\n";
   }
   return oss.str();

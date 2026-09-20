@@ -58,7 +58,8 @@ class VL53L1X : public Component {
   uint8_t sda_pin_{255};
   uint8_t scl_pin_{255};
   uint32_t i2c_frequency_{400000};
-  ROI *last_roi{};
+  ROI last_roi_{};
+  bool has_last_roi_{false};
   bool setup_complete_{false};
 
   static std::vector<VL53L1X *> &instances_();

@@ -1,3 +1,4 @@
+AUTO_LOAD = ["counting_core"]
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.const import CONF_FREQUENCY, CONF_ID, CONF_NUMBER, CONF_SCL, CONF_SDA, CONF_TIMEOUT
@@ -71,7 +72,7 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_SCL, default=22): cv.int_range(min=0, max=39),
             cv.Optional(CONF_FREQUENCY, default="100kHz"): frequency_as_hz,
             cv.Optional(CONF_TIMEOUT, default="1500ms"): cv.positive_time_period_milliseconds,
-            cv.Optional(CONF_BASE_ADDRESS, default=0x30): cv.int_range(min=0x08, max=0x77),
+            cv.Optional(CONF_BASE_ADDRESS, default=0x30): cv.int_range(min=0x08, max=0x74),
             cv.Optional(CONF_WAKE_DELAY, default="60ms"): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_POST_ADDRESS_DELAY, default="80ms"): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_DISTANCE_MODE, default="long"): cv.enum(DISTANCE_MODE_OPTIONS, lower=True),
@@ -106,6 +107,35 @@ CONFIG_SCHEMA = (
     )
     .extend(cv.polling_component_schema("5ms"))
 )
+
+
+def validate_hardware(config):
+    numbers = [p[CONF_NUMBER] for p in config[CONF_XSHUT_PINS]]
+    bus = [config[CONF_SDA], config[CONF_SCL]]
+    if len(set(numbers + bus)) != 6:
+        raise cv.Invalid("SDA, SCL and the four XSHUT pins must all be distinct")
+    if any(pin >= 34 for pin in bus):
+        raise cv.Invalid("SDA and SCL must support output on the classic ESP32")
+    budget = config[CONF_TIMING_BUDGET].total_milliseconds
+    if budget not in (20, 33, 50, 100, 200, 500):
+        raise cv.Invalid("timing_budget must be 20, 33, 50, 100, 200 or 500 ms")
+    if config[CONF_DISTANCE_MODE] == DISTANCE_MODE_OPTIONS["long"] and budget < 33:
+        raise cv.Invalid("Long distance mode requires at least 33 ms")
+    if config[CONF_INTERMEASUREMENT].total_milliseconds < budget + 4:
+        raise cv.Invalid("intermeasurement_period must be at least timing_budget + 4 ms")
+    interval = config["update_interval"].total_milliseconds
+    if config[CONF_TIMEOUT].total_milliseconds < interval * 100 + budget:
+        raise cv.Invalid("timeout must cover 100 update cycles plus the timing budget for staged initialization")
+    if config[CONF_RELEASE_DELTA] >= config[CONF_TRIGGER_DELTA]:
+        raise cv.Invalid("release_delta must be lower than trigger_delta")
+    for key in (CONF_SEQUENCE_TIMEOUT, CONF_COOLDOWN, CONF_DEBOUNCE, CONF_BLOCKED_TIMEOUT,
+                CONF_STANDING_TIMEOUT, CONF_DIRECTION_WINDOW, CONF_MIN_ACTIVE_DURATION):
+        if config[key].total_milliseconds > 60000:
+            raise cv.Invalid(f"{key} must not exceed 60 seconds (persisted timer limit)")
+    return config
+
+
+CONFIG_SCHEMA = cv.All(CONFIG_SCHEMA, cv.only_on_esp32, cv.only_with_arduino, validate_hardware)
 
 
 async def to_code(config):
