@@ -334,6 +334,8 @@ class TofOverdoorCounter : public PollingComponent {
     bool rising_edge{false};
     bool falling_edge{false};
     bool blocked{false};
+    bool near_pending{false};
+    uint32_t near_since_ms{0};
     uint16_t raw_distance{0};
     uint16_t sampled_distance{0};
     bool has_sampled_distance{false};
@@ -534,6 +536,7 @@ class TofOverdoorCounter : public PollingComponent {
   void service_recovery_(uint32_t now);
   bool set_channel_roi_(Channel &channel, uint8_t zone_index);
   bool switch_channel_zone_(Channel &channel);
+  bool zone_measurement_usable_(const ZoneState &zone, uint32_t now) const;
   bool range_result_is_valid_(const VL53L1X_Result_t &result) const;
   void update_zone_sampling_(ZoneState &zone, uint16_t distance);
   void refresh_channel_aggregate_from_zones_(Channel &channel);

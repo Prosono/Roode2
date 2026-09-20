@@ -738,7 +738,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
           </article>
           <article class="hero-tip">
             <strong>3</strong>
-            <p>A clean count needs three matching sensor tracks in the same direction.</p>
+            <p>A clean count needs the configured number of matching sensor tracks in the same direction.</p>
           </article>
         </div>
       </section>
@@ -839,7 +839,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
             </div>
             <div class="pill" id="standing-pill">Doorway clear</div>
           </div>
-          <p class="settings-copy" id="doorway-copy">Every physical sensor alternates between an OUT ROI and an IN ROI. Three matching sensor tracks are required before the counter increments.</p>
+          <p class="settings-copy" id="doorway-copy">Every physical sensor alternates between an OUT ROI and an IN ROI. The configured number of matching sensor tracks is required before the counter increments.</p>
           <div class="door-grid" id="group-grid"></div>
         </section>
 
@@ -922,6 +922,10 @@ const char OVERDOOR_UI_HTML[] = R"html(
               <label class="field">
                 <span>Min valid sensors</span>
                 <input type="number" name="min_valid_sensors" id="setting-min-valid" min="2" max="4" step="1" value="3">
+              </label>
+              <label class="field">
+                <span>Min matching direction tracks</span>
+                <input type="number" name="min_event_sensors" id="setting-min-event" min="2" max="4" step="1" value="3">
               </label>
               <label class="field">
                 <span>Max people inside</span>
@@ -1336,6 +1340,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
         setNumber('setting-timeout', state.detection_timeout_ms);
         setNumber('setting-cooldown', state.cooldown_ms);
         setNumber('setting-min-valid', state.min_valid_sensors);
+        setNumber('setting-min-event', state.min_event_sensors);
         setNumber('setting-max-people', state.max_people_inside);
         setCheckbox('setting-invert', state.invert_direction);
         setCheckbox('setting-autosave', state.auto_save_enabled);
@@ -1439,6 +1444,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
         params.set('detection_timeout_ms', data.get('detection_timeout_ms'));
         params.set('cooldown_ms', data.get('cooldown_ms'));
         params.set('min_valid_sensors', data.get('min_valid_sensors'));
+        params.set('min_event_sensors', data.get('min_event_sensors'));
         params.set('max_people_inside', data.get('max_people_inside'));
         params.set('invert_direction', document.getElementById('setting-invert').checked ? '1' : '0');
         params.set('auto_save_enabled', document.getElementById('setting-autosave').checked ? '1' : '0');
@@ -1466,7 +1472,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
 std::string default_subtitle(const tof_overdoor_counter::TofOverdoorCounter *counter) {
   return counter->is_monitor_mode()
              ? "Live monitor for four working ToF sensors, focused on baselines, agreement, and placement stability."
-             : "Local four-sensor fusion counter where three matching passage tracks confirm IN or OUT.";
+             : "Local four-sensor fusion counter with configurable direction agreement for IN and OUT.";
 }
 
 const char *sensor_group_label_for_index(size_t index) {
@@ -1572,6 +1578,7 @@ class TofOverdoorUi::Handler : public AsyncWebHandler {
       root["detection_timeout_ms"] = counter->get_detection_timeout_value();
       root["cooldown_ms"] = counter->get_cooldown_value();
       root["min_valid_sensors"] = counter->get_min_valid_sensors_value();
+      root["min_event_sensors"] = counter->get_min_event_sensors_value();
       root["max_people_inside"] = counter->get_max_people_inside_value();
       root["invert_direction"] = counter->get_invert_direction();
       root["auto_save_enabled"] = counter->get_auto_save_enabled();
@@ -1675,6 +1682,8 @@ class TofOverdoorUi::Handler : public AsyncWebHandler {
           std::max(0, std::min(3000, parse_int_arg(request, "cooldown_ms", static_cast<int>(counter->get_cooldown_value()))))));
       counter->set_min_valid_sensors(static_cast<uint8_t>(
           std::max(2, std::min(4, parse_int_arg(request, "min_valid_sensors", static_cast<int>(counter->get_min_valid_sensors_value()))))));
+      counter->set_min_event_sensors(static_cast<uint8_t>(
+          std::max(2, std::min(4, parse_int_arg(request, "min_event_sensors", static_cast<int>(counter->get_min_event_sensors_value()))))));
       counter->set_max_people_inside(static_cast<uint16_t>(
           std::max(1, std::min(500, parse_int_arg(request, "max_people_inside", static_cast<int>(counter->get_max_people_inside_value()))))));
       counter->set_invert_direction(parse_bool_arg(request, "invert_direction", counter->get_invert_direction()));

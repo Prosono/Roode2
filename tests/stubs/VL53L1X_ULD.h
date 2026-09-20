@@ -6,6 +6,7 @@ constexpr int VL53L1_VHV_CONFIG__TIMEOUT_MACROP_LOOP_BOUND=8;
 enum EDistanceMode {Short=1,Long=2};
 enum ERangeStatus {RangeValid=0,SigmaFail,SignalFail,MinRangeFail,PhaseOutOfLimit,HardwareFail,RangeValidNoWrapCheck,WrapTargetFail};
 struct VL53L1X_Result_t {uint16_t Distance{2000},SigPerSPAD{100},Ambient{0},NumSPADs{20}; uint8_t Status{0};};
+inline VL53L1X_Result_t mock_result{};
 inline bool mock_ready=true;
 inline int mock_error=0;
 inline unsigned mock_calls=0;
@@ -20,5 +21,5 @@ struct VL53L1X_ULD {
  int SetInterMeasurementInMs(int){return mock_error;}
  int StartRanging(){return mock_error;} int StopRanging(){return mock_error;}
  int CheckForDataReady(uint8_t *v){*v=mock_ready;return mock_error;}
- int ClearInterrupt(){return mock_error;} int GetResult(VL53L1X_Result_t *v){*v={};return mock_error;}
+ int ClearInterrupt(){return mock_error;} int GetResult(VL53L1X_Result_t *v){*v=mock_result;return mock_error;}
 };

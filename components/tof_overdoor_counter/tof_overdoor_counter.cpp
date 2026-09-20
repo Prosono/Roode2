@@ -28,7 +28,11 @@ constexpr uint32_t TRACE_SAMPLE_INTERVAL_MS = 25;
 constexpr float FILTER_ALPHA = 0.85f;
 constexpr float BASELINE_TRACK_ALPHA = 0.015f;
 constexpr float NOISE_TRACK_ALPHA = 0.08f;
-constexpr uint16_t MIN_VALID_DISTANCE_MM = 30;
+// A valid sub-30 mm result is near presence, not a failed sensor. Clamp only
+// the detection distance; keep the raw result in the trace.
+constexpr uint16_t MIN_LOGIC_DISTANCE_MM = 30;
+constexpr uint16_t COVER_DISTANCE_MM = 100;
+constexpr uint32_t OCCUPIED_DROPOUT_HOLD_MS = 150;
 constexpr uint16_t MAX_VALID_DISTANCE_MM = 4000;
 constexpr uint8_t ROODE_ZONE_WIDTH = 8;
 constexpr uint8_t ROODE_ZONE_HEIGHT = 16;
@@ -489,7 +493,7 @@ bool TofOverdoorCounter::read_channel_(Channel &channel) {
     return true;
   }
 
-  this->update_zone_sampling_(zone, result.Distance);
+  this->update_zone_sampling_(zone, std::max<uint16_t>(MIN_LOGIC_DISTANCE_MM, result.Distance));
   const float sampled_distance = zone.has_sampled_distance ? static_cast<float>(zone.sampled_distance)
                                                            : static_cast<float>(result.Distance);
   zone.filtered_distance =
@@ -514,7 +518,7 @@ bool TofOverdoorCounter::read_channel_(Channel &channel) {
 }
 
 bool TofOverdoorCounter::range_result_is_valid_(const VL53L1X_Result_t &result) const {
-  if (result.Distance < MIN_VALID_DISTANCE_MM || result.Distance > MAX_VALID_DISTANCE_MM) {
+  if (result.Distance > MAX_VALID_DISTANCE_MM) {
     return false;
   }
   return result.Status == RangeValid || result.Status == RangeValidNoWrapCheck;
@@ -1272,13 +1276,14 @@ void TofOverdoorCounter::update_sensor_states_() {
     channel.rising_edge = false;
     channel.falling_edge = false;
 
-    if (!channel.initialized || !channel.has_reading || channel.stale || channel.consecutive_invalid >= 3) {
+    if (!channel.initialized || !channel.has_reading || channel.stale) {
       for (auto &zone : channel.zones) {
         zone.debounce = {};
         zone.rising_edge = false;
         zone.falling_edge = false;
         zone.active = false;
         zone.blocked = false;
+        zone.near_pending = false;
         zone.active_candidate_since_ms = 0;
         zone.clear_candidate_since_ms = 0;
         zone.active_since_ms = 0;
@@ -1302,14 +1307,17 @@ void TofOverdoorCounter::update_sensor_states_() {
       const float distance = this->zone_logic_distance_(zone);
       const bool zone_stale = zone.last_good_read_ms == 0 || (now - zone.last_good_read_ms) > this->stale_reading_ms_();
 
-      if (!zone.has_reading || !zone.calibrated || !zone.valid_measurement || std::isnan(zone.baseline) || zone_stale ||
-          zone.consecutive_invalid >= 3 || std::isnan(distance)) {
+      if (!zone.has_reading || !zone.calibrated || !this->zone_measurement_usable_(zone, now) ||
+          std::isnan(zone.baseline) || zone_stale || std::isnan(distance)) {
         zone.debounce = {};
         zone.active = false;
         zone.blocked = false;
         zone.active_since_ms = 0;
+        zone.near_pending = false;
         continue;
       }
+      // A held sample cannot supply a new edge or confirm an empty doorway.
+      if (!zone.valid_measurement) continue;
       if (zone.fresh) {
         const float drop = zone.baseline - distance;
         const bool target = zone.active ? drop > this->adaptive_release_delta_(zone)
@@ -1330,8 +1338,14 @@ void TofOverdoorCounter::update_sensor_states_() {
         }
       }
 
-      if (zone.active && zone.active_since_ms != 0 && (now - zone.active_since_ms) >= this->blocked_timeout_ms_) {
-        zone.blocked = true;
+      if (zone.fresh) {
+        if (zone.active && zone.raw_distance <= COVER_DISTANCE_MM) {
+          if (!zone.near_pending) { zone.near_pending = true; zone.near_since_ms = now; }
+          zone.blocked = now - zone.near_since_ms >= this->blocked_timeout_ms_;
+        } else {
+          zone.near_pending = false;
+          zone.blocked = false;
+        }
       }
       if (zone.active && zone.active_since_ms != 0) {
         zone.active_duration_ms = now - zone.active_since_ms;
@@ -1347,12 +1361,13 @@ void TofOverdoorCounter::update_sensor_states_() {
         continue;
       }
       channel.active = true;
-      channel.blocked = channel.blocked || zone.blocked;
       if (channel.active_since_ms == 0 || (zone.active_since_ms != 0 && zone.active_since_ms < channel.active_since_ms)) {
         channel.active_since_ms = zone.active_since_ms;
       }
     }
 
+    // Persistent cover is excluded from fusion, but remains monitored for release.
+    channel.blocked = channel.zones[0].blocked && channel.zones[1].blocked;
     if (channel.active && channel.active_since_ms != 0) {
       channel.active_duration_ms = now - channel.active_since_ms;
     }
@@ -1465,14 +1480,15 @@ void TofOverdoorCounter::update_detection_state_machine_() {
   bool unsettled = false;
   for (size_t i = 0; i < this->channels_.size(); ++i) {
     auto &channel = this->channels_[i];
-    if (this->channel_healthy_(channel, now)) healthy |= 1U << i;
+    if (!channel.blocked && this->channel_healthy_(channel, now)) healthy |= 1U << i;
     for (size_t z = 0; z < SENSOR_ZONE_COUNT; ++z) {
       if ((healthy & (1U << i)) && channel.zones[z].debounce.hits) unsettled = true;
       if (channel.zones[z].active) states[i] |= 1U << z;
       if (channel.zones[z].fresh && channel.zones[z].valid_measurement) fresh[i] |= 1U << z;
     }
   }
-  this->fusion_.required = std::max(this->min_event_sensors_, this->min_valid_sensors_);
+  this->fusion_.required = this->min_event_sensors_;
+  this->fusion_.required_health = this->min_valid_sensors_;
   this->fusion_.clear_ms = std::max(this->direction_window_ms_, this->cooldown_ms_);
   this->fusion_.minimum_ms = this->min_active_duration_ms_;
   this->fusion_.agreement_ms = this->detection_timeout_ms_;
@@ -1686,7 +1702,7 @@ void TofOverdoorCounter::update_system_status_() {
 
   if (!this->startup_clear_validated_) { this->system_status_ = STATUS_BOOTING; return; }
 
-  if (this->person_standing_in_door_ || this->blocked_sensor_text_ != "None") {
+  if (this->blocked_sensor_text_ != "None") {
     this->system_status_ = STATUS_BLOCKED;
     return;
   }
@@ -1704,10 +1720,20 @@ void TofOverdoorCounter::update_system_status_() {
   this->system_status_ = STATUS_READY;
 }
 
+bool TofOverdoorCounter::zone_measurement_usable_(const ZoneState &zone, uint32_t now) const {
+  if (zone.valid_measurement) return true;
+  // Bridge only a short optical dropout in an already occupied field. Never
+  // bridge missing initialization, a bus/hardware fault, or a clear field.
+  const bool optical_dropout = zone.range_status == SigmaFail || zone.range_status == SignalFail ||
+      zone.range_status == MinRangeFail || zone.range_status == PhaseOutOfLimit || zone.range_status == WrapTargetFail;
+  return zone.active && optical_dropout && zone.last_good_read_ms != 0 &&
+      now - zone.last_good_read_ms <= OCCUPIED_DROPOUT_HOLD_MS;
+}
+
 bool TofOverdoorCounter::channel_healthy_(const Channel &channel, uint32_t now, bool calibrated) const {
   if (!channel.initialized || !channel.ranging_started || channel.consecutive_errors != 0) return false;
   for (const auto &zone : channel.zones) {
-    if (!zone.has_reading || !zone.valid_measurement || now - zone.last_good_read_ms > this->stale_reading_ms_() ||
+    if (!zone.has_reading || !this->zone_measurement_usable_(zone, now) || now - zone.last_good_read_ms > this->stale_reading_ms_() ||
         (calibrated && (!zone.calibrated || !std::isfinite(zone.baseline)))) return false;
   }
   return true;
@@ -1731,7 +1757,7 @@ bool TofOverdoorCounter::has_restored_calibration_() const {
 
 uint8_t TofOverdoorCounter::healthy_sensor_count_() const {
   uint8_t count = 0;
-  for (const auto &channel : this->channels_) if (this->channel_healthy_(channel, millis())) ++count;
+  for (const auto &channel : this->channels_) if (!channel.blocked && this->channel_healthy_(channel, millis())) ++count;
   return count;
 }
 
@@ -2239,7 +2265,7 @@ std::string TofOverdoorCounter::get_trace_log_text(uint32_t after_ms, size_t lim
   oss << "# uptime_ms=" << millis() << "\n";
   oss << "# Roode ROI trace v2; masks use sensor_index*2+zone (OUT=0, IN=1)\n";
   oss << "# debounce_ms=" << this->debounce_ms_ << " clear_ms=" << std::max(this->direction_window_ms_, this->cooldown_ms_)
-      << " quorum=" << unsigned(std::max(this->min_event_sensors_, this->min_valid_sensors_))
+      << " quorum=" << unsigned(this->min_event_sensors_) << " min_healthy=" << unsigned(this->min_valid_sensors_)
       << " agreement_ms=" << this->detection_timeout_ms_ << " invert=" << this->invert_direction_ << "\n";
   oss << "# event_log_begin\n" << this->get_event_log() << "\n# event_log_end\n";
   oss << "t_ms\tstate\toutcome\thealthy\tvalid\tfresh\tactive\trising\tfalling";

@@ -12,7 +12,7 @@ En passering godkjennes først når:
 
 1. hvert deltakende sensorpar ser en stabil reduksjon fra sin egen kalibrerte gulvreferanse;
 2. sporet starter på én side, når motsatt ROI og avsluttes på motsatt side;
-3. minst tre friske sensorer leverer samme retning innen hendelsesvinduet.
+3. minst `min_valid_sensors` sensorer er brukbare, og `min_event_sensors` komplette spor er enige innen hendelsesvinduet (fire-sensorprofilen: tre brukbare, to enige).
 
 Et spor som ender på samme side som det startet, klassifiseres som en vending og teller ikke. En person som
 stopper i åpningen beholdes i samme hendelse; sporet vurderes først når vedkommende fortsetter eller trekker seg

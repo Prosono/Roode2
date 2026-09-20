@@ -66,6 +66,16 @@ int main() {
     assert(f.update(500,15,{},fresh,true).decision==Decision::NONE);
     assert(f.update(600,15,{},fresh).decision==Decision::NONE);
     assert(f.update(700,15,{},fresh).decision==Decision::OUT); }
+  // Health requirement and direction agreement are independent settings.
+  { Rig r;r.f.required=2;r.f.required_health=3;r.arm();
+    r.tick(100,{1,1,0,0},7);r.tick(100,{2,2,0,0},7);r.tick(100,{},7);r.tick(100,{},7);
+    assert(r.results.size()==1 && r.results[0].decision==Decision::OUT); }
+  { Rig r;r.f.required=2;r.f.required_health=3;r.arm();
+    r.tick(100,{1,1,0,0},3);r.tick(100,{2,2,0,0},3);r.tick(100,{},3);r.tick(100,{},3);
+    assert(r.results.empty()); }
+  { Rig r;r.f.required=2;r.f.required_health=3;r.arm();
+    r.tick(100,{1,1,2,0});r.tick(100,{2,2,1,0});r.finish();
+    assert(r.results[0].decision==Decision::REJECTED); }
   // Exhaustively exercise all six-step paths: same-side returns never count,
   // and no output may occur while the doorway is occupied.
   for(unsigned code=0;code<729;++code) {

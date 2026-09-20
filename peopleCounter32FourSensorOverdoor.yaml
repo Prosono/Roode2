@@ -118,7 +118,8 @@ tof_overdoor_counter:
   cooldown: 80ms
   blocked_timeout: 1800ms
   standing_timeout: 2200ms
-  min_event_sensors: 3
+  # Two matching complete tracks; still require three usable sensors.
+  min_event_sensors: 2
   min_active_duration: 25ms
   # Stable empty interval required before committing a complete passage.
   direction_window: 90ms
@@ -537,6 +538,15 @@ binary_sensor:
     web_server:
       sorting_group_id: web_group_overview
       sorting_weight: 35
+
+  - platform: template
+    name: ${friendly_name} Sensor Covered
+    device_class: problem
+    lambda: |-
+      return id(overdoor_counter).get_blocked_sensor_text() != "None";
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 5
 
 sensor:
   - platform: template

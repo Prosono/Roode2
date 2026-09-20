@@ -122,7 +122,7 @@ after publishing the fix; clearing build files alone cannot repair a YAML pinned
 
 The production four-sensor profile, `peopleCounter32FourSensorOverdoor.yaml`, uses the dedicated fused
 `tof_overdoor_counter`. It samples eight logical ROIs continuously, calibrates every ROI independently, requires a
-three-sensor direction quorum, and performs automatic isolated sensor recovery. See
+a configurable direction quorum (two matching tracks with three usable sensors by default), and performs automatic isolated sensor recovery. See
 `Documents/TOF_COUNTER_VALIDATION.md` for the algorithm, installation limits, and the field-validation protocol.
 
 When you open the ESP's IP address in a browser, the built-in ESPHome web UI now exposes:

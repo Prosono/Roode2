@@ -88,7 +88,8 @@ struct Result {
 // quorum disarms the counter until a fresh clear interval has been observed.
 class Fusion {
  public:
-  uint8_t required{3};
+  uint8_t required{3};  // Matching complete direction tracks.
+  uint8_t required_health{0};  // Optional higher availability requirement.
   uint32_t clear_ms{90}, minimum_ms{25}, agreement_ms{3000};
   bool invert{false};
   void reset() { *this = Fusion{}; }
@@ -105,8 +106,8 @@ class Fusion {
     }
     previous_healthy_ = healthy;
     if (active_) eligible_ &= healthy;
-    if (bits(healthy) < required) {
-      if (active_) result.decision = Decision::REJECTED;
+    if (bits(healthy) < std::max(required, required_health)) {
+      if (active_) { result.decision = Decision::REJECTED; result.duration_ms = now - started_; }
       active_ = false;
       armed_ = false;
       clear_pending_ = false;
