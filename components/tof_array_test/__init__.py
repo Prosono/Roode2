@@ -75,7 +75,8 @@ CONFIG_SCHEMA = (
 
 async def to_code(config):
     cg.add_library("Wire", None)
-    cg.add_library("rneurink", "1.2.3", "VL53L1X_ULD")
+    # Registry dependencies use owner/name; the third argument is a Git URL.
+    cg.add_library("rneurink/VL53L1X_ULD", "1.2.3")
 
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)

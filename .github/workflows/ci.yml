@@ -22,6 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        esphome: ["2026.3.0"]
         profile:
           - ci/esp32.yaml
           - ci/esp32_manual.yaml
@@ -32,14 +33,21 @@ jobs:
           - peopleCounter32HomeDual.yaml
           - peopleCounter32HomeTriple.yaml
           - peopleCounter32FourSensorOverdoor.yaml
-    name: Build ${{ matrix.profile }}
+        include:
+          - esphome: "2026.8.1"
+            profile: peopleCounter32FourSensorOverdoor.yaml
+          - esphome: "2026.8.1"
+            profile: ci/esp32.yaml
+          - esphome: "2026.8.1"
+            profile: peopleCounter32SixSensorBringup.yaml
+    name: Build ${{ matrix.profile }} (${{ matrix.esphome }})
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -r ci/requirements.txt
+      - run: pip install "esphome==${{ matrix.esphome }}"
       - name: Supply public CI placeholders
         run: cp ci/secrets.example.yaml secrets.yaml
       - name: Validate and build

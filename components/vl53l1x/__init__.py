@@ -114,7 +114,8 @@ CONFIG_SCHEMA = (
 
 async def to_code(config: Dict):
     cg.add_library("Wire", None)  # Required for VL53L1X_ULD to find Wire.h
-    cg.add_library("rneurink", "1.2.3", "VL53L1X_ULD")
+    # Registry dependencies use owner/name; the third argument is a Git URL.
+    cg.add_library("rneurink/VL53L1X_ULD", "1.2.3")
 
     vl53l1x = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(vl53l1x, config)

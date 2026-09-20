@@ -1,0 +1,1150 @@
+substitutions:
+  devicename: roode-four-sensor-overdoor
+  friendly_name: Roode Four Sensor Overdoor
+
+# Standalone upload profile. Publish component changes to main before using it.
+# Refresh every build so fixes are not hidden by ESPHome's one-day Git cache.
+external_components:
+  - source:
+      type: git
+      url: https://github.com/Prosono/Roode2.git
+      ref: main
+    components: [counting_core, tof_overdoor_counter, tof_overdoor_ui]
+    refresh: always
+
+esphome:
+  min_version: 2026.3.0
+  name: ${devicename}
+  friendly_name: ${friendly_name}
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+logger:
+  level: INFO
+  # Prevent USB serial clients from leaving EN/BOOT asserted after attaching.
+  deassert_rts_dtr: true
+
+preferences:
+  # Bounds counter loss after a hard power cut without forcing a blocking NVS
+  # sync in the measurement loop.
+  flash_write_interval: 1s
+
+api:
+  # Counting and recovery must continue through router/HA outages.
+  reboot_timeout: 0s
+
+safe_mode:
+  num_attempts: 10
+  reboot_timeout: 5min
+  # Sensor recovery happens after the ESPHome core is alive; do not count a
+  # healthy core as a failed boot just because a ToF channel is still retrying.
+  boot_is_good_after: 30s
+
+ota:
+  - platform: esphome
+    password: !secret roode_ota_password
+
+wifi:
+  ssid: !secret roode_wifi_ssid
+  password: !secret roode_wifi_password
+  fast_connect: true
+  reboot_timeout: 0s
+  use_address: 10.0.0.100
+  manual_ip:
+    static_ip: 10.0.0.100
+    gateway: 10.0.0.1
+    subnet: 255.255.255.0
+  domain: .local
+  power_save_mode: none
+  ap:
+    ssid: "Roode 4 Counter"
+    password: !secret roode_fallback_ap_password
+
+captive_portal:
+
+web_server:
+  port: 80
+  version: 3
+  auth:
+    username: !secret roode_web_username
+    password: !secret roode_web_password
+  sorting_groups:
+    - id: web_group_overview
+      name: Overview
+      sorting_weight: 10
+    - id: web_group_controls
+      name: Controls
+      sorting_weight: 20
+    - id: web_group_counting
+      name: Counting
+      sorting_weight: 30
+    - id: web_group_rows
+      name: Vote Zone Activity
+      sorting_weight: 40
+    - id: web_group_sensors
+      name: Sensor Distances
+      sorting_weight: 50
+    - id: web_group_settings
+      name: Settings
+      sorting_weight: 55
+    - id: web_group_health
+      name: Health
+      sorting_weight: 60
+
+tof_overdoor_ui:
+  title: ${friendly_name}
+  label: Front Door Counter
+  counter_id: overdoor_counter
+
+tof_overdoor_counter:
+  id: overdoor_counter
+  sda: 21
+  scl: 22
+  frequency: 400kHz
+  timeout: 1500ms
+  wake_delay: 120ms
+  post_address_delay: 150ms
+  distance_mode: long
+  timing_budget: 33ms
+  intermeasurement_period: 37ms
+  init_retries: 3
+  # Debounce already requires repeated hits; a one-sample median avoids adding
+  # another full ROI cycle of latency for runners and closely-spaced people.
+  sampling: 1
+  update_interval: 5ms
+  base_address: 0x30
+  # Per-ROI drops from the calibrated empty-doorway baseline.
+  trigger_delta: 280mm
+  release_delta: 140mm
+  baseline_tolerance: 80mm
+  debounce: 25ms
+  sequence_timeout: 3s
+  cooldown: 80ms
+  blocked_timeout: 1800ms
+  standing_timeout: 2200ms
+  min_event_sensors: 3
+  min_active_duration: 25ms
+  # Stable empty interval required before committing a complete passage.
+  direction_window: 90ms
+  # Reject boot calibration while a person/object is under a typical doorway.
+  minimum_clear_distance: 1200mm
+  calibration_samples: 24
+  # A USB/web "Reset device" succeeds after the rail has stabilized. Reproduce
+  # that once after a true power-on/brownout; ESP_RST_SW will not retrigger it.
+  cold_boot_soft_reset: true
+  cold_boot_soft_reset_delay: 3s
+  min_valid_sensors: 3
+  max_people_inside: 50
+  auto_save_enabled: true
+  invert_direction: false
+  debug_logging: false
+  debug_sample_interval: 250ms
+  mode: count
+  xshut_pins:
+    - GPIO16
+    - GPIO17
+    - GPIO23
+    - GPIO25
+
+button:
+  - platform: restart
+    name: ${friendly_name} Restart
+    entity_category: config
+    web_server:
+      sorting_group_id: web_group_controls
+      sorting_weight: 40
+
+  - platform: template
+    name: ${friendly_name} Rediscover Sensors
+    entity_category: config
+    web_server:
+      sorting_group_id: web_group_controls
+      sorting_weight: 10
+    on_press:
+      - lambda: |-
+          id(overdoor_counter).rediscover();
+
+  - platform: template
+    name: ${friendly_name} Recalibrate Floor Reference
+    entity_category: config
+    web_server:
+      sorting_group_id: web_group_controls
+      sorting_weight: 20
+    on_press:
+      - lambda: |-
+          id(overdoor_counter).recalibrate();
+
+  - platform: template
+    name: ${friendly_name} Reset Counts
+    entity_category: config
+    web_server:
+      sorting_group_id: web_group_controls
+      sorting_weight: 30
+    on_press:
+      - lambda: |-
+          id(overdoor_counter).reset_counts();
+
+  - platform: template
+    name: ${friendly_name} Reset Unsure IN
+    entity_category: config
+    web_server:
+      sorting_group_id: web_group_controls
+      sorting_weight: 35
+    on_press:
+      - lambda: |-
+          id(overdoor_counter).reset_unsure_in();
+
+  - platform: template
+    name: ${friendly_name} Reset Unsure OUT
+    entity_category: config
+    web_server:
+      sorting_group_id: web_group_controls
+      sorting_weight: 36
+    on_press:
+      - lambda: |-
+          id(overdoor_counter).reset_unsure_out();
+
+  - platform: template
+    name: ${friendly_name} Reset All Counters
+    entity_category: config
+    web_server:
+      sorting_group_id: web_group_controls
+      sorting_weight: 37
+    on_press:
+      - lambda: |-
+          id(overdoor_counter).reset_all_counters();
+
+switch:
+  - platform: template
+    name: ${friendly_name} Invert Direction
+    entity_category: config
+    optimistic: true
+    restore_mode: DISABLED
+    web_server:
+      sorting_group_id: web_group_settings
+      sorting_weight: 10
+    lambda: |-
+      return id(overdoor_counter).get_invert_direction();
+    turn_on_action:
+      - lambda: |-
+          id(overdoor_counter).set_invert_direction(true);
+          id(overdoor_counter).persist_runtime_state();
+    turn_off_action:
+      - lambda: |-
+          id(overdoor_counter).set_invert_direction(false);
+          id(overdoor_counter).persist_runtime_state();
+
+  - platform: template
+    name: ${friendly_name} Auto Save Enabled
+    entity_category: config
+    optimistic: true
+    restore_mode: DISABLED
+    web_server:
+      sorting_group_id: web_group_settings
+      sorting_weight: 20
+    lambda: |-
+      return id(overdoor_counter).get_auto_save_enabled();
+    turn_on_action:
+      - lambda: |-
+          id(overdoor_counter).set_auto_save_enabled(true);
+          id(overdoor_counter).persist_runtime_state();
+    turn_off_action:
+      - lambda: |-
+          id(overdoor_counter).set_auto_save_enabled(false);
+          id(overdoor_counter).persist_runtime_state();
+
+  - platform: template
+    name: ${friendly_name} Debug Logging
+    entity_category: config
+    optimistic: true
+    restore_mode: DISABLED
+    web_server:
+      sorting_group_id: web_group_settings
+      sorting_weight: 25
+    lambda: |-
+      return id(overdoor_counter).get_debug_logging();
+    turn_on_action:
+      - lambda: |-
+          id(overdoor_counter).set_debug_logging(true);
+          id(overdoor_counter).persist_runtime_state();
+    turn_off_action:
+      - lambda: |-
+          id(overdoor_counter).set_debug_logging(false);
+          id(overdoor_counter).persist_runtime_state();
+
+number:
+  - platform: template
+    id: people_inside_number
+    name: ${friendly_name} People Inside
+    min_value: 0
+    max_value: 500
+    step: 1
+    mode: box
+    update_interval: 1s
+    lambda: |-
+      return id(overdoor_counter).get_people_count();
+    set_action:
+      - lambda: |-
+          id(overdoor_counter).set_people_inside(static_cast<int>(x));
+          id(overdoor_counter).persist_runtime_state();
+
+  - platform: template
+    name: ${friendly_name} Trigger Delta
+    entity_category: config
+    unit_of_measurement: mm
+    mode: box
+    min_value: 80
+    max_value: 1200
+    step: 10
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_settings
+      sorting_weight: 30
+    lambda: |-
+      return id(overdoor_counter).get_trigger_threshold_value();
+    set_action:
+      - lambda: |-
+          id(overdoor_counter).set_trigger_delta_mm((uint16_t) x);
+          id(overdoor_counter).persist_runtime_state();
+
+  - platform: template
+    name: ${friendly_name} Release Delta
+    entity_category: config
+    unit_of_measurement: mm
+    mode: box
+    min_value: 40
+    max_value: 600
+    step: 10
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_settings
+      sorting_weight: 40
+    lambda: |-
+      return id(overdoor_counter).get_clear_threshold_value();
+    set_action:
+      - lambda: |-
+          id(overdoor_counter).set_release_delta_mm((uint16_t) x);
+          id(overdoor_counter).persist_runtime_state();
+
+  - platform: template
+    name: ${friendly_name} Baseline Tolerance
+    entity_category: config
+    unit_of_measurement: mm
+    mode: box
+    min_value: 20
+    max_value: 300
+    step: 5
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_settings
+      sorting_weight: 50
+    lambda: |-
+      return id(overdoor_counter).get_baseline_tolerance_value();
+    set_action:
+      - lambda: |-
+          id(overdoor_counter).set_baseline_tolerance_mm((uint16_t) x);
+          id(overdoor_counter).persist_runtime_state();
+
+  - platform: template
+    name: ${friendly_name} Debounce
+    entity_category: config
+    unit_of_measurement: ms
+    mode: box
+    min_value: 5
+    max_value: 300
+    step: 5
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_settings
+      sorting_weight: 60
+    lambda: |-
+      return id(overdoor_counter).get_debounce_value();
+    set_action:
+      - lambda: |-
+          id(overdoor_counter).set_debounce_ms((uint32_t) x);
+          id(overdoor_counter).persist_runtime_state();
+
+  - platform: template
+    name: ${friendly_name} Vote Agreement Window
+    entity_category: config
+    unit_of_measurement: ms
+    mode: box
+    min_value: 300
+    max_value: 4000
+    step: 50
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_settings
+      sorting_weight: 70
+    lambda: |-
+      return id(overdoor_counter).get_detection_timeout_value();
+    set_action:
+      - lambda: |-
+          id(overdoor_counter).set_sequence_timeout_ms((uint32_t) x);
+          id(overdoor_counter).persist_runtime_state();
+
+  - platform: template
+    name: ${friendly_name} Minimum Clear Interval
+    entity_category: config
+    unit_of_measurement: ms
+    mode: box
+    min_value: 0
+    max_value: 3000
+    step: 50
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_settings
+      sorting_weight: 80
+    lambda: |-
+      return id(overdoor_counter).get_cooldown_value();
+    set_action:
+      - lambda: |-
+          id(overdoor_counter).set_cooldown_ms((uint32_t) x);
+          id(overdoor_counter).persist_runtime_state();
+
+  - platform: template
+    name: ${friendly_name} Min Valid Sensors
+    entity_category: config
+    mode: box
+    min_value: 2
+    max_value: 4
+    step: 1
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_settings
+      sorting_weight: 90
+    lambda: |-
+      return id(overdoor_counter).get_min_valid_sensors_value();
+    set_action:
+      - lambda: |-
+          id(overdoor_counter).set_min_valid_sensors((uint8_t) x);
+          id(overdoor_counter).persist_runtime_state();
+
+  - platform: template
+    name: ${friendly_name} Min Event Sensors
+    entity_category: config
+    mode: box
+    min_value: 2
+    max_value: 4
+    step: 1
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_settings
+      sorting_weight: 95
+    lambda: |-
+      return id(overdoor_counter).get_min_event_sensors_value();
+    set_action:
+      - lambda: |-
+          id(overdoor_counter).set_min_event_sensors((uint8_t) x);
+          id(overdoor_counter).persist_runtime_state();
+
+  - platform: template
+    name: ${friendly_name} Min Active Duration
+    entity_category: config
+    unit_of_measurement: ms
+    mode: box
+    min_value: 0
+    max_value: 300
+    step: 5
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_settings
+      sorting_weight: 96
+    lambda: |-
+      return id(overdoor_counter).get_min_active_duration_value();
+    set_action:
+      - lambda: |-
+          id(overdoor_counter).set_min_active_duration_ms((uint32_t) x);
+          id(overdoor_counter).persist_runtime_state();
+
+  - platform: template
+    name: ${friendly_name} Clear Confirmation
+    entity_category: config
+    unit_of_measurement: ms
+    mode: box
+    min_value: 10
+    max_value: 500
+    step: 5
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_settings
+      sorting_weight: 97
+    lambda: |-
+      return id(overdoor_counter).get_direction_window_value();
+    set_action:
+      - lambda: |-
+          id(overdoor_counter).set_direction_window_ms((uint32_t) x);
+          id(overdoor_counter).persist_runtime_state();
+
+  - platform: template
+    name: ${friendly_name} Max People Inside
+    entity_category: config
+    mode: box
+    min_value: 1
+    max_value: 500
+    step: 1
+    update_interval: 2s
+    web_server:
+      sorting_group_id: web_group_settings
+      sorting_weight: 100
+    lambda: |-
+      return id(overdoor_counter).get_max_people_inside_value();
+    set_action:
+      - lambda: |-
+          id(overdoor_counter).set_max_people_inside((uint16_t) x);
+          id(overdoor_counter).persist_runtime_state();
+
+binary_sensor:
+  - platform: status
+    name: ${friendly_name} Device Status
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_overview
+      sorting_weight: 10
+
+  - platform: template
+    name: ${friendly_name} Counter Ready
+    lambda: |-
+      return id(overdoor_counter).get_ready_state() > 0.5f;
+    web_server:
+      sorting_group_id: web_group_overview
+      sorting_weight: 20
+
+  - platform: template
+    name: ${friendly_name} Presence
+    lambda: |-
+      return id(overdoor_counter).get_presence_state() > 0.5f;
+    web_server:
+      sorting_group_id: web_group_overview
+      sorting_weight: 30
+
+  - platform: template
+    name: ${friendly_name} OUT Group Active
+    lambda: |-
+      return id(overdoor_counter).get_row_active_state(0) > 0.5f;
+    web_server:
+      sorting_group_id: web_group_rows
+      sorting_weight: 10
+
+  - platform: template
+    name: ${friendly_name} IN Group Active
+    lambda: |-
+      return id(overdoor_counter).get_row_active_state(1) > 0.5f;
+    web_server:
+      sorting_group_id: web_group_rows
+      sorting_weight: 20
+
+  - platform: template
+    name: ${friendly_name} Person Standing In Door
+    lambda: |-
+      return id(overdoor_counter).get_person_standing_state() > 0.5f;
+    web_server:
+      sorting_group_id: web_group_overview
+      sorting_weight: 35
+
+sensor:
+  - platform: template
+    name: ${friendly_name} Discovered Sensors
+    unit_of_measurement: sensors
+    accuracy_decimals: 0
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_overview
+      sorting_weight: 40
+    lambda: |-
+      return id(overdoor_counter).get_discovered_sensor_count();
+
+  - platform: template
+    name: ${friendly_name} Cycle Duration
+    unit_of_measurement: ms
+    accuracy_decimals: 0
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 10
+    lambda: |-
+      return id(overdoor_counter).get_cycle_duration_ms();
+
+  - platform: template
+    name: ${friendly_name} Update Skew
+    unit_of_measurement: ms
+    accuracy_decimals: 0
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 20
+    lambda: |-
+      return id(overdoor_counter).get_update_skew_ms();
+
+  - platform: template
+    name: ${friendly_name} Last Decision Latency
+    unit_of_measurement: ms
+    accuracy_decimals: 0
+    update_interval: 500ms
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 25
+    lambda: |-
+      return id(overdoor_counter).get_last_decision_latency_ms();
+
+  - platform: template
+    name: ${friendly_name} People Inside
+    unit_of_measurement: persons
+    accuracy_decimals: 0
+    update_interval: 100ms
+    web_server:
+      sorting_group_id: web_group_counting
+      sorting_weight: 10
+    lambda: |-
+      return id(overdoor_counter).get_people_count();
+
+  - platform: template
+    name: ${friendly_name} Confirmed IN
+    unit_of_measurement: persons
+    accuracy_decimals: 0
+    update_interval: 100ms
+    web_server:
+      sorting_group_id: web_group_counting
+      sorting_weight: 20
+    lambda: |-
+      return id(overdoor_counter).get_entry_count();
+
+  - platform: template
+    name: ${friendly_name} Confirmed OUT
+    unit_of_measurement: persons
+    accuracy_decimals: 0
+    update_interval: 100ms
+    web_server:
+      sorting_group_id: web_group_counting
+      sorting_weight: 30
+    lambda: |-
+      return id(overdoor_counter).get_exit_count();
+
+  - platform: template
+    name: ${friendly_name} Unsure Detection IN
+    unit_of_measurement: events
+    accuracy_decimals: 0
+    update_interval: 500ms
+    web_server:
+      sorting_group_id: web_group_counting
+      sorting_weight: 35
+    lambda: |-
+      return id(overdoor_counter).get_unsure_in_count();
+
+  - platform: template
+    name: ${friendly_name} Rejected Events
+    unit_of_measurement: events
+    accuracy_decimals: 0
+    update_interval: 500ms
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_counting
+      sorting_weight: 34
+    lambda: |-
+      return id(overdoor_counter).get_rejected_count();
+
+  - platform: template
+    name: ${friendly_name} Unsure Detection OUT
+    unit_of_measurement: events
+    accuracy_decimals: 0
+    update_interval: 500ms
+    web_server:
+      sorting_group_id: web_group_counting
+      sorting_weight: 36
+    lambda: |-
+      return id(overdoor_counter).get_unsure_out_count();
+
+  - platform: template
+    name: ${friendly_name} Last Evidence Score
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    update_interval: 500ms
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 25
+    lambda: |-
+      return id(overdoor_counter).get_confidence_score();
+
+  - platform: template
+    name: ${friendly_name} Calibration Progress
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    update_interval: 500ms
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 26
+    lambda: |-
+      return id(overdoor_counter).get_calibration_progress();
+
+  - platform: template
+    name: ${friendly_name} OUT Group Distance
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    update_interval: 200ms
+    web_server:
+      sorting_group_id: web_group_rows
+      sorting_weight: 30
+    lambda: |-
+      return id(overdoor_counter).get_row_distance_mm(0);
+
+  - platform: template
+    name: ${friendly_name} OUT Group Baseline
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_rows
+      sorting_weight: 40
+    lambda: |-
+      return id(overdoor_counter).get_row_baseline_mm(0);
+
+  - platform: template
+    name: ${friendly_name} OUT Group Drop
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    update_interval: 200ms
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_rows
+      sorting_weight: 50
+    lambda: |-
+      return id(overdoor_counter).get_row_drop_mm(0);
+
+  - platform: template
+    name: ${friendly_name} IN Group Distance
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    update_interval: 200ms
+    web_server:
+      sorting_group_id: web_group_rows
+      sorting_weight: 60
+    lambda: |-
+      return id(overdoor_counter).get_row_distance_mm(1);
+
+  - platform: template
+    name: ${friendly_name} IN Group Baseline
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_rows
+      sorting_weight: 70
+    lambda: |-
+      return id(overdoor_counter).get_row_baseline_mm(1);
+
+  - platform: template
+    name: ${friendly_name} IN Group Drop
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    update_interval: 200ms
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_rows
+      sorting_weight: 80
+    lambda: |-
+      return id(overdoor_counter).get_row_drop_mm(1);
+
+  - platform: template
+    name: ${friendly_name} U3 Distance
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    update_interval: 200ms
+    web_server:
+      sorting_group_id: web_group_sensors
+      sorting_weight: 10
+    lambda: |-
+      return id(overdoor_counter).get_distance_mm(0);
+
+  - platform: template
+    name: ${friendly_name} U4 Distance
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    update_interval: 200ms
+    web_server:
+      sorting_group_id: web_group_sensors
+      sorting_weight: 20
+    lambda: |-
+      return id(overdoor_counter).get_distance_mm(1);
+
+  - platform: template
+    name: ${friendly_name} U7 Distance
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    update_interval: 200ms
+    web_server:
+      sorting_group_id: web_group_sensors
+      sorting_weight: 30
+    lambda: |-
+      return id(overdoor_counter).get_distance_mm(2);
+
+  - platform: template
+    name: ${friendly_name} U8 Distance
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    update_interval: 200ms
+    web_server:
+      sorting_group_id: web_group_sensors
+      sorting_weight: 40
+    lambda: |-
+      return id(overdoor_counter).get_distance_mm(3);
+
+  - platform: template
+    name: ${friendly_name} U3 Raw Distance
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    update_interval: 200ms
+    disabled_by_default: true
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_sensors
+      sorting_weight: 110
+    lambda: |-
+      return id(overdoor_counter).get_raw_distance_mm(0);
+
+  - platform: template
+    name: ${friendly_name} U4 Raw Distance
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    update_interval: 200ms
+    disabled_by_default: true
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_sensors
+      sorting_weight: 120
+    lambda: |-
+      return id(overdoor_counter).get_raw_distance_mm(1);
+
+  - platform: template
+    name: ${friendly_name} U7 Raw Distance
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    update_interval: 200ms
+    disabled_by_default: true
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_sensors
+      sorting_weight: 130
+    lambda: |-
+      return id(overdoor_counter).get_raw_distance_mm(2);
+
+  - platform: template
+    name: ${friendly_name} U8 Raw Distance
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    update_interval: 200ms
+    disabled_by_default: true
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_sensors
+      sorting_weight: 140
+    lambda: |-
+      return id(overdoor_counter).get_raw_distance_mm(3);
+
+  - platform: template
+    name: ${friendly_name} U3 Baseline
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_sensors
+      sorting_weight: 150
+    lambda: |-
+      return id(overdoor_counter).get_baseline_mm(0);
+
+  - platform: template
+    name: ${friendly_name} U4 Baseline
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_sensors
+      sorting_weight: 160
+    lambda: |-
+      return id(overdoor_counter).get_baseline_mm(1);
+
+  - platform: template
+    name: ${friendly_name} U7 Baseline
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_sensors
+      sorting_weight: 170
+    lambda: |-
+      return id(overdoor_counter).get_baseline_mm(2);
+
+  - platform: template
+    name: ${friendly_name} U8 Baseline
+    unit_of_measurement: mm
+    accuracy_decimals: 0
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_sensors
+      sorting_weight: 180
+    lambda: |-
+      return id(overdoor_counter).get_baseline_mm(3);
+
+  - platform: template
+    name: ${friendly_name} U3 Calibration Quality
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 40
+    lambda: |-
+      return id(overdoor_counter).get_calibration_quality(0);
+
+  - platform: template
+    name: ${friendly_name} U4 Calibration Quality
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 50
+    lambda: |-
+      return id(overdoor_counter).get_calibration_quality(1);
+
+  - platform: template
+    name: ${friendly_name} U7 Calibration Quality
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 60
+    lambda: |-
+      return id(overdoor_counter).get_calibration_quality(2);
+
+  - platform: template
+    name: ${friendly_name} U8 Calibration Quality
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    update_interval: 2s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 70
+    lambda: |-
+      return id(overdoor_counter).get_calibration_quality(3);
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: ${friendly_name} IP Address
+      entity_category: diagnostic
+      web_server:
+        sorting_group_id: web_group_overview
+        sorting_weight: 70
+    ssid:
+      name: ${friendly_name} WiFi SSID
+      entity_category: diagnostic
+      web_server:
+        sorting_group_id: web_group_health
+        sorting_weight: 80
+
+  - platform: template
+    name: ${friendly_name} System Status
+    update_interval: 500ms
+    web_server:
+      sorting_group_id: web_group_overview
+      sorting_weight: 45
+    lambda: |-
+      return {id(overdoor_counter).get_system_status_text()};
+
+  - platform: template
+    name: ${friendly_name} Detection Phase
+    update_interval: 500ms
+    web_server:
+      sorting_group_id: web_group_overview
+      sorting_weight: 50
+    lambda: |-
+      return {id(overdoor_counter).get_phase_text()};
+
+  - platform: template
+    name: ${friendly_name} Last Direction
+    update_interval: 500ms
+    web_server:
+      sorting_group_id: web_group_counting
+      sorting_weight: 40
+    lambda: |-
+      return {id(overdoor_counter).get_last_direction_text()};
+
+  - platform: template
+    name: ${friendly_name} Last Detection Time
+    update_interval: 500ms
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_counting
+      sorting_weight: 45
+    lambda: |-
+      return {id(overdoor_counter).get_last_detection_timestamp_text()};
+
+  - platform: template
+    name: ${friendly_name} Last Decision Reason
+    update_interval: 500ms
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 35
+    lambda: |-
+      return {id(overdoor_counter).get_last_reason_text()};
+
+  - platform: template
+    name: ${friendly_name} Passage State
+    update_interval: 250ms
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 34
+    lambda: |-
+      return {id(overdoor_counter).get_passage_state_text()};
+
+  - platform: template
+    name: ${friendly_name} Debug Snapshot
+    update_interval: 500ms
+    disabled_by_default: true
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 38
+    lambda: |-
+      return {id(overdoor_counter).get_debug_snapshot_text()};
+
+  - platform: template
+    name: ${friendly_name} Blocked Sensors
+    update_interval: 500ms
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 36
+    lambda: |-
+      return {id(overdoor_counter).get_blocked_sensor_text()};
+
+  - platform: template
+    name: ${friendly_name} Summary
+    update_interval: 500ms
+    web_server:
+      sorting_group_id: web_group_overview
+      sorting_weight: 60
+    lambda: |-
+      return {id(overdoor_counter).get_summary()};
+
+  - platform: template
+    name: ${friendly_name} Discovery Map
+    update_interval: 10s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 30
+    lambda: |-
+      return {id(overdoor_counter).get_discovery_map()};
+
+  - platform: template
+    name: ${friendly_name} Event Log
+    update_interval: 1s
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_health
+      sorting_weight: 90
+    lambda: |-
+      return {id(overdoor_counter).get_event_log()};
+
+  - platform: template
+    name: ${friendly_name} U3 Status
+    update_interval: 500ms
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_sensors
+      sorting_weight: 60
+    lambda: |-
+      return {id(overdoor_counter).get_status_text(0)};
+
+  - platform: template
+    name: ${friendly_name} U4 Status
+    update_interval: 500ms
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_sensors
+      sorting_weight: 70
+    lambda: |-
+      return {id(overdoor_counter).get_status_text(1)};
+
+  - platform: template
+    name: ${friendly_name} U7 Status
+    update_interval: 500ms
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_sensors
+      sorting_weight: 80
+    lambda: |-
+      return {id(overdoor_counter).get_status_text(2)};
+
+  - platform: template
+    name: ${friendly_name} U8 Status
+    update_interval: 500ms
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_sensors
+      sorting_weight: 90
+    lambda: |-
+      return {id(overdoor_counter).get_status_text(3)};
+
+  - platform: template
+    name: ${friendly_name} U3 Health
+    update_interval: 500ms
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_sensors
+      sorting_weight: 200
+    lambda: |-
+      return {id(overdoor_counter).get_sensor_health_text(0)};
+
+  - platform: template
+    name: ${friendly_name} U4 Health
+    update_interval: 500ms
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_sensors
+      sorting_weight: 210
+    lambda: |-
+      return {id(overdoor_counter).get_sensor_health_text(1)};
+
+  - platform: template
+    name: ${friendly_name} U7 Health
+    update_interval: 500ms
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_sensors
+      sorting_weight: 220
+    lambda: |-
+      return {id(overdoor_counter).get_sensor_health_text(2)};
+
+  - platform: template
+    name: ${friendly_name} U8 Health
+    update_interval: 500ms
+    entity_category: diagnostic
+    web_server:
+      sorting_group_id: web_group_sensors
+      sorting_weight: 230
+    lambda: |-
+      return {id(overdoor_counter).get_sensor_health_text(3)};

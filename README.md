@@ -106,6 +106,20 @@ Current wiring assumptions for multi-sensor profiles:
 The dual and triple profiles currently run one independent `roode` instance per physical sensor.
 That makes them good for deployment, tuning, and side-by-side testing now; a fused 2-of-3 counter can be added on top of this next.
 
+For upload to an ESPHome installation outside this checkout, use
+[`peopleCounter32FourSensorOverdoorUpload.yaml`](peopleCounter32FourSensorOverdoorUpload.yaml).
+It fetches the three custom components from GitHub `main` on each build and requires ESPHome 2026.3.0 or newer.
+Commit and push local component fixes to `main` before using this remote profile; it cannot fetch unpublished changes.
+Keep the referenced `roode_*` entries in that installation's `secrets.yaml`, and check the fixed IP and GPIO wiring.
+Uploading the local development profile by itself will not copy `components/` and can cause
+`Component not found: tof_overdoor_ui`. For reproducible deployments, replace `ref: main` with a tested commit
+containing the fixes you need, and update the YAML and revision together when upgrading.
+
+If ESPHome reports `repository 'VL53L1X_ULD' does not exist`, the selected component revision has an invalid
+library declaration. All three sensor components must declare `cg.add_library("rneurink/VL53L1X_ULD", "1.2.3")`.
+The third argument to `add_library` is a repository URL, not the library name. Update the remote revision
+after publishing the fix; clearing build files alone cannot repair a YAML pinned to the old commit.
+
 The production four-sensor profile, `peopleCounter32FourSensorOverdoor.yaml`, uses the dedicated fused
 `tof_overdoor_counter`. It samples eight logical ROIs continuously, calibrates every ROI independently, requires a
 three-sensor direction quorum, and performs automatic isolated sensor recovery. See
