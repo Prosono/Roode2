@@ -553,7 +553,18 @@ sensor:
     name: ${friendly_name} Discovered Sensors
     unit_of_measurement: sensors
     accuracy_decimals: 0
-    update_interval: 2s
+    update_interval: 5s
+    # Publish the first sample and subsequent changes only, including NaN transitions.
+    # This filters telemetry only; the counter still runs at its own 5 ms interval.
+    filters: &ha_numeric_changes
+      - lambda: |-
+          static bool initialized = false;
+          static float previous = NAN;
+          if (initialized && (x == previous || (std::isnan(x) && std::isnan(previous))))
+            return {};
+          initialized = true;
+          previous = x;
+          return x;
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_overview
@@ -565,7 +576,8 @@ sensor:
     name: ${friendly_name} Cycle Duration
     unit_of_measurement: ms
     accuracy_decimals: 0
-    update_interval: 2s
+    update_interval: 5s
+    filters: *ha_numeric_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_health
@@ -577,7 +589,8 @@ sensor:
     name: ${friendly_name} Update Skew
     unit_of_measurement: ms
     accuracy_decimals: 0
-    update_interval: 2s
+    update_interval: 5s
+    filters: *ha_numeric_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_health
@@ -589,7 +602,8 @@ sensor:
     name: ${friendly_name} Last Decision Latency
     unit_of_measurement: ms
     accuracy_decimals: 0
-    update_interval: 500ms
+    update_interval: 5s
+    filters: *ha_numeric_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_health
@@ -602,6 +616,7 @@ sensor:
     unit_of_measurement: persons
     accuracy_decimals: 0
     update_interval: 100ms
+    filters: *ha_numeric_changes
     web_server:
       sorting_group_id: web_group_counting
       sorting_weight: 10
@@ -613,6 +628,7 @@ sensor:
     unit_of_measurement: persons
     accuracy_decimals: 0
     update_interval: 100ms
+    filters: *ha_numeric_changes
     web_server:
       sorting_group_id: web_group_counting
       sorting_weight: 20
@@ -624,6 +640,7 @@ sensor:
     unit_of_measurement: persons
     accuracy_decimals: 0
     update_interval: 100ms
+    filters: *ha_numeric_changes
     web_server:
       sorting_group_id: web_group_counting
       sorting_weight: 30
@@ -634,7 +651,8 @@ sensor:
     name: ${friendly_name} Unsure Detection IN
     unit_of_measurement: events
     accuracy_decimals: 0
-    update_interval: 500ms
+    update_interval: 5s
+    filters: *ha_numeric_changes
     web_server:
       sorting_group_id: web_group_counting
       sorting_weight: 35
@@ -645,7 +663,8 @@ sensor:
     name: ${friendly_name} Rejected Events
     unit_of_measurement: events
     accuracy_decimals: 0
-    update_interval: 500ms
+    update_interval: 5s
+    filters: *ha_numeric_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_counting
@@ -657,7 +676,8 @@ sensor:
     name: ${friendly_name} Unsure Detection OUT
     unit_of_measurement: events
     accuracy_decimals: 0
-    update_interval: 500ms
+    update_interval: 5s
+    filters: *ha_numeric_changes
     web_server:
       sorting_group_id: web_group_counting
       sorting_weight: 36
@@ -668,7 +688,8 @@ sensor:
     name: ${friendly_name} Last Evidence Score
     unit_of_measurement: "%"
     accuracy_decimals: 0
-    update_interval: 500ms
+    update_interval: 5s
+    filters: *ha_numeric_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_health
@@ -680,7 +701,8 @@ sensor:
     name: ${friendly_name} Calibration Progress
     unit_of_measurement: "%"
     accuracy_decimals: 0
-    update_interval: 500ms
+    update_interval: 5s
+    filters: *ha_numeric_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_health
@@ -692,7 +714,8 @@ sensor:
     name: ${friendly_name} OUT Group Distance
     unit_of_measurement: mm
     accuracy_decimals: 0
-    update_interval: 200ms
+    update_interval: 1s
+    filters: *ha_numeric_changes
     web_server:
       sorting_group_id: web_group_rows
       sorting_weight: 30
@@ -703,7 +726,8 @@ sensor:
     name: ${friendly_name} OUT Group Baseline
     unit_of_measurement: mm
     accuracy_decimals: 0
-    update_interval: 2s
+    update_interval: 5s
+    filters: *ha_numeric_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_rows
@@ -715,7 +739,8 @@ sensor:
     name: ${friendly_name} OUT Group Drop
     unit_of_measurement: mm
     accuracy_decimals: 0
-    update_interval: 200ms
+    update_interval: 1s
+    filters: *ha_numeric_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_rows
@@ -727,7 +752,8 @@ sensor:
     name: ${friendly_name} IN Group Distance
     unit_of_measurement: mm
     accuracy_decimals: 0
-    update_interval: 200ms
+    update_interval: 1s
+    filters: *ha_numeric_changes
     web_server:
       sorting_group_id: web_group_rows
       sorting_weight: 60
@@ -738,7 +764,8 @@ sensor:
     name: ${friendly_name} IN Group Baseline
     unit_of_measurement: mm
     accuracy_decimals: 0
-    update_interval: 2s
+    update_interval: 5s
+    filters: *ha_numeric_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_rows
@@ -750,7 +777,8 @@ sensor:
     name: ${friendly_name} IN Group Drop
     unit_of_measurement: mm
     accuracy_decimals: 0
-    update_interval: 200ms
+    update_interval: 1s
+    filters: *ha_numeric_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_rows
@@ -762,7 +790,8 @@ sensor:
     name: ${friendly_name} U3 Distance
     unit_of_measurement: mm
     accuracy_decimals: 0
-    update_interval: 200ms
+    update_interval: 1s
+    filters: *ha_numeric_changes
     web_server:
       sorting_group_id: web_group_sensors
       sorting_weight: 10
@@ -773,7 +802,8 @@ sensor:
     name: ${friendly_name} U4 Distance
     unit_of_measurement: mm
     accuracy_decimals: 0
-    update_interval: 200ms
+    update_interval: 1s
+    filters: *ha_numeric_changes
     web_server:
       sorting_group_id: web_group_sensors
       sorting_weight: 20
@@ -784,7 +814,8 @@ sensor:
     name: ${friendly_name} U7 Distance
     unit_of_measurement: mm
     accuracy_decimals: 0
-    update_interval: 200ms
+    update_interval: 1s
+    filters: *ha_numeric_changes
     web_server:
       sorting_group_id: web_group_sensors
       sorting_weight: 30
@@ -795,7 +826,8 @@ sensor:
     name: ${friendly_name} U8 Distance
     unit_of_measurement: mm
     accuracy_decimals: 0
-    update_interval: 200ms
+    update_interval: 1s
+    filters: *ha_numeric_changes
     web_server:
       sorting_group_id: web_group_sensors
       sorting_weight: 40
@@ -806,7 +838,8 @@ sensor:
     name: ${friendly_name} U3 Raw Distance
     unit_of_measurement: mm
     accuracy_decimals: 0
-    update_interval: 200ms
+    update_interval: 1s
+    filters: *ha_numeric_changes
     disabled_by_default: true
     entity_category: diagnostic
     web_server:
@@ -819,7 +852,8 @@ sensor:
     name: ${friendly_name} U4 Raw Distance
     unit_of_measurement: mm
     accuracy_decimals: 0
-    update_interval: 200ms
+    update_interval: 1s
+    filters: *ha_numeric_changes
     disabled_by_default: true
     entity_category: diagnostic
     web_server:
@@ -832,7 +866,8 @@ sensor:
     name: ${friendly_name} U7 Raw Distance
     unit_of_measurement: mm
     accuracy_decimals: 0
-    update_interval: 200ms
+    update_interval: 1s
+    filters: *ha_numeric_changes
     disabled_by_default: true
     entity_category: diagnostic
     web_server:
@@ -845,7 +880,8 @@ sensor:
     name: ${friendly_name} U8 Raw Distance
     unit_of_measurement: mm
     accuracy_decimals: 0
-    update_interval: 200ms
+    update_interval: 1s
+    filters: *ha_numeric_changes
     disabled_by_default: true
     entity_category: diagnostic
     web_server:
@@ -858,7 +894,8 @@ sensor:
     name: ${friendly_name} U3 Baseline
     unit_of_measurement: mm
     accuracy_decimals: 0
-    update_interval: 2s
+    update_interval: 5s
+    filters: *ha_numeric_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_sensors
@@ -870,7 +907,8 @@ sensor:
     name: ${friendly_name} U4 Baseline
     unit_of_measurement: mm
     accuracy_decimals: 0
-    update_interval: 2s
+    update_interval: 5s
+    filters: *ha_numeric_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_sensors
@@ -882,7 +920,8 @@ sensor:
     name: ${friendly_name} U7 Baseline
     unit_of_measurement: mm
     accuracy_decimals: 0
-    update_interval: 2s
+    update_interval: 5s
+    filters: *ha_numeric_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_sensors
@@ -894,7 +933,8 @@ sensor:
     name: ${friendly_name} U8 Baseline
     unit_of_measurement: mm
     accuracy_decimals: 0
-    update_interval: 2s
+    update_interval: 5s
+    filters: *ha_numeric_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_sensors
@@ -906,7 +946,8 @@ sensor:
     name: ${friendly_name} U3 Calibration Quality
     unit_of_measurement: "%"
     accuracy_decimals: 0
-    update_interval: 2s
+    update_interval: 5s
+    filters: *ha_numeric_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_health
@@ -918,7 +959,8 @@ sensor:
     name: ${friendly_name} U4 Calibration Quality
     unit_of_measurement: "%"
     accuracy_decimals: 0
-    update_interval: 2s
+    update_interval: 5s
+    filters: *ha_numeric_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_health
@@ -930,7 +972,8 @@ sensor:
     name: ${friendly_name} U7 Calibration Quality
     unit_of_measurement: "%"
     accuracy_decimals: 0
-    update_interval: 2s
+    update_interval: 5s
+    filters: *ha_numeric_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_health
@@ -942,7 +985,8 @@ sensor:
     name: ${friendly_name} U8 Calibration Quality
     unit_of_measurement: "%"
     accuracy_decimals: 0
-    update_interval: 2s
+    update_interval: 5s
+    filters: *ha_numeric_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_health
@@ -967,7 +1011,16 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} System Status
-    update_interval: 500ms
+    update_interval: 5s
+    filters: &ha_text_changes
+      - lambda: |-
+          static bool initialized = false;
+          static std::string previous;
+          if (initialized && x == previous)
+            return {};
+          initialized = true;
+          previous = x;
+          return x;
     web_server:
       sorting_group_id: web_group_overview
       sorting_weight: 45
@@ -976,7 +1029,8 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} Detection Phase
-    update_interval: 500ms
+    update_interval: 5s
+    filters: *ha_text_changes
     web_server:
       sorting_group_id: web_group_overview
       sorting_weight: 50
@@ -985,7 +1039,8 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} Last Direction
-    update_interval: 500ms
+    update_interval: 5s
+    filters: *ha_text_changes
     web_server:
       sorting_group_id: web_group_counting
       sorting_weight: 40
@@ -994,7 +1049,8 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} Last Detection Time
-    update_interval: 500ms
+    update_interval: 5s
+    filters: *ha_text_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_counting
@@ -1004,7 +1060,8 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} Last Decision Reason
-    update_interval: 500ms
+    update_interval: 5s
+    filters: *ha_text_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_health
@@ -1014,7 +1071,8 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} Passage State
-    update_interval: 250ms
+    update_interval: 5s
+    filters: *ha_text_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_health
@@ -1024,8 +1082,10 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} Debug Snapshot
-    update_interval: 500ms
-    disabled_by_default: true
+    update_interval: 10s
+    filters: *ha_text_changes
+    # Full diagnostics remain available through the custom web UI state endpoint.
+    internal: true
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_health
@@ -1035,7 +1095,8 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} Blocked Sensors
-    update_interval: 500ms
+    update_interval: 5s
+    filters: *ha_text_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_health
@@ -1045,7 +1106,8 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} Summary
-    update_interval: 500ms
+    update_interval: 5s
+    filters: *ha_text_changes
     web_server:
       sorting_group_id: web_group_overview
       sorting_weight: 60
@@ -1055,6 +1117,7 @@ text_sensor:
   - platform: template
     name: ${friendly_name} Discovery Map
     update_interval: 10s
+    filters: *ha_text_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_health
@@ -1064,7 +1127,10 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} Event Log
-    update_interval: 1s
+    update_interval: 10s
+    filters: *ha_text_changes
+    # Full diagnostics remain available through the custom web UI state endpoint.
+    internal: true
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_health
@@ -1074,7 +1140,8 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} U3 Status
-    update_interval: 500ms
+    update_interval: 5s
+    filters: *ha_text_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_sensors
@@ -1084,7 +1151,8 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} U4 Status
-    update_interval: 500ms
+    update_interval: 5s
+    filters: *ha_text_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_sensors
@@ -1094,7 +1162,8 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} U7 Status
-    update_interval: 500ms
+    update_interval: 5s
+    filters: *ha_text_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_sensors
@@ -1104,7 +1173,8 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} U8 Status
-    update_interval: 500ms
+    update_interval: 5s
+    filters: *ha_text_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_sensors
@@ -1114,7 +1184,8 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} U3 Health
-    update_interval: 500ms
+    update_interval: 5s
+    filters: *ha_text_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_sensors
@@ -1124,7 +1195,8 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} U4 Health
-    update_interval: 500ms
+    update_interval: 5s
+    filters: *ha_text_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_sensors
@@ -1134,7 +1206,8 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} U7 Health
-    update_interval: 500ms
+    update_interval: 5s
+    filters: *ha_text_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_sensors
@@ -1144,7 +1217,8 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} U8 Health
-    update_interval: 500ms
+    update_interval: 5s
+    filters: *ha_text_changes
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_sensors
