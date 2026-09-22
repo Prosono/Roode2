@@ -13,6 +13,7 @@ class Harness : public tof_overdoor_counter::TofOverdoorCounter {
     for(auto &c:channels_) {
       c.sensor_label="S"+std::to_string(index++);
       c.initialized=c.ranging_started=c.has_reading=true;c.stale=false;
+      c.last_result_ms=test_now;
       c.sensor=std::make_unique<VL53L1X_ULD>();
       for(auto &z:c.zones){z.has_reading=z.valid_measurement=true;z.raw_distance=2000;z.filtered_distance=2000;z.last_good_read_ms=test_now;}
     }
@@ -20,7 +21,10 @@ class Harness : public tof_overdoor_counter::TofOverdoorCounter {
   }
   void sample(bool fresh=true) {
     test_now+=5;
-    for(auto &c:channels_)for(auto &z:c.zones){z.fresh=fresh;if(fresh)z.last_good_read_ms=test_now;}
+    for(auto &c:channels_) {
+      if(fresh)c.last_result_ms=test_now;
+      for(auto &z:c.zones){z.fresh=fresh;if(fresh)z.last_good_read_ms=z.last_update_ms=z.sample_started_ms=test_now;}
+    }
   }
   void calibrated(){calibration_active_=false;startup_clear_validated_=true;for(auto &c:channels_){c.calibrated=true;for(auto &z:c.zones){z.calibrated=true;z.baseline=2000;z.noise=1;}}}
   void replay_near_passages(unsigned votes) {
@@ -130,7 +134,7 @@ class Harness : public tof_overdoor_counter::TofOverdoorCounter {
     auto frame=[&](uint8_t state) {
       for(int n=0;n<4;++n) {
         test_now+=75;
-        for(auto &c:channels_)for(int k=0;k<2;++k){auto &zone=c.zones[k];zone.fresh=true;zone.last_good_read_ms=test_now;zone.filtered_distance=(state&(1<<k))?1000:2000;}
+        for(auto &c:channels_)for(int k=0;k<2;++k){auto &zone=c.zones[k];zone.fresh=true;zone.last_good_read_ms=zone.last_update_ms=zone.sample_started_ms=test_now;zone.filtered_distance=(state&(1<<k))?1000:2000;}
         update_sensor_states_();update_detection_state_machine_();
       }
     };

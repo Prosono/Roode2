@@ -7,6 +7,9 @@ root = Path(__file__).resolve().parents[1]
 base = (root / 'ci/tof_overdoor.yaml').read_text().replace('../components', str(root / 'components'))
 cases = [
     ('valid', base, True),
+    ('short fast doorway', base.replace('  timing_budget: 33ms', '  distance_mode: short\n  timing_budget: 20ms').replace('37ms','24ms'), True),
+    ('optional strict timing', base.replace('  sda: 21', '  require_timing_evidence: true\n  sda: 21'), True),
+    ('long cannot use 20ms', base.replace('33ms','20ms').replace('37ms','24ms'), False),
     ('overlapping pins', base.replace('GPIO25', 'GPIO16'), False),
     ('bus pin overlap', base.replace('GPIO25', 'GPIO21'), False),
     ('unsupported timing budget', base.replace('33ms', '34ms'), False),

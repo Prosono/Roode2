@@ -1,12 +1,21 @@
+# Installer bare på Dørteller Oppe (10.0.0.100).
+# Bruk eksisterende secrets.yaml med roode_* nøklene.
 substitutions:
-  devicename: roode-four-sensor-overdoor
-  friendly_name: Roode Four Sensor Overdoor
+  devicename: dorteller-oppe
+  friendly_name: Dørteller Oppe
 
+# Standalone upload profile. Publish component changes to main before using it.
+# Refresh every build so fixes are not hidden by ESPHome's one-day Git cache.
 external_components:
-  refresh: always
-  source: components
+  - source:
+      type: git
+      url: https://github.com/Prosono/Roode2.git
+      ref: main
+    components: [counting_core, tof_overdoor_counter, tof_overdoor_ui]
+    refresh: always
 
 esphome:
+  min_version: 2026.3.0
   name: ${devicename}
   friendly_name: ${friendly_name}
 
@@ -53,7 +62,7 @@ wifi:
   domain: .local
   power_save_mode: none
   ap:
-    ssid: "Roode 4 Counter"
+    ssid: "Dorteller Oppe Setup"
     password: !secret roode_fallback_ap_password
 
 captive_portal:
@@ -91,7 +100,7 @@ web_server:
 
 tof_overdoor_ui:
   title: ${friendly_name}
-  label: Front Door Counter
+  label: Dørteller Oppe
   counter_id: overdoor_counter
 
 tof_overdoor_counter:
@@ -102,9 +111,12 @@ tof_overdoor_counter:
   timeout: 1500ms
   wake_delay: 120ms
   post_address_delay: 150ms
-  distance_mode: long
-  timing_budget: 33ms
-  intermeasurement_period: 37ms
+  # Side-mounted across this 80–90 cm opening; short mode supports faster ROI samples.
+  distance_mode: short
+  timing_budget: 20ms
+  intermeasurement_period: 24ms
+  # Record timing ambiguity; enable strict rejection only after a live validation.
+  require_timing_evidence: false
   init_retries: 3
   # Debounce already requires repeated hits; a one-sample median avoids adding
   # another full ROI cycle of latency for runners and closely-spaced people.

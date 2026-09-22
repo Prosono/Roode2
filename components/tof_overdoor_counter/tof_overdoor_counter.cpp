@@ -11,7 +11,7 @@ namespace tof_overdoor_counter {
 namespace {
 
 static const char *const TAG = "tof_overdoor_counter";
-constexpr uint8_t PERSISTED_STATE_VERSION = 7;
+constexpr uint8_t PERSISTED_STATE_VERSION = 8;
 // Keep every sensor in XSHUT while the ESP32 rail, logger and Wi-Fi radio pass
 // their cold-start/inrush phase. A warm reset does not reproduce that load.
 constexpr uint32_t COLD_BOOT_SETTLE_MS = 5000;
@@ -22,6 +22,8 @@ constexpr uint32_t BOOT_CLEAR_SETTLE_MS = 500;
 constexpr uint32_t SENSOR_RECOVERY_BASE_MS = 1000;
 constexpr uint32_t SENSOR_RECOVERY_MAX_MS = 30000;
 constexpr uint8_t ERRORS_BEFORE_POWER_CYCLE = 3;
+constexpr uint32_t SENSOR_RESULT_TIMEOUT_MS = 2000;
+constexpr uint16_t ROI_AUTONOMOUS_GUARD_MS = 1000;
 constexpr uint32_t TRACE_SAMPLE_INTERVAL_MS = 25;
 // React strongly to a new range sample. The adaptive threshold, hysteresis and
 // quorum provide the noise rejection; a slow EMA only delays zone edges.
@@ -267,6 +269,8 @@ void TofOverdoorCounter::dump_config() {
   ESP_LOGCONFIG(TAG, "  Distance Mode: %s", distance_mode_name(this->distance_mode_));
   ESP_LOGCONFIG(TAG, "  Timing Budget: %u ms", this->timing_budget_ms_);
   ESP_LOGCONFIG(TAG, "  Intermeasurement: %u ms", this->intermeasurement_ms_);
+  ESP_LOGCONFIG(TAG, "  Host alternates ROI after each result; autonomous guard: %u ms",
+                this->guarded_intermeasurement_ms_());
   ESP_LOGCONFIG(TAG, "  Sampling: %u", this->sampling_size_);
   ESP_LOGCONFIG(TAG, "  Trigger Threshold: %u mm", this->trigger_threshold_mm_);
   ESP_LOGCONFIG(TAG, "  Release Delta: %u mm", this->clear_threshold_mm_);
@@ -386,6 +390,16 @@ bool TofOverdoorCounter::set_temp_address_(VL53L1X_ULD &sensor, uint8_t address)
   return true;
 }
 
+uint16_t TofOverdoorCounter::guarded_intermeasurement_ms_() const {
+  // Stop/start gives one measurement per ROI. Keep the autonomous second
+  // measurement far enough away that normal ESP/Wi-Fi scheduling cannot
+  // start it with the old ROI before the host has read the first result.
+  // Leave room for both the first measurement and the overrun margin even
+  // with the supported 500 ms timing budget.
+  return std::max<uint16_t>(std::max<uint16_t>(ROI_AUTONOMOUS_GUARD_MS, this->intermeasurement_ms_),
+                            2U * this->timing_budget_ms_ + 100U);
+}
+
 bool TofOverdoorCounter::configure_sensor_(Channel &channel) {
   auto &sensor = *channel.sensor;
   VL53L1_Error status = VL53L1_ERROR_NONE;
@@ -402,23 +416,43 @@ bool TofOverdoorCounter::configure_sensor_(Channel &channel) {
   }
   const uint16_t min_timing_budget = this->distance_mode_ == DISTANCE_MODE_SHORT ? 20 : 33;
   const uint16_t timing_budget_ms = std::max<uint16_t>(this->timing_budget_ms_, min_timing_budget);
-  const uint16_t intermeasurement_ms =
-      std::max<uint16_t>(this->intermeasurement_ms_, static_cast<uint16_t>(timing_budget_ms + 4U));
+  const uint16_t intermeasurement_ms = this->guarded_intermeasurement_ms_();
 
   status = sensor.SetTimingBudgetInMs(timing_budget_ms);
   if (status != VL53L1_ERROR_NONE) {
     channel.last_error = status;
     return false;
   }
-  status = sensor.SetInterMeasurementInMs(intermeasurement_ms);
+  // ULD 1.2.3 silently ignores a failed intermeasurement register write, and
+  // its getter truncates the register to 16 bits. Program the same clock
+  // conversion directly, checking the write and the full 32-bit readback.
+  uint16_t clock_pll = 0;
+  status = VL53L1_RdWord(sensor.GetI2CAddress(), VL53L1_RESULT__OSC_CALIBRATE_VAL, &clock_pll);
+  clock_pll &= 0x3FF;
+  if (status != VL53L1_ERROR_NONE || clock_pll == 0) {
+    channel.last_error = status != VL53L1_ERROR_NONE ? status : VL53L1_ERROR_CONTROL_INTERFACE;
+    return false;
+  }
+  const uint32_t guard_ticks = static_cast<uint32_t>(clock_pll * static_cast<uint32_t>(intermeasurement_ms) * 1.075);
+  status = VL53L1_WrDWord(sensor.GetI2CAddress(), VL53L1_SYSTEM__INTERMEASUREMENT_PERIOD, guard_ticks);
   if (status != VL53L1_ERROR_NONE) {
     channel.last_error = status;
+    return false;
+  }
+  uint32_t stored_guard_ticks = 0;
+  status = VL53L1_RdDWord(sensor.GetI2CAddress(), VL53L1_SYSTEM__INTERMEASUREMENT_PERIOD, &stored_guard_ticks);
+  if (status != VL53L1_ERROR_NONE || stored_guard_ticks != guard_ticks) {
+    channel.last_error = status != VL53L1_ERROR_NONE ? status : VL53L1_ERROR_CONTROL_INTERFACE;
     return false;
   }
 
   channel.initialized = true;
   channel.initialized_ms = millis();
+  channel.last_result_ms = channel.initialized_ms;
+  channel.consecutive_hardware_faults = 0;
   channel.ranging_started = false;
+  channel.settling_after_stop = false;
+  channel.ranging_started_ms = 0;
   channel.last_error = 0;
   return true;
 }
@@ -429,6 +463,17 @@ bool TofOverdoorCounter::read_channel_(Channel &channel) {
 
   if (!channel.ranging_started && !this->restart_ranging_(channel)) {
     return false;
+  }
+  if (!channel.ranging_started) return true;  // Bounded asynchronous stop drain.
+
+  // A very delayed loop may have allowed an autonomous second range to start.
+  // Its ROI provenance is no longer guaranteed: drain it, never label it as
+  // the next ROI. Leave a margin for the sensor's independent timing clock.
+  const uint32_t guard_margin = std::max<uint32_t>(50, this->timing_budget_ms_ + 4U);
+  if (channel.ranging_started_ms != 0 &&
+      millis() - channel.ranging_started_ms >= this->guarded_intermeasurement_ms_() - guard_margin) {
+    channel.ranging_started = false;
+    return this->restart_ranging_(channel);
   }
 
   uint8_t ready = 0;
@@ -462,9 +507,19 @@ bool TofOverdoorCounter::read_channel_(Channel &channel) {
   }
 
   const uint32_t now = millis();
+  channel.last_result_ms = now;
+  // I2C transactions themselves may consume the remaining guard margin.
+  if (channel.ranging_started_ms != 0 &&
+      now - channel.ranging_started_ms >= this->guarded_intermeasurement_ms_() - guard_margin) {
+    channel.ranging_started = false;
+    return this->restart_ranging_(channel);
+  }
+  channel.consecutive_hardware_faults = result.Status == HardwareFail
+      ? std::min<unsigned>(255, channel.consecutive_hardware_faults + 1U) : 0;
   zone.fresh = true;
   zone.raw_distance = result.Distance;
   zone.range_status = result.Status;
+  zone.sample_started_ms = channel.ranging_started_ms;
   zone.last_update_ms = now;
 
   channel.raw_distance = result.Distance;
@@ -663,23 +718,28 @@ bool TofOverdoorCounter::switch_channel_zone_(Channel &channel) {
 
   auto &sensor = *channel.sensor;
   const uint8_t next_zone = channel.current_zone == ZONE_OUT ? ZONE_IN : ZONE_OUT;
-  if (sensor.StopRanging() != VL53L1_ERROR_NONE) {
-    channel.ranging_started = false;
-    channel.consecutive_errors++;
-    return false;
-  }
-  delayMicroseconds(250);
-  if (!this->set_channel_roi_(channel, next_zone)) {
-    channel.ranging_started = false;
-    return false;
-  }
-  const auto status = sensor.StartRanging();
+  auto status = sensor.StopRanging();
   if (status != VL53L1_ERROR_NONE) {
     channel.last_error = status;
     channel.ranging_started = false;
+    channel.consecutive_errors = std::min<unsigned>(255, channel.consecutive_errors + 1U);
+    return false;
+  }
+  channel.ranging_started = false;
+  delayMicroseconds(250);
+  if (!this->set_channel_roi_(channel, next_zone)) {
+    channel.consecutive_errors = std::min<unsigned>(255, channel.consecutive_errors + 1U);
+    return false;
+  }
+  status = sensor.StartRanging();
+  if (status != VL53L1_ERROR_NONE) {
+    channel.last_error = status;
+    channel.consecutive_errors = std::min<unsigned>(255, channel.consecutive_errors + 1U);
     return false;
   }
   channel.ranging_started = true;
+  channel.ranging_started_ms = millis();
+  channel.settling_after_stop = false;
   return true;
 }
 
@@ -690,20 +750,44 @@ bool TofOverdoorCounter::restart_ranging_(Channel &channel) {
   }
 
   auto &sensor = *channel.sensor;
-  sensor.StopRanging();
-  delay(2);
-  if (!this->set_channel_roi_(channel, channel.current_zone >= SENSOR_ZONE_COUNT ? ZONE_OUT : channel.current_zone)) {
+  if (!channel.settling_after_stop) {
+    const auto status = sensor.StopRanging();
+    if (status != VL53L1_ERROR_NONE) {
+      channel.last_error = status;
+      channel.consecutive_errors = std::min<unsigned>(255, channel.consecutive_errors + 1U);
+      channel.ranging_started = false;
+      return false;
+    }
+    // ST UM2510: a stop completes any range already in progress. Wait outside
+    // the update loop, then clear its interrupt before assigning another ROI.
+    channel.stop_settle_deadline_ms = millis() + this->timing_budget_ms_ + 4U;
+    channel.settling_after_stop = true;
     channel.ranging_started = false;
-    return false;
+    return true;
   }
-  const auto status = sensor.StartRanging();
+  if (static_cast<int32_t>(millis() - channel.stop_settle_deadline_ms) < 0) return true;
+  auto status = sensor.ClearInterrupt();
   if (status != VL53L1_ERROR_NONE) {
     channel.last_error = status;
-    channel.ranging_started = false;
+    channel.consecutive_errors = std::min<unsigned>(255, channel.consecutive_errors + 1U);
+    return false;
+  }
+  if (!this->set_channel_roi_(channel, channel.current_zone >= SENSOR_ZONE_COUNT ? ZONE_OUT : channel.current_zone)) {
+    channel.consecutive_errors = std::min<unsigned>(255, channel.consecutive_errors + 1U);
+    return false;
+  }
+  status = sensor.StartRanging();
+  if (status != VL53L1_ERROR_NONE) {
+    channel.last_error = status;
+    channel.consecutive_errors = std::min<unsigned>(255, channel.consecutive_errors + 1U);
+    // A failed write may still have reached the device. Drain again on retry.
+    channel.settling_after_stop = false;
     return false;
   }
 
   channel.ranging_started = true;
+  channel.ranging_started_ms = millis();
+  channel.settling_after_stop = false;
   return true;
 }
 
@@ -711,6 +795,7 @@ void TofOverdoorCounter::fail_recovery_() {
   auto &channel = this->channels_[this->recovery_index_];
   this->set_xshut_(this->recovery_index_, false);
   channel.initialized = channel.ranging_started = false;
+  channel.settling_after_stop = false;
   channel.recovery_attempts = std::min<unsigned>(12, channel.recovery_attempts + 1U);
   channel.next_recovery_ms = millis() + std::min<uint32_t>(SENSOR_RECOVERY_MAX_MS,
       SENSOR_RECOVERY_BASE_MS << (channel.recovery_attempts > this->init_retries_ ? channel.recovery_attempts - this->init_retries_ : 0));
@@ -722,9 +807,14 @@ void TofOverdoorCounter::service_recovery_(uint32_t now) {
   if (this->recovery_stage_ == RecoveryStage::IDLE) {
     for (size_t i = 0; i < this->channels_.size(); ++i) {
       auto &channel = this->channels_[i];
-      const bool overdue = now - channel.initialized_ms > 2000U;
+      // Invalid optical results (clothing, near objects, glare) still prove
+      // the device is alive. The old counting-health check reset a sensor on
+      // its very first invalid ROI after two seconds of uptime.
+      const uint32_t result_timeout = std::max<uint32_t>(SENSOR_RESULT_TIMEOUT_MS,
+          4U * std::max<uint16_t>(this->timing_budget_ms_, this->intermeasurement_ms_));
+      const bool stalled = now - channel.last_result_ms > result_timeout;
       if (channel.initialized && channel.consecutive_errors < ERRORS_BEFORE_POWER_CYCLE &&
-          (!overdue || this->channel_healthy_(channel, now, false))) continue;
+          channel.consecutive_hardware_faults < ERRORS_BEFORE_POWER_CYCLE && !stalled) continue;
       if (channel.next_recovery_ms && static_cast<int32_t>(now - channel.next_recovery_ms) < 0) continue;
       this->recovery_index_ = i;
       this->set_xshut_(i, false);
@@ -758,11 +848,15 @@ void TofOverdoorCounter::service_recovery_(uint32_t now) {
       if (static_cast<int32_t>(now - channel.initialized_ms) < 0) return;
       if (static_cast<int32_t>(now - this->recovery_deadline_) >= 0) {
         this->fail_recovery_();
-        // A bus reset invalidates temporal evidence, including healthy channels.
-        this->clear_event_tracking_();
-        this->startup_clear_validated_ = false;
-        this->boot_clear_since_ms_ = 0;
-        this->recover_wire_();
+        // A missing device does not imply a stuck shared bus. Resetting Wire
+        // and all passage evidence here used to interrupt healthy channels
+        // every time an absent sensor failed to boot.
+        if (digitalRead(this->sda_pin_) == LOW || digitalRead(this->scl_pin_) == LOW) {
+          this->clear_event_tracking_();
+          this->startup_clear_validated_ = false;
+          this->boot_clear_since_ms_ = 0;
+          this->recover_wire_();
+        }
         return;
       }
       uint8_t booted = 0;
@@ -842,11 +936,12 @@ void TofOverdoorCounter::load_persisted_state_() {
 
   PersistedState state{};
   bool loaded = this->persisted_state_pref_.load(&state) &&
-                (state.version == PERSISTED_STATE_VERSION || state.version == 5 || state.version == 6);
+                (state.version == PERSISTED_STATE_VERSION || state.version == 5 || state.version == 6 || state.version == 7);
 
   if (loaded && state.version < PERSISTED_STATE_VERSION) {
-    // Older calibration counted scheduler ticks, not independent measurements.
-    // Retain installation tuning/counts but obtain new per-ROI statistics.
+    // Earlier versions could attribute results from an autonomous repeat to
+    // the next ROI. Preserve counts/tuning, but remeasure the empty doorway
+    // after the acquisition fix instead of reusing mixed-field calibration.
     for (auto &sensor : state.calibrations) for (auto &zone : sensor) zone.valid = 0;
     state.version = PERSISTED_STATE_VERSION;
     this->state_dirty_ = true;
@@ -1322,7 +1417,7 @@ void TofOverdoorCounter::update_sensor_states_() {
         const float drop = zone.baseline - distance;
         const bool target = zone.active ? drop > this->adaptive_release_delta_(zone)
                                         : drop >= this->adaptive_trigger_delta_(zone);
-        if (zone.debounce.update(target, now, this->debounce_ms_)) {
+        if (zone.debounce.update(target, zone.last_update_ms, this->debounce_ms_, zone.sample_started_ms)) {
           zone.active = zone.debounce.active;
           if (zone.active) {
             zone.active_since_ms = zone.debounce.since;
@@ -1403,6 +1498,12 @@ void TofOverdoorCounter::apply_idle_baseline_tracking_() {
     return;
   }
 
+  // The first approaching-person sample precedes the debounced active edge.
+  // Do not learn that approach as a new empty-door baseline/noise level.
+  for (const auto &channel : this->channels_)
+    for (const auto &zone : channel.zones)
+      if (zone.debounce.hits) return;
+
   for (auto &channel : this->channels_) {
     if (!channel.initialized || !channel.has_reading || !channel.calibrated || channel.active || channel.blocked) {
       continue;
@@ -1476,6 +1577,7 @@ std::string TofOverdoorCounter::passage_state_text_(PassageState state) const {
 void TofOverdoorCounter::update_detection_state_machine_() {
   const uint32_t now = millis();
   std::array<uint8_t, SENSOR_COUNT> states{}, fresh{};
+  std::array<std::array<counting_core::Crossing, SENSOR_ZONE_COUNT>, SENSOR_COUNT> crossings{};
   uint8_t healthy = 0;
   bool unsettled = false;
   for (size_t i = 0; i < this->channels_.size(); ++i) {
@@ -1485,6 +1587,7 @@ void TofOverdoorCounter::update_detection_state_machine_() {
       if ((healthy & (1U << i)) && channel.zones[z].debounce.hits) unsettled = true;
       if (channel.zones[z].active) states[i] |= 1U << z;
       if (channel.zones[z].fresh && channel.zones[z].valid_measurement) fresh[i] |= 1U << z;
+      crossings[i][z] = channel.zones[z].debounce.crossing;
     }
   }
   this->fusion_.required = this->min_event_sensors_;
@@ -1493,7 +1596,8 @@ void TofOverdoorCounter::update_detection_state_machine_() {
   this->fusion_.minimum_ms = this->min_active_duration_ms_;
   this->fusion_.agreement_ms = this->detection_timeout_ms_;
   this->fusion_.invert = this->invert_direction_;
-  const auto result = this->fusion_.update(now, this->startup_clear_validated_ ? healthy : 0, states, fresh, unsettled);
+  this->fusion_.require_timing_evidence = this->require_timing_evidence_;
+  const auto result = this->fusion_.update(now, this->startup_clear_validated_ ? healthy : 0, states, fresh, unsettled, &crossings);
   this->event_active_ = this->fusion_.active();
   this->event_started_ms_ = this->fusion_.started();
   this->person_standing_in_door_ = this->event_active_ && now - this->event_started_ms_ >= this->standing_timeout_ms_;
@@ -1517,6 +1621,7 @@ void TofOverdoorCounter::update_detection_state_machine_() {
     this->register_detection_(outcome, confidence, std::string(this->ready_for_counting_() ? "Completed clear-doorway episode: " : "Sensor health interrupted episode: ") +
         std::to_string(result.in_votes) + " IN, " + std::to_string(result.out_votes) +
         " OUT; required=" + std::to_string(this->fusion_.required) +
+        "; uncertain timing=" + std::to_string(result.uncertain_timing) +
         "; duration=" + std::to_string(result.duration_ms) + "ms; score is heuristic, not accuracy");
     this->update_passage_state_(outcome == OUTCOME_IN || outcome == OUTCOME_OUT ? PASSAGE_COMPLETED : PASSAGE_CANCELLED);
   } else {
@@ -2264,6 +2369,11 @@ std::string TofOverdoorCounter::get_trace_log_text(uint32_t after_ms, size_t lim
   std::ostringstream oss;
   oss << "# uptime_ms=" << millis() << "\n";
   oss << "# Roode ROI trace v2; masks use sensor_index*2+zone (OUT=0, IN=1)\n";
+  oss << "# acquisition=guarded_roi_v1 direction=crossing_windows_v1 timing_required=" << this->require_timing_evidence_ << "\n";
+  if (this->history_count_) {
+    oss << "# history_oldest_ms=" << this->history_[(this->history_head_ + HISTORY_SIZE - this->history_count_) % HISTORY_SIZE].timestamp_ms << "\n";
+    oss << "# history_newest_ms=" << this->history_[(this->history_head_ + HISTORY_SIZE - 1) % HISTORY_SIZE].timestamp_ms << "\n";
+  }
   oss << "# debounce_ms=" << this->debounce_ms_ << " clear_ms=" << std::max(this->direction_window_ms_, this->cooldown_ms_)
       << " quorum=" << unsigned(this->min_event_sensors_) << " min_healthy=" << unsigned(this->min_valid_sensors_)
       << " agreement_ms=" << this->detection_timeout_ms_ << " invert=" << this->invert_direction_ << "\n";

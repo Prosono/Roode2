@@ -30,18 +30,46 @@ struct Statistics {
   float deviation() const { return count ? std::sqrt(std::max(0.0, m2 / count)) : 0; }
 };
 
+// The crossing happened after the last sample on the old side of a threshold
+// and no later than the first sample on the new side. Poll/confirmation times
+// alone cannot establish direction when two alternating ROIs overlap in time.
+struct Crossing {
+  uint32_t lower{0}, upper{0};
+  bool valid{false};
+};
+
+inline uint8_t crossing_order(const Crossing &a, const Crossing &b) {
+  if (!a.valid || !b.valid) return 0;
+  if (static_cast<int32_t>(b.lower - a.upper) > 0) return 1;
+  if (static_cast<int32_t>(a.lower - b.upper) > 0) return 2;
+  return 0;  // Touching/overlapping intervals do not establish an order.
+}
+
 // Call only for a NEW valid measurement. A lone outlier cannot become a hit
 // merely because the scheduler has run many times while waiting for the sensor.
 struct Debounce {
   bool active{false}, candidate{false};
   uint32_t since{0};
   unsigned hits{0};
+  Crossing crossing;
+  uint32_t last_stable{0}, candidate_lower{0};
+  bool have_stable{false}, candidate_bounded{false};
   bool update(bool target, uint32_t now, uint32_t hold_ms) {
-    if (target == active) { hits = 0; return false; }
-    if (!hits || target != candidate) { candidate = target; since = now; hits = 1; return false; }
+    return update(target, now, hold_ms, now);
+  }
+  bool update(bool target, uint32_t now, uint32_t hold_ms, uint32_t sample_started) {
+    if (target == active) { hits = 0; last_stable = sample_started; have_stable = true; return false; }
+    if (!hits || target != candidate) {
+      candidate = target; since = now; hits = 1;
+      candidate_lower = last_stable; candidate_bounded = have_stable;
+      return false;
+    }
     ++hits;
     if (now - since < hold_ms) return false;
     active = target;
+    crossing = {candidate_lower, since, candidate_bounded};
+    last_stable = sample_started;
+    have_stable = true;
     hits = 0;
     return true;
   }
@@ -53,8 +81,18 @@ struct Path {
   uint8_t first{0}, last{0}, seen{0}, previous{0};
   bool ambiguous{false}, cleared{false}, visited{false};
   uint32_t started{0}, finished{0};
-  void observe(uint8_t state, uint32_t now) {
+  std::array<Crossing, 2> rises{}, falls{};
+  bool timed{false};
+  void observe(uint8_t state, uint32_t now, const std::array<Crossing, 2> *crossings = nullptr) {
     if (state == previous) return;
+    if (crossings != nullptr) {
+      timed = true;
+      for (unsigned z = 0; z < 2; ++z) {
+        if (!((state ^ previous) & (1U << z))) continue;
+        if (state & (1U << z)) rises[z] = (*crossings)[z];
+        else falls[z] = (*crossings)[z];
+      }
+    }
     previous = state;
     if (!state) {
       if (visited) { cleared = true; finished = now; }
@@ -70,9 +108,17 @@ struct Path {
     seen |= state;
     if (state != 3) last = state;
   }
-  uint8_t direction(uint32_t minimum_ms) const {
+  uint8_t geometric_direction(uint32_t minimum_ms) const {
     return visited && cleared && !ambiguous && first && last && first != last && seen == 3 &&
                    finished - started >= minimum_ms ? first : 0;
+  }
+  uint8_t direction(uint32_t minimum_ms) const {
+    const auto vote = geometric_direction(minimum_ms);
+    if (!vote || !timed) return vote;
+    const auto entering = crossing_order(rises[0], rises[1]);
+    const auto leaving = crossing_order(falls[0], falls[1]);
+    if ((!entering && !leaving) || (entering && entering != vote) || (leaving && leaving != vote)) return 0;
+    return vote;
   }
 };
 
@@ -80,6 +126,7 @@ enum class Decision : uint8_t { NONE, IN, OUT, UNSURE_IN, UNSURE_OUT, REJECTED }
 struct Result {
   Decision decision{Decision::NONE};
   uint8_t in_votes{0}, out_votes{0}, participants{0};
+  uint8_t uncertain_timing{0};
   uint32_t duration_ms{0};
 };
 
@@ -92,12 +139,17 @@ class Fusion {
   uint8_t required_health{0};  // Optional higher availability requirement.
   uint32_t clear_ms{90}, minimum_ms{25}, agreement_ms{3000};
   bool invert{false};
+  // Keep uncertain timing diagnostic until a given installation has enough
+  // temporal separation. Enabling this on undersampled data can reject every
+  // passage, including correct ones; it is not a universal accuracy upgrade.
+  bool require_timing_evidence{false};
   void reset() { *this = Fusion{}; }
   bool active() const { return active_; }
   uint32_t started() const { return started_; }
   const Path &path(unsigned i) const { return paths_[i]; }
   Result update(uint32_t now, uint8_t healthy, const std::array<uint8_t, 4> &states,
-                const std::array<uint8_t, 4> &fresh, bool unsettled = false) {
+                const std::array<uint8_t, 4> &fresh, bool unsettled = false,
+                const std::array<std::array<Crossing, 2>, 4> *crossings = nullptr) {
     Result result;
     uint8_t occupied = 0;
     for (unsigned i = 0; i < 4; ++i) {
@@ -122,7 +174,7 @@ class Fusion {
     }
     if (active_) {
       for (unsigned i = 0; i < 4; ++i)
-        if (eligible_ & (1U << i)) paths_[i].observe(states[i], now);
+        if (eligible_ & (1U << i)) paths_[i].observe(states[i], now, crossings ? &(*crossings)[i] : nullptr);
     }
     if (occupied || unsettled) {
       clear_pending_ = false;
@@ -141,7 +193,10 @@ class Fusion {
     for (unsigned i = 0; i < 4; ++i) {
       if (!(eligible_ & healthy & (1U << i))) continue;
       const auto &p = paths_[i];
-      const uint8_t vote = p.direction(minimum_ms);
+      const uint8_t timed_vote = p.direction(minimum_ms);
+      const uint8_t geometric_vote = p.geometric_direction(minimum_ms);
+      if (!timed_vote && p.timed && geometric_vote) ++result.uncertain_timing;
+      const uint8_t vote = require_timing_evidence ? timed_vote : geometric_vote;
       if (!vote) continue;
       result.participants |= 1U << i;
       // OUT ROI first historically maps to OUT unless installation is inverted.

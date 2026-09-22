@@ -1,0 +1,111 @@
+title: Roode romtest
+views:
+  - title: Romtest
+    path: roode-test
+    icon: mdi:account-group
+    type: masonry
+    cards:
+      - type: entities
+        title: Status for samlet estimat
+        show_header_toggle: false
+        entities:
+          - entity: sensor.roode_counter_fusion_status
+            name: Enighet og tilgjengelighet
+      - type: entities
+        title: Samlet resultat
+        show_header_toggle: false
+        entities:
+          - entity: sensor.roode_combined_people_inside
+            name: Personer i rommet (estimat)
+          - entity: binary_sensor.roode_room_occupied
+            name: Personer til stede
+          - entity: binary_sensor.roode_counter_problem
+            name: Uenighet / utfall over 30 sekunder
+          - entity: sensor.roode_counter_difference
+            name: Forskjell mellom tellerne
+      - type: entities
+        title: Dørteller Nede
+        show_header_toggle: false
+        entities:
+          - entity: number.office_dorteller_nede_dorteller_nede_people_inside
+            name: Personer inne
+          - entity: sensor.office_dorteller_nede_dorteller_nede_confirmed_in
+            name: Bekreftet IN
+          - entity: sensor.office_dorteller_nede_dorteller_nede_confirmed_out
+            name: Bekreftet OUT
+          - entity: binary_sensor.office_dorteller_nede_dorteller_nede_counter_ready
+            name: Teller klar
+          - entity: binary_sensor.office_dorteller_nede_dorteller_nede_sensor_covered
+            name: Sensor tildekket
+          - entity: sensor.office_dorteller_nede_dorteller_nede_system_status
+            name: Systemstatus
+          - entity: sensor.office_dorteller_nede_dorteller_nede_unsure_detection_in
+            name: Usikre IN
+          - entity: sensor.office_dorteller_nede_dorteller_nede_unsure_detection_out
+            name: Usikre OUT
+      - type: entities
+        title: Dørteller Oppe
+        show_header_toggle: false
+        entities:
+          - entity: number.office_dorteller_oppe_dorteller_oppe_people_inside
+            name: Personer inne
+          - entity: sensor.office_dorteller_oppe_dorteller_oppe_confirmed_in
+            name: Bekreftet IN
+          - entity: sensor.office_dorteller_oppe_dorteller_oppe_confirmed_out
+            name: Bekreftet OUT
+          - entity: binary_sensor.office_dorteller_oppe_dorteller_oppe_counter_ready
+            name: Teller klar
+          - entity: binary_sensor.office_dorteller_oppe_dorteller_oppe_sensor_covered
+            name: Sensor tildekket
+          - entity: sensor.office_dorteller_oppe_dorteller_oppe_system_status
+            name: Systemstatus
+          - entity: sensor.office_dorteller_oppe_dorteller_oppe_unsure_detection_in
+            name: Usikre IN
+          - entity: sensor.office_dorteller_oppe_dorteller_oppe_unsure_detection_out
+            name: Usikre OUT
+      - type: history-graph
+        title: Persontall · siste time
+        hours_to_show: 1
+        entities:
+          - entity: sensor.roode_combined_people_inside
+            name: Samlet
+          - entity: sensor.roode_nede_people_inside
+            name: Nede
+          - entity: sensor.roode_oppe_people_inside
+            name: Oppe
+      - type: history-graph
+        title: Uenighet og tilgjengelighet
+        hours_to_show: 1
+        entities:
+          - sensor.roode_counter_fusion_status
+          - binary_sensor.roode_counter_problem
+      - type: entities
+        title: Fasit for testen
+        show_header_toggle: false
+        entities:
+          - entity: input_number.roode_test_actual_people
+            name: Faktisk antall personer
+          - entity: sensor.roode_test_error
+            name: Tellefeil (estimat minus faktisk)
+      - type: button
+        name: Korriger begge tellere til faktisk antall
+        icon: mdi:account-check
+        tap_action:
+          action: perform-action
+          perform_action: script.roode_set_both_counts
+          confirmation:
+            text: Dette overskriver persontallet på begge tellerne med testens faktiske antall. Er antallet riktig og døren fri?
+      - type: horizontal-stack
+        cards:
+          - type: button
+            name: Åpne .100
+            icon: mdi:web
+            tap_action:
+              action: url
+              url_path: http://10.0.0.100/
+          - type: button
+            name: Åpne .101
+            icon: mdi:web
+            tap_action:
+              action: url
+              url_path: http://10.0.0.101/

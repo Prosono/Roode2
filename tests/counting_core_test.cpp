@@ -19,6 +19,56 @@ struct Rig {
   void finish() { all(0); all(0); }
 };
 int main() {
+  // Threshold crossing bounds use measurement time, never the later poll
+  // which happens to confirm a debounced state.
+  { Debounce d; d.update(false,100,25); d.update(true,140,25);
+    assert(d.update(true,230,25));
+    assert(d.crossing.valid && d.crossing.lower==100 && d.crossing.upper==140);
+    d.update(false,250,25); d.update(true,270,25); // cancelled release
+    d.update(false,300,25); assert(d.update(false,340,25));
+    assert(d.crossing.lower==270 && d.crossing.upper==300); }
+  { Debounce d; d.update(true,10,25); assert(d.update(true,50,25));
+    assert(!d.crossing.valid); } // no preceding clear measurement
+  { Debounce a,b;
+    a.update(false,200,25,100);a.update(true,250,25,210);a.update(true,290,25,260);
+    b.update(false,100,25,80);b.update(true,180,25,140);b.update(true,220,25,190);
+    assert(crossing_order(a.crossing,b.crossing)==0); // late read cannot fabricate B-first
+  }
+  { assert(crossing_order({10,20,true},{20,30,true})==0);
+    assert(crossing_order({10,20,true},{21,30,true})==1);
+    assert(crossing_order({UINT32_MAX-30,UINT32_MAX-10,true},{10,30,true})==1); }
+  auto timed_path=[](std::array<Crossing,2> rises, std::array<Crossing,2> falls) {
+    Path p; p.observe(1,200,&rises); p.observe(3,300,&rises);
+    p.observe(2,400,&falls); p.observe(0,500,&falls); return p;
+  };
+  const std::array<Crossing,2> clear_rise{{{100,140,true},{160,180,true}}};
+  const std::array<Crossing,2> uncertain_rise{{{100,170,true},{110,180,true}}};
+  const std::array<Crossing,2> clear_fall{{{310,340,true},{360,380,true}}};
+  const std::array<Crossing,2> uncertain_fall{{{310,370,true},{320,380,true}}};
+  assert(timed_path(uncertain_rise,uncertain_fall).direction(25)==0);
+  assert(timed_path(clear_rise,uncertain_fall).direction(25)==1);
+  assert(timed_path(uncertain_rise,clear_fall).direction(25)==1);
+  assert(timed_path(clear_rise,{{clear_fall[1],clear_fall[0]}}).direction(25)==0);
+  assert(timed_path({{clear_rise[1],clear_rise[0]}},uncertain_fall).direction(25)==0);
+  // Sampling-phase ambiguity in the opposing track cannot veto two sound
+  // tracks. A third genuinely contradictory direction must still veto them.
+  for(bool strong_opposition:{false,true}) {
+    Fusion f; f.required=2; f.required_health=3; f.require_timing_evidence=true;
+    std::array<uint8_t,4> fresh{3,3,3,3};
+    std::array<std::array<Crossing,2>,4> edges{};
+    f.update(1,15,{},fresh,false,&edges); f.update(101,15,{},fresh,false,&edges);
+    edges[0]=edges[1]=clear_rise;
+    edges[2]=strong_opposition ? std::array<Crossing,2>{clear_rise[1],clear_rise[0]} : uncertain_rise;
+    f.update(200,15,{1,1,2,0},fresh,false,&edges);
+    f.update(300,15,{3,3,3,0},fresh,false,&edges);
+    edges[0]=edges[1]=clear_fall;
+    edges[2]=strong_opposition ? std::array<Crossing,2>{clear_fall[1],clear_fall[0]} : uncertain_fall;
+    f.update(400,15,{2,2,1,0},fresh,false,&edges);
+    f.update(500,15,{},fresh,false,&edges);
+    const auto result=f.update(600,15,{},fresh,false,&edges);
+    assert(result.decision==(strong_opposition?Decision::REJECTED:Decision::OUT));
+    assert(result.uncertain_timing==(strong_opposition?0:1));
+  }
   { Rig r; r.arm(); r.all(1); r.all(3); r.all(2); assert(r.results.empty()); r.finish();
     assert(r.results.size()==1 && r.results[0].decision==Decision::OUT); r.all(0); assert(r.results.size()==1); }
   { Rig r; r.arm(); r.all(2); r.all(3); r.all(1); r.finish(); assert(r.results[0].decision==Decision::IN); }

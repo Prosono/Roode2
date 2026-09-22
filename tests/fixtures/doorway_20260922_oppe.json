@@ -1,0 +1,132 @@
+{
+  "format": "roode-replay-v1",
+  "limitation": "Sampled snapshots can omit intermediate readings and debounce candidates. Raw replay is diagnostic, not an accuracy measurement. Clock offset includes response latency. Expected directions require a ground-truth test record.",
+  "clock_offset_ms": 1790081723486,
+  "clock_offset_spread_ms": 207,
+  "first_device_ms": 8591523,
+  "last_device_ms": 8641511,
+  "rows": 1323,
+  "snapshot_gap_max_ms": 257,
+  "snapshot_gap_p99_ms": 164,
+  "healthy_mask_rows": {
+    "15": 50,
+    "7": 1182,
+    "5": 91
+  },
+  "zones": {
+    "U3_out": {
+      "unique_samples": 431,
+      "sample_gap_median_ms": 108.0,
+      "sample_gap_max_ms": 288,
+      "range_status_counts": {
+        "0": 431
+      },
+      "trigger_min_mm": 222,
+      "trigger_max_mm": 313
+    },
+    "U3_in": {
+      "unique_samples": 431,
+      "sample_gap_median_ms": 107.0,
+      "sample_gap_max_ms": 309,
+      "range_status_counts": {
+        "0": 431
+      },
+      "trigger_min_mm": 246,
+      "trigger_max_mm": 316
+    },
+    "U4_out": {
+      "unique_samples": 385,
+      "sample_gap_median_ms": 111.0,
+      "sample_gap_max_ms": 340,
+      "range_status_counts": {
+        "0": 385
+      },
+      "trigger_min_mm": 200,
+      "trigger_max_mm": 267
+    },
+    "U4_in": {
+      "unique_samples": 385,
+      "sample_gap_median_ms": 112.0,
+      "sample_gap_max_ms": 348,
+      "range_status_counts": {
+        "0": 385
+      },
+      "trigger_min_mm": 200,
+      "trigger_max_mm": 250
+    },
+    "U7_out": {
+      "unique_samples": 416,
+      "sample_gap_median_ms": 111,
+      "sample_gap_max_ms": 348,
+      "range_status_counts": {
+        "0": 416
+      },
+      "trigger_min_mm": 219,
+      "trigger_max_mm": 303
+    },
+    "U7_in": {
+      "unique_samples": 416,
+      "sample_gap_median_ms": 113,
+      "sample_gap_max_ms": 258,
+      "range_status_counts": {
+        "0": 416
+      },
+      "trigger_min_mm": 251,
+      "trigger_max_mm": 294
+    },
+    "U8_out": {
+      "unique_samples": 13,
+      "sample_gap_median_ms": 135.5,
+      "sample_gap_max_ms": 200,
+      "range_status_counts": {
+        "0": 13
+      },
+      "trigger_min_mm": 266,
+      "trigger_max_mm": 285
+    },
+    "U8_in": {
+      "unique_samples": 14,
+      "sample_gap_median_ms": 130,
+      "sample_gap_max_ms": 214,
+      "range_status_counts": {
+        "0": 14
+      },
+      "trigger_min_mm": 263,
+      "trigger_max_mm": 282
+    }
+  },
+  "recorded_events": [
+    {
+      "approx_wallclock": "2026-09-22T15:18:44.486000+00:00",
+      "event": "02:23:21 - UNSURE_OUT - Completed clear-doorway episode: 0 IN, 1 OUT; required=2; duration=692ms; score is heuristic, not accuracy - evidence score 25/100"
+    },
+    {
+      "approx_wallclock": "2026-09-22T15:18:48.486000+00:00",
+      "event": "02:23:25 - CANCELLED - Completed clear-doorway episode: 0 IN, 0 OUT; required=2; duration=813ms; score is heuristic, not accuracy - evidence score 0/100"
+    },
+    {
+      "approx_wallclock": "2026-09-22T15:18:53.486000+00:00",
+      "event": "02:23:30 - CANCELLED - Completed clear-doorway episode: 2 IN, 1 OUT; required=2; duration=833ms; score is heuristic, not accuracy - evidence score 0/100"
+    },
+    {
+      "approx_wallclock": "2026-09-22T15:18:57.486000+00:00",
+      "event": "02:23:34 - OUT - Completed clear-doorway episode: 0 IN, 2 OUT; required=2; duration=738ms; score is heuristic, not accuracy - evidence score 50/100"
+    },
+    {
+      "approx_wallclock": "2026-09-22T15:19:01.486000+00:00",
+      "event": "02:23:38 - OUT - Completed clear-doorway episode: 0 IN, 2 OUT; required=2; duration=846ms; score is heuristic, not accuracy - evidence score 50/100"
+    },
+    {
+      "approx_wallclock": "2026-09-22T15:19:05.486000+00:00",
+      "event": "02:23:42 - IN - Completed clear-doorway episode: 2 IN, 0 OUT; required=2; duration=701ms; score is heuristic, not accuracy - evidence score 50/100"
+    },
+    {
+      "approx_wallclock": "2026-09-22T15:19:15.486000+00:00",
+      "event": "02:23:52 - OUT - Completed clear-doorway episode: 0 IN, 2 OUT; required=2; duration=650ms; score is heuristic, not accuracy - evidence score 50/100"
+    },
+    {
+      "approx_wallclock": "2026-09-22T15:19:19.486000+00:00",
+      "event": "02:23:56 - UNSURE_OUT - Completed clear-doorway episode: 0 IN, 1 OUT; required=2; duration=822ms; score is heuristic, not accuracy - evidence score 25/100"
+    }
+  ]
+}

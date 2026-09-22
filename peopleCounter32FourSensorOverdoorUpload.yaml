@@ -66,6 +66,8 @@ wifi:
 captive_portal:
 
 web_server:
+  # Local controls remain available; internal entities are excluded from the HA API.
+  include_internal: true
   port: 80
   version: 3
   auth:
@@ -153,6 +155,7 @@ tof_overdoor_counter:
 button:
   - platform: restart
     name: ${friendly_name} Restart
+    internal: true
     entity_category: config
     web_server:
       sorting_group_id: web_group_controls
@@ -160,6 +163,7 @@ button:
 
   - platform: template
     name: ${friendly_name} Rediscover Sensors
+    internal: true
     entity_category: config
     web_server:
       sorting_group_id: web_group_controls
@@ -170,6 +174,7 @@ button:
 
   - platform: template
     name: ${friendly_name} Recalibrate Floor Reference
+    internal: true
     entity_category: config
     web_server:
       sorting_group_id: web_group_controls
@@ -180,6 +185,7 @@ button:
 
   - platform: template
     name: ${friendly_name} Reset Counts
+    internal: true
     entity_category: config
     web_server:
       sorting_group_id: web_group_controls
@@ -190,6 +196,7 @@ button:
 
   - platform: template
     name: ${friendly_name} Reset Unsure IN
+    internal: true
     entity_category: config
     web_server:
       sorting_group_id: web_group_controls
@@ -200,6 +207,7 @@ button:
 
   - platform: template
     name: ${friendly_name} Reset Unsure OUT
+    internal: true
     entity_category: config
     web_server:
       sorting_group_id: web_group_controls
@@ -210,6 +218,7 @@ button:
 
   - platform: template
     name: ${friendly_name} Reset All Counters
+    internal: true
     entity_category: config
     web_server:
       sorting_group_id: web_group_controls
@@ -221,6 +230,7 @@ button:
 switch:
   - platform: template
     name: ${friendly_name} Invert Direction
+    internal: true
     entity_category: config
     optimistic: true
     restore_mode: DISABLED
@@ -240,6 +250,7 @@ switch:
 
   - platform: template
     name: ${friendly_name} Auto Save Enabled
+    internal: true
     entity_category: config
     optimistic: true
     restore_mode: DISABLED
@@ -259,6 +270,7 @@ switch:
 
   - platform: template
     name: ${friendly_name} Debug Logging
+    internal: true
     entity_category: config
     optimistic: true
     restore_mode: DISABLED
@@ -285,8 +297,12 @@ number:
     step: 1
     mode: box
     update_interval: 1s
+    # Keep the existing number.* entity ID; publish only when its value changes.
     lambda: |-
-      return id(overdoor_counter).get_people_count();
+      const float count = id(overdoor_counter).get_people_count();
+      if (id(people_inside_number).has_state() && id(people_inside_number).state == count)
+        return {};
+      return count;
     set_action:
       - lambda: |-
           id(overdoor_counter).set_people_inside(static_cast<int>(x));
@@ -294,6 +310,7 @@ number:
 
   - platform: template
     name: ${friendly_name} Trigger Delta
+    internal: true
     entity_category: config
     unit_of_measurement: mm
     mode: box
@@ -313,6 +330,7 @@ number:
 
   - platform: template
     name: ${friendly_name} Release Delta
+    internal: true
     entity_category: config
     unit_of_measurement: mm
     mode: box
@@ -332,6 +350,7 @@ number:
 
   - platform: template
     name: ${friendly_name} Baseline Tolerance
+    internal: true
     entity_category: config
     unit_of_measurement: mm
     mode: box
@@ -351,6 +370,7 @@ number:
 
   - platform: template
     name: ${friendly_name} Debounce
+    internal: true
     entity_category: config
     unit_of_measurement: ms
     mode: box
@@ -370,6 +390,7 @@ number:
 
   - platform: template
     name: ${friendly_name} Vote Agreement Window
+    internal: true
     entity_category: config
     unit_of_measurement: ms
     mode: box
@@ -389,6 +410,7 @@ number:
 
   - platform: template
     name: ${friendly_name} Minimum Clear Interval
+    internal: true
     entity_category: config
     unit_of_measurement: ms
     mode: box
@@ -408,6 +430,7 @@ number:
 
   - platform: template
     name: ${friendly_name} Min Valid Sensors
+    internal: true
     entity_category: config
     mode: box
     min_value: 2
@@ -426,6 +449,7 @@ number:
 
   - platform: template
     name: ${friendly_name} Min Event Sensors
+    internal: true
     entity_category: config
     mode: box
     min_value: 2
@@ -444,6 +468,7 @@ number:
 
   - platform: template
     name: ${friendly_name} Min Active Duration
+    internal: true
     entity_category: config
     unit_of_measurement: ms
     mode: box
@@ -463,6 +488,7 @@ number:
 
   - platform: template
     name: ${friendly_name} Clear Confirmation
+    internal: true
     entity_category: config
     unit_of_measurement: ms
     mode: box
@@ -482,6 +508,7 @@ number:
 
   - platform: template
     name: ${friendly_name} Max People Inside
+    internal: true
     entity_category: config
     mode: box
     min_value: 1
@@ -498,9 +525,12 @@ number:
           id(overdoor_counter).set_max_people_inside((uint16_t) x);
           id(overdoor_counter).persist_runtime_state();
 
+# Minimal HA surface: occupancy, IN/OUT, uncertain counts, readiness/cover,
+# system status, uptime and Wi-Fi signal. Tuning and raw data stay local.
 binary_sensor:
   - platform: status
     name: ${friendly_name} Device Status
+    internal: true
     entity_category: diagnostic
     web_server:
       sorting_group_id: web_group_overview
@@ -516,6 +546,7 @@ binary_sensor:
 
   - platform: template
     name: ${friendly_name} Presence
+    internal: true
     lambda: |-
       return id(overdoor_counter).get_presence_state() > 0.5f;
     web_server:
@@ -524,6 +555,7 @@ binary_sensor:
 
   - platform: template
     name: ${friendly_name} OUT Group Active
+    internal: true
     lambda: |-
       return id(overdoor_counter).get_row_active_state(0) > 0.5f;
     web_server:
@@ -532,6 +564,7 @@ binary_sensor:
 
   - platform: template
     name: ${friendly_name} IN Group Active
+    internal: true
     lambda: |-
       return id(overdoor_counter).get_row_active_state(1) > 0.5f;
     web_server:
@@ -540,6 +573,7 @@ binary_sensor:
 
   - platform: template
     name: ${friendly_name} Person Standing In Door
+    internal: true
     lambda: |-
       return id(overdoor_counter).get_person_standing_state() > 0.5f;
     web_server:
@@ -558,6 +592,7 @@ binary_sensor:
 sensor:
   - platform: template
     name: ${friendly_name} Discovered Sensors
+    internal: true
     unit_of_measurement: sensors
     accuracy_decimals: 0
     update_interval: 5s
@@ -581,6 +616,7 @@ sensor:
 
   - platform: template
     name: ${friendly_name} Cycle Duration
+    internal: true
     unit_of_measurement: ms
     accuracy_decimals: 0
     update_interval: 5s
@@ -594,6 +630,7 @@ sensor:
 
   - platform: template
     name: ${friendly_name} Update Skew
+    internal: true
     unit_of_measurement: ms
     accuracy_decimals: 0
     update_interval: 5s
@@ -607,6 +644,7 @@ sensor:
 
   - platform: template
     name: ${friendly_name} Last Decision Latency
+    internal: true
     unit_of_measurement: ms
     accuracy_decimals: 0
     update_interval: 5s
@@ -620,6 +658,7 @@ sensor:
 
   - platform: template
     name: ${friendly_name} People Inside
+    internal: true
     unit_of_measurement: persons
     accuracy_decimals: 0
     update_interval: 100ms
@@ -668,6 +707,7 @@ sensor:
 
   - platform: template
     name: ${friendly_name} Rejected Events
+    internal: true
     unit_of_measurement: events
     accuracy_decimals: 0
     update_interval: 5s
@@ -693,6 +733,7 @@ sensor:
 
   - platform: template
     name: ${friendly_name} Last Evidence Score
+    internal: true
     unit_of_measurement: "%"
     accuracy_decimals: 0
     update_interval: 5s
@@ -706,6 +747,7 @@ sensor:
 
   - platform: template
     name: ${friendly_name} Calibration Progress
+    internal: true
     unit_of_measurement: "%"
     accuracy_decimals: 0
     update_interval: 5s
@@ -719,6 +761,7 @@ sensor:
 
   - platform: template
     name: ${friendly_name} OUT Group Distance
+    internal: true
     unit_of_measurement: mm
     accuracy_decimals: 0
     update_interval: 1s
@@ -731,6 +774,7 @@ sensor:
 
   - platform: template
     name: ${friendly_name} OUT Group Baseline
+    internal: true
     unit_of_measurement: mm
     accuracy_decimals: 0
     update_interval: 5s
@@ -744,6 +788,7 @@ sensor:
 
   - platform: template
     name: ${friendly_name} OUT Group Drop
+    internal: true
     unit_of_measurement: mm
     accuracy_decimals: 0
     update_interval: 1s
@@ -757,6 +802,7 @@ sensor:
 
   - platform: template
     name: ${friendly_name} IN Group Distance
+    internal: true
     unit_of_measurement: mm
     accuracy_decimals: 0
     update_interval: 1s
@@ -769,6 +815,7 @@ sensor:
 
   - platform: template
     name: ${friendly_name} IN Group Baseline
+    internal: true
     unit_of_measurement: mm
     accuracy_decimals: 0
     update_interval: 5s
@@ -782,6 +829,7 @@ sensor:
 
   - platform: template
     name: ${friendly_name} IN Group Drop
+    internal: true
     unit_of_measurement: mm
     accuracy_decimals: 0
     update_interval: 1s
@@ -795,6 +843,7 @@ sensor:
 
   - platform: template
     name: ${friendly_name} U3 Distance
+    internal: true
     unit_of_measurement: mm
     accuracy_decimals: 0
     update_interval: 1s
@@ -807,6 +856,7 @@ sensor:
 
   - platform: template
     name: ${friendly_name} U4 Distance
+    internal: true
     unit_of_measurement: mm
     accuracy_decimals: 0
     update_interval: 1s
@@ -819,6 +869,7 @@ sensor:
 
   - platform: template
     name: ${friendly_name} U7 Distance
+    internal: true
     unit_of_measurement: mm
     accuracy_decimals: 0
     update_interval: 1s
@@ -831,6 +882,7 @@ sensor:
 
   - platform: template
     name: ${friendly_name} U8 Distance
+    internal: true
     unit_of_measurement: mm
     accuracy_decimals: 0
     update_interval: 1s
@@ -843,6 +895,7 @@ sensor:
 
   - platform: template
     name: ${friendly_name} U3 Raw Distance
+    internal: true
     unit_of_measurement: mm
     accuracy_decimals: 0
     update_interval: 1s
@@ -857,6 +910,7 @@ sensor:
 
   - platform: template
     name: ${friendly_name} U4 Raw Distance
+    internal: true
     unit_of_measurement: mm
     accuracy_decimals: 0
     update_interval: 1s
@@ -871,6 +925,7 @@ sensor:
 
   - platform: template
     name: ${friendly_name} U7 Raw Distance
+    internal: true
     unit_of_measurement: mm
     accuracy_decimals: 0
     update_interval: 1s
@@ -885,6 +940,7 @@ sensor:
 
   - platform: template
     name: ${friendly_name} U8 Raw Distance
+    internal: true
     unit_of_measurement: mm
     accuracy_decimals: 0
     update_interval: 1s
@@ -899,6 +955,7 @@ sensor:
 
   - platform: template
     name: ${friendly_name} U3 Baseline
+    internal: true
     unit_of_measurement: mm
     accuracy_decimals: 0
     update_interval: 5s
@@ -912,6 +969,7 @@ sensor:
 
   - platform: template
     name: ${friendly_name} U4 Baseline
+    internal: true
     unit_of_measurement: mm
     accuracy_decimals: 0
     update_interval: 5s
@@ -925,6 +983,7 @@ sensor:
 
   - platform: template
     name: ${friendly_name} U7 Baseline
+    internal: true
     unit_of_measurement: mm
     accuracy_decimals: 0
     update_interval: 5s
@@ -938,6 +997,7 @@ sensor:
 
   - platform: template
     name: ${friendly_name} U8 Baseline
+    internal: true
     unit_of_measurement: mm
     accuracy_decimals: 0
     update_interval: 5s
@@ -951,6 +1011,7 @@ sensor:
 
   - platform: template
     name: ${friendly_name} U3 Calibration Quality
+    internal: true
     unit_of_measurement: "%"
     accuracy_decimals: 0
     update_interval: 5s
@@ -964,6 +1025,7 @@ sensor:
 
   - platform: template
     name: ${friendly_name} U4 Calibration Quality
+    internal: true
     unit_of_measurement: "%"
     accuracy_decimals: 0
     update_interval: 5s
@@ -977,6 +1039,7 @@ sensor:
 
   - platform: template
     name: ${friendly_name} U7 Calibration Quality
+    internal: true
     unit_of_measurement: "%"
     accuracy_decimals: 0
     update_interval: 5s
@@ -990,6 +1053,7 @@ sensor:
 
   - platform: template
     name: ${friendly_name} U8 Calibration Quality
+    internal: true
     unit_of_measurement: "%"
     accuracy_decimals: 0
     update_interval: 5s
@@ -1001,16 +1065,28 @@ sensor:
     lambda: |-
       return id(overdoor_counter).get_calibration_quality(3);
 
+  - platform: uptime
+    name: ${friendly_name} Uptime
+    entity_category: diagnostic
+    update_interval: 60s
+
+  - platform: wifi_signal
+    name: ${friendly_name} WiFi Signal
+    entity_category: diagnostic
+    update_interval: 60s
+
 text_sensor:
   - platform: wifi_info
     ip_address:
       name: ${friendly_name} IP Address
+      internal: true
       entity_category: diagnostic
       web_server:
         sorting_group_id: web_group_overview
         sorting_weight: 70
     ssid:
       name: ${friendly_name} WiFi SSID
+      internal: true
       entity_category: diagnostic
       web_server:
         sorting_group_id: web_group_health
@@ -1036,6 +1112,7 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} Detection Phase
+    internal: true
     update_interval: 5s
     filters: *ha_text_changes
     web_server:
@@ -1046,6 +1123,7 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} Last Direction
+    internal: true
     update_interval: 5s
     filters: *ha_text_changes
     web_server:
@@ -1056,6 +1134,7 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} Last Detection Time
+    internal: true
     update_interval: 5s
     filters: *ha_text_changes
     entity_category: diagnostic
@@ -1067,6 +1146,7 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} Last Decision Reason
+    internal: true
     update_interval: 5s
     filters: *ha_text_changes
     entity_category: diagnostic
@@ -1078,6 +1158,7 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} Passage State
+    internal: true
     update_interval: 5s
     filters: *ha_text_changes
     entity_category: diagnostic
@@ -1102,6 +1183,7 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} Blocked Sensors
+    internal: true
     update_interval: 5s
     filters: *ha_text_changes
     entity_category: diagnostic
@@ -1113,6 +1195,7 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} Summary
+    internal: true
     update_interval: 5s
     filters: *ha_text_changes
     web_server:
@@ -1123,6 +1206,7 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} Discovery Map
+    internal: true
     update_interval: 10s
     filters: *ha_text_changes
     entity_category: diagnostic
@@ -1147,6 +1231,7 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} U3 Status
+    internal: true
     update_interval: 5s
     filters: *ha_text_changes
     entity_category: diagnostic
@@ -1158,6 +1243,7 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} U4 Status
+    internal: true
     update_interval: 5s
     filters: *ha_text_changes
     entity_category: diagnostic
@@ -1169,6 +1255,7 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} U7 Status
+    internal: true
     update_interval: 5s
     filters: *ha_text_changes
     entity_category: diagnostic
@@ -1180,6 +1267,7 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} U8 Status
+    internal: true
     update_interval: 5s
     filters: *ha_text_changes
     entity_category: diagnostic
@@ -1191,6 +1279,7 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} U3 Health
+    internal: true
     update_interval: 5s
     filters: *ha_text_changes
     entity_category: diagnostic
@@ -1202,6 +1291,7 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} U4 Health
+    internal: true
     update_interval: 5s
     filters: *ha_text_changes
     entity_category: diagnostic
@@ -1213,6 +1303,7 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} U7 Health
+    internal: true
     update_interval: 5s
     filters: *ha_text_changes
     entity_category: diagnostic
@@ -1224,6 +1315,7 @@ text_sensor:
 
   - platform: template
     name: ${friendly_name} U8 Health
+    internal: true
     update_interval: 5s
     filters: *ha_text_changes
     entity_category: diagnostic

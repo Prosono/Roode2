@@ -40,6 +40,7 @@ CONF_DIRECTION_WINDOW = "direction_window"
 CONF_WAKE_DELAY = "wake_delay"
 CONF_XSHUT_PINS = "xshut_pins"
 CONF_AUTO_SAVE_ENABLED = "auto_save_enabled"
+CONF_REQUIRE_TIMING_EVIDENCE = "require_timing_evidence"
 
 
 MODE_OPTIONS = {
@@ -96,6 +97,7 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_COLD_BOOT_SOFT_RESET, default=True): cv.boolean,
             cv.Optional(CONF_COLD_BOOT_SOFT_RESET_DELAY, default="3s"): cv.positive_time_period_milliseconds,
             cv.Optional(CONF_MIN_VALID_SENSORS, default=3): cv.int_range(min=2, max=4),
+            cv.Optional(CONF_REQUIRE_TIMING_EVIDENCE, default=False): cv.boolean,
             cv.Optional(CONF_MAX_PEOPLE_INSIDE, default=50): cv.int_range(min=1, max=500),
             cv.Optional(CONF_AUTO_SAVE_ENABLED, default=True): cv.boolean,
             cv.Optional(CONF_INVERT_DIRECTION, default=False): cv.boolean,
@@ -119,7 +121,9 @@ def validate_hardware(config):
     budget = config[CONF_TIMING_BUDGET].total_milliseconds
     if budget not in (20, 33, 50, 100, 200, 500):
         raise cv.Invalid("timing_budget must be 20, 33, 50, 100, 200 or 500 ms")
-    if config[CONF_DISTANCE_MODE] == DISTANCE_MODE_OPTIONS["long"] and budget < 33:
+    # cv.enum preserves the normalized string with a codegen enum attached.
+    # Comparing to a MockObj builds a C++ expression, which is truthy in Python.
+    if config[CONF_DISTANCE_MODE] == "long" and budget < 33:
         raise cv.Invalid("Long distance mode requires at least 33 ms")
     if config[CONF_INTERMEASUREMENT].total_milliseconds < budget + 4:
         raise cv.Invalid("intermeasurement_period must be at least timing_budget + 4 ms")
@@ -174,6 +178,7 @@ async def to_code(config):
     cg.add(var.set_cold_boot_soft_reset(config[CONF_COLD_BOOT_SOFT_RESET]))
     cg.add(var.set_cold_boot_soft_reset_delay_ms(config[CONF_COLD_BOOT_SOFT_RESET_DELAY]))
     cg.add(var.set_min_valid_sensors(config[CONF_MIN_VALID_SENSORS]))
+    cg.add(var.set_require_timing_evidence(config[CONF_REQUIRE_TIMING_EVIDENCE]))
     cg.add(var.set_max_people_inside(config[CONF_MAX_PEOPLE_INSIDE]))
     cg.add(var.set_auto_save_enabled(config[CONF_AUTO_SAVE_ENABLED]))
     cg.add(var.set_invert_direction(config[CONF_INVERT_DIRECTION]))

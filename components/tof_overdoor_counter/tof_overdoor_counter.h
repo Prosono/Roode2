@@ -94,7 +94,7 @@ class TofOverdoorCounter : public PollingComponent {
   };
 
   struct PersistedState {
-    uint8_t version{7};
+    uint8_t version{8};
     int32_t people_inside{0};
     uint32_t confirmed_in{0};
     uint32_t confirmed_out{0};
@@ -230,6 +230,7 @@ class TofOverdoorCounter : public PollingComponent {
   void set_cold_boot_soft_reset(bool enabled) { this->cold_boot_soft_reset_enabled_ = enabled; }
   void set_cold_boot_soft_reset_delay_ms(uint32_t delay_ms) { this->cold_boot_soft_reset_delay_ms_ = delay_ms; }
   void set_min_valid_sensors(uint8_t min_valid_sensors) { this->clear_event_tracking_(); this->min_valid_sensors_ = min_valid_sensors; }
+  void set_require_timing_evidence(bool required) { this->clear_event_tracking_(); this->require_timing_evidence_ = required; }
   void set_max_people_inside(uint16_t max_people_inside) {
     this->max_people_inside_ = max_people_inside;
     this->people_inside_ = std::min<int>(this->people_inside_, this->max_people_inside_);
@@ -341,6 +342,7 @@ class TofOverdoorCounter : public PollingComponent {
     bool has_sampled_distance{false};
     float filtered_distance{NAN};
     uint8_t range_status{255};
+    uint32_t sample_started_ms{0};
     uint32_t last_update_ms{0};
     uint32_t last_good_read_ms{0};
     uint32_t active_candidate_since_ms{0};
@@ -373,6 +375,9 @@ class TofOverdoorCounter : public PollingComponent {
     uint8_t current_zone{ZONE_OUT};
     bool initialized{false};
     bool ranging_started{false};
+    bool settling_after_stop{false};
+    uint32_t ranging_started_ms{0};
+    uint32_t stop_settle_deadline_ms{0};
     bool has_reading{false};
     bool calibrated{false};
     bool active{false};
@@ -397,6 +402,10 @@ class TofOverdoorCounter : public PollingComponent {
     int last_error{0};
     uint8_t consecutive_errors{0};
     uint8_t consecutive_invalid{0};
+    uint8_t consecutive_hardware_faults{0};
+    // A returned result proves the sensor is alive even when its optical
+    // measurement is invalid. Do not use counting health to power-cycle it.
+    uint32_t last_result_ms{0};
     uint32_t last_update_ms{0};
     uint32_t last_good_read_ms{0};
     uint32_t last_read_duration_ms{0};
@@ -467,6 +476,7 @@ class TofOverdoorCounter : public PollingComponent {
   uint8_t min_valid_sensors_{3};
   bool auto_save_enabled_{true};
   bool invert_direction_{false};
+  bool require_timing_evidence_{false};
   bool debug_logging_{false};
   uint32_t debug_sample_interval_ms_{250};
   OperatingMode mode_{OperatingMode::COUNT};
@@ -529,6 +539,7 @@ class TofOverdoorCounter : public PollingComponent {
   bool set_temp_address_(VL53L1X_ULD &sensor, uint8_t address);
   bool configure_sensor_(Channel &channel);
   bool read_channel_(Channel &channel);
+  uint16_t guarded_intermeasurement_ms_() const;
   bool restart_ranging_(Channel &channel);
   void fail_recovery_();
   uint32_t stale_reading_ms_() const { return std::max<uint32_t>(450, 4U * std::max<uint16_t>(this->timing_budget_ms_, this->intermeasurement_ms_)); }
