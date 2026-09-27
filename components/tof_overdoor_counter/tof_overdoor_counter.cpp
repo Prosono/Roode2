@@ -5,6 +5,9 @@
 #include <cstdint>
 #include <esp_system.h>
 #include <sstream>
+#ifdef USE_WIFI
+#include "esphome/components/wifi/wifi_component.h"
+#endif
 
 namespace esphome {
 namespace tof_overdoor_counter {
@@ -162,6 +165,7 @@ void TofOverdoorCounter::setup() {
 
 void TofOverdoorCounter::update() {
   const uint32_t now = millis();
+  if (this->check_wifi_recovery_(now)) return;
 
   if (!this->cold_boot_reset_evaluated_) {
     const esp_reset_reason_t reset_reason = esp_reset_reason();
@@ -288,6 +292,8 @@ void TofOverdoorCounter::dump_config() {
   ESP_LOGCONFIG(TAG, "  Max People Inside: %u", this->max_people_inside_);
   ESP_LOGCONFIG(TAG, "  Invert Direction: %s", this->invert_direction_ ? "YES" : "NO");
   ESP_LOGCONFIG(TAG, "  Debug Logging: %s", this->debug_logging_ ? "YES" : "NO");
+  ESP_LOGCONFIG(TAG, "  Wi-Fi STA recovery timeout: %u ms (0 disables)",
+                static_cast<unsigned>(this->wifi_recovery_timeout_ms_));
   for (size_t i = 0; i < this->channels_.size(); i++) {
     const auto &channel = this->channels_[i];
     ESP_LOGCONFIG(TAG, "  Slot %u -> %s, group=%s, initialized=%s, address=0x%02X",
@@ -1118,6 +1124,27 @@ void TofOverdoorCounter::apply_calibration_defaults_() {
   }
 }
 
+bool TofOverdoorCounter::check_wifi_recovery_(uint32_t now) {
+#ifdef USE_WIFI
+  auto *wifi_component = wifi::global_wifi_component;
+  // Deliberate wifi.disable and builds without Wi-Fi must remain usable offline.
+  const bool disabled = wifi_component == nullptr || wifi_component->is_disabled();
+  if (this->wifi_recovery_guard_.update(now, disabled || wifi_component->is_connected(),
+                                      disabled ? 0 : this->wifi_recovery_timeout_ms_)) {
+    ESP_LOGW(TAG, "Wi-Fi STA disconnected for %u ms; saving counts and rebooting safely",
+             static_cast<unsigned>(this->wifi_recovery_timeout_ms_));
+    this->persist_runtime_state();
+    // ESPHome's safe shutdown invokes preferences::IntervalSyncer::on_shutdown,
+    // which flushes pending NVS writes before the chip restarts.
+    App.safe_reboot();
+    return true;
+  }
+#else
+  (void) now;
+#endif
+  return false;
+}
+
 void TofOverdoorCounter::persist_runtime_state() {
   if (!this->persisted_state_ready_) {
     return;
@@ -1601,11 +1628,6 @@ void TofOverdoorCounter::update_detection_state_machine_() {
   this->event_active_ = this->fusion_.active();
   this->event_started_ms_ = this->fusion_.started();
   this->person_standing_in_door_ = this->event_active_ && now - this->event_started_ms_ >= this->standing_timeout_ms_;
-  for (size_t i = 0; i < this->channels_.size(); ++i) {
-    const auto &path = this->fusion_.path(i);
-    this->channels_[i].last_path_text = "first=" + std::to_string(path.first) + " last=" +
-        std::to_string(path.last) + " seen=" + std::to_string(path.seen) + (path.ambiguous ? " ambiguous" : "");
-  }
   if (result.decision != counting_core::Decision::NONE) {
     DetectionOutcome outcome = OUTCOME_NONE;
     switch (result.decision) {
@@ -2358,8 +2380,13 @@ std::string TofOverdoorCounter::get_compact_state_text() const {
       oss << static_cast<int>(in_zone);
     }
     oss << "\t" << channel.sensor_label << "_in_active=" << (channel.zones[ZONE_IN].active ? "1" : "0")
-        << "\t" << channel.sensor_label << "_vote=" << channel.last_vote_text
-        << "\t" << channel.sensor_label << "_path=" << channel.last_path_text;
+        << "\t" << channel.sensor_label << "_vote=" << channel.last_vote_text;
+    // Format diagnostics only when requested. Rebuilding four temporary
+    // strings in every 5 ms acquisition cycle churns the ESP32's shared heap.
+    const auto &path = this->fusion_.path(index);
+    oss << "\t" << channel.sensor_label << "_path=first=" << unsigned(path.first)
+        << " last=" << unsigned(path.last) << " seen=" << unsigned(path.seen)
+        << (path.ambiguous ? " ambiguous" : "");
   }
   return oss.str();
 }

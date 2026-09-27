@@ -50,7 +50,8 @@ ota:
 wifi:
   ssid: !secret roode_wifi_ssid
   password: !secret roode_wifi_password
-  fast_connect: true
+  # Use normal network scans instead of the saved fast-connect shortcut.
+  fast_connect: false
   reboot_timeout: 0s
   use_address: 10.0.0.100
   manual_ip:
@@ -66,8 +67,10 @@ wifi:
 captive_portal:
 
 web_server:
-  # Local controls remain available; internal entities are excluded from the HA API.
-  include_internal: true
+  # The custom service console reads the counter directly. Avoid duplicating
+  # internal telemetry and logger output into the built-in web event stream.
+  include_internal: false
+  log: false
   port: 80
   version: 3
   auth:
@@ -143,6 +146,9 @@ tof_overdoor_counter:
   max_people_inside: 50
   auto_save_enabled: true
   invert_direction: false
+  # STA-only recovery also works when the fallback access point is configured.
+  # Home Assistant/API outages alone do not reboot the device.
+  wifi_recovery_timeout: 5min
   debug_logging: false
   debug_sample_interval: 250ms
   mode: count

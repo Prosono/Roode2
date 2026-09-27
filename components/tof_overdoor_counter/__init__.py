@@ -41,6 +41,7 @@ CONF_WAKE_DELAY = "wake_delay"
 CONF_XSHUT_PINS = "xshut_pins"
 CONF_AUTO_SAVE_ENABLED = "auto_save_enabled"
 CONF_REQUIRE_TIMING_EVIDENCE = "require_timing_evidence"
+CONF_WIFI_RECOVERY_TIMEOUT = "wifi_recovery_timeout"
 
 
 MODE_OPTIONS = {
@@ -96,6 +97,12 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_CALIBRATION_SAMPLES, default=24): cv.int_range(min=8, max=100),
             cv.Optional(CONF_COLD_BOOT_SOFT_RESET, default=True): cv.boolean,
             cv.Optional(CONF_COLD_BOOT_SOFT_RESET_DELAY, default="3s"): cv.positive_time_period_milliseconds,
+            # ESPHome disables its own Wi-Fi reboot timer when a fallback AP is
+            # configured. This STA-only guard also works with that AP present.
+            cv.Optional(CONF_WIFI_RECOVERY_TIMEOUT, default="5min"): cv.All(
+                cv.positive_time_period_milliseconds,
+                cv.Range(max=cv.TimePeriod(milliseconds=0x7FFFFFFF)),
+            ),
             cv.Optional(CONF_MIN_VALID_SENSORS, default=3): cv.int_range(min=2, max=4),
             cv.Optional(CONF_REQUIRE_TIMING_EVIDENCE, default=False): cv.boolean,
             cv.Optional(CONF_MAX_PEOPLE_INSIDE, default=50): cv.int_range(min=1, max=500),
@@ -177,6 +184,7 @@ async def to_code(config):
     cg.add(var.set_calibration_samples(config[CONF_CALIBRATION_SAMPLES]))
     cg.add(var.set_cold_boot_soft_reset(config[CONF_COLD_BOOT_SOFT_RESET]))
     cg.add(var.set_cold_boot_soft_reset_delay_ms(config[CONF_COLD_BOOT_SOFT_RESET_DELAY]))
+    cg.add(var.set_wifi_recovery_timeout_ms(config[CONF_WIFI_RECOVERY_TIMEOUT]))
     cg.add(var.set_min_valid_sensors(config[CONF_MIN_VALID_SENSORS]))
     cg.add(var.set_require_timing_evidence(config[CONF_REQUIRE_TIMING_EVIDENCE]))
     cg.add(var.set_max_people_inside(config[CONF_MAX_PEOPLE_INSIDE]))

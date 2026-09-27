@@ -9,6 +9,7 @@
 
 #include <Wire.h>
 #include "../counting_core/counting_core.h"
+#include "../counting_core/runtime_guard.h"
 #include "../counting_core/sensor_init.h"
 #include "VL53L1X_ULD.h"
 #include "esphome/core/application.h"
@@ -229,6 +230,7 @@ class TofOverdoorCounter : public PollingComponent {
   void set_calibration_samples(uint16_t calibration_samples) { this->calibration_samples_ = calibration_samples; }
   void set_cold_boot_soft_reset(bool enabled) { this->cold_boot_soft_reset_enabled_ = enabled; }
   void set_cold_boot_soft_reset_delay_ms(uint32_t delay_ms) { this->cold_boot_soft_reset_delay_ms_ = delay_ms; }
+  void set_wifi_recovery_timeout_ms(uint32_t timeout_ms) { this->wifi_recovery_timeout_ms_ = timeout_ms; }
   void set_min_valid_sensors(uint8_t min_valid_sensors) { this->clear_event_tracking_(); this->min_valid_sensors_ = min_valid_sensors; }
   void set_require_timing_evidence(bool required) { this->clear_event_tracking_(); this->require_timing_evidence_ = required; }
   void set_max_people_inside(uint16_t max_people_inside) {
@@ -419,7 +421,6 @@ class TofOverdoorCounter : public PollingComponent {
     uint32_t last_falling_ms{0};
     uint32_t active_duration_ms{0};
     std::string last_vote_text{"none"};
-    std::string last_path_text{"CLEAR"};
     float calibration_sum{0.0f};
     float calibration_sq_sum{0.0f};
     float calibration_min{NAN};
@@ -529,6 +530,10 @@ class TofOverdoorCounter : public PollingComponent {
   HistorySample history_[HISTORY_SIZE];
   ESPPreferenceObject persisted_state_pref_;
   bool persisted_state_ready_{false};
+  uint32_t wifi_recovery_timeout_ms_{300000};
+  counting_core::DisconnectionGuard wifi_recovery_guard_;
+
+  bool check_wifi_recovery_(uint32_t now);
 
   bool initialize_wire_();
   bool recover_wire_();

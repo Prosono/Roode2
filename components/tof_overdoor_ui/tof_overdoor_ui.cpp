@@ -2,11 +2,23 @@
 
 #ifdef USE_WEBSERVER
 
+#include <array>
+#include <cerrno>
+#include <climits>
 #include <cmath>
+#include <optional>
 #include <cstdlib>
 #include <string>
 
 #include "esphome/components/json/json_util.h"
+#include "main_thread_bridge.h"
+#include "json_response.h"
+
+#ifdef USE_ESP32
+#include <esp_heap_caps.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#endif
 #include "esphome/core/application.h"
 #include "esphome/core/log.h"
 
@@ -20,25 +32,42 @@ namespace {
 const char *const SENSOR_CARD_LABELS[] = {"U3", "U4", "U7", "U8"};
 const char *const SENSOR_GROUP_LABELS[] = {"Independent vote", "Independent vote", "Independent vote", "Independent vote"};
 
-int parse_int_arg(AsyncWebServerRequest *request, const char *name, int fallback) {
-  if (!request->hasArg(name)) {
-    return fallback;
-  }
-  auto raw = request->arg(name);
-  if (raw.empty()) {
-    return fallback;
-  }
+std::optional<int> parse_int_arg(AsyncWebServerRequest *request, const char *name) {
+  if (!request->hasArg(name)) return std::nullopt;
+  const auto raw = request->arg(name);
+  if (raw.empty()) return std::nullopt;
   char *end = nullptr;
+  errno = 0;
   const long parsed = strtol(raw.c_str(), &end, 10);
-  return end != raw.c_str() ? static_cast<int>(parsed) : fallback;
+  if (errno == ERANGE || end == raw.c_str() || *end != '\0' || parsed < INT_MIN || parsed > INT_MAX)
+    return std::nullopt;
+  return static_cast<int>(parsed);
 }
 
-bool parse_bool_arg(AsyncWebServerRequest *request, const char *name, bool fallback) {
-  if (!request->hasArg(name)) {
-    return fallback;
-  }
+std::optional<bool> parse_bool_arg(AsyncWebServerRequest *request, const char *name) {
+  if (!request->hasArg(name)) return std::nullopt;
   const auto raw = request->arg(name);
-  return raw == "1" || raw == "true" || raw == "on" || raw == "yes";
+  if (raw == "1" || raw == "true" || raw == "on" || raw == "yes") return true;
+  if (raw == "0" || raw == "false" || raw == "off" || raw == "no") return false;
+  return std::nullopt;
+}
+
+struct ActionRequest {
+  std::string action;
+  std::array<std::optional<int>, 9> settings;
+  std::optional<bool> invert_direction;
+  std::optional<bool> auto_save_enabled;
+};
+
+ActionRequest copy_action_request(AsyncWebServerRequest *request) {
+  ActionRequest result;
+  result.action = request->arg("action").c_str();
+  static const char *const NAMES[] = {"trigger_threshold", "clear_threshold", "baseline_tolerance", "debounce_ms",
+      "detection_timeout_ms", "cooldown_ms", "min_valid_sensors", "min_event_sensors", "max_people_inside"};
+  for (size_t i = 0; i < result.settings.size(); ++i) result.settings[i] = parse_int_arg(request, NAMES[i]);
+  result.invert_direction = parse_bool_arg(request, "invert_direction");
+  result.auto_save_enabled = parse_bool_arg(request, "auto_save_enabled");
+  return result;
 }
 
 const char OVERDOOR_UI_HTML[] = R"html(
@@ -997,6 +1026,9 @@ const char OVERDOOR_UI_HTML[] = R"html(
     const chartHistory = [[], [], [], []];
     const historyLimit = 90;
     let refreshTimer = null;
+    let refreshPromise = null;
+    let forceSettingsRefresh = false;
+    let failedRefreshes = 0;
     let busy = false;
     let lastOnline = true;
     let settingsDirty = false;
@@ -1351,54 +1383,74 @@ const char OVERDOOR_UI_HTML[] = R"html(
       renderChart(state);
     }
 
-    async function fetchState() {
-      const response = await fetch(stateUrl, { cache: 'no-store' });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      return response.json();
+    async function fetchJson(url, options = {}) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      try {
+        const response = await fetch(url, { ...options, signal: controller.signal });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.message || `HTTP ${response.status}`);
+        return payload;
+      } finally {
+        clearTimeout(timeout);
+      }
     }
 
-    async function postParams(params) {
-      const response = await fetch(`${actionUrl}?${params.toString()}`, {
+    function fetchState() {
+      return fetchJson(stateUrl, { cache: 'no-store' });
+    }
+
+    function postParams(params) {
+      return fetchJson(actionUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
         body: params,
       });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(payload.message || `HTTP ${response.status}`);
-      }
-      return payload;
     }
 
-    async function refresh(force = false) {
-      try {
-        const payload = await fetchState();
-        connectionPill.textContent = payload.connection_text || 'Connected to device';
-        connectionCopy.textContent = 'Online';
-        lastSync.textContent = new Date().toLocaleTimeString();
-        renderState(payload, { forceSettingsSync: force && !settingsDirty });
-        lastOnline = true;
-      } catch (error) {
-        connectionPill.textContent = 'Connection lost. Retrying.';
-        connectionCopy.textContent = 'Offline';
-        if (lastOnline || force) {
-          showToast('Could not refresh device state', true);
+    function refresh(force = false) {
+      forceSettingsRefresh ||= force;
+      if (refreshPromise) return refreshPromise;
+      clearTimeout(refreshTimer);
+      refreshPromise = (async () => {
+        try {
+          const payload = await fetchState();
+          connectionPill.textContent = payload.connection_text || 'Connected to device';
+          connectionCopy.textContent = 'Online';
+          lastSync.textContent = new Date().toLocaleTimeString();
+          renderState(payload, { forceSettingsSync: forceSettingsRefresh && !settingsDirty });
+          lastOnline = true;
+          failedRefreshes = 0;
+        } catch (error) {
+          connectionPill.textContent = 'Connection lost. Retrying.';
+          connectionCopy.textContent = 'Offline';
+          if (lastOnline || forceSettingsRefresh) showToast('Could not refresh device state', true);
+          lastOnline = false;
+          failedRefreshes = Math.min(failedRefreshes + 1, 5);
+        } finally {
+          forceSettingsRefresh = false;
+          refreshPromise = null;
+          scheduleRefresh();
         }
-        lastOnline = false;
-      } finally {
-        scheduleRefresh();
-      }
+      })();
+      return refreshPromise;
     }
 
     function refreshDelay() {
-      if (document.hidden) return 1800;
-      if (busy) return 600;
-      return 120;
+      return failedRefreshes ? Math.min(30000, 1500 * (2 ** (failedRefreshes - 1))) : 500;
     }
 
     function scheduleRefresh() {
       clearTimeout(refreshTimer);
+      // Hidden tabs and ongoing actions must not keep polling the ESP.
+      if (document.hidden || busy) return;
       refreshTimer = setTimeout(() => refresh(), refreshDelay());
+    }
+
+    async function pausePollingForAction() {
+      clearTimeout(refreshTimer);
+      if (refreshPromise) await refreshPromise;
+      clearTimeout(refreshTimer);
     }
 
     document.addEventListener('click', async (event) => {
@@ -1409,6 +1461,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
       busy = true;
       button.disabled = true;
       try {
+        await pausePollingForAction();
         const params = new URLSearchParams({ action: button.dataset.command });
         const result = await postParams(params);
         showToast(result.message || 'Updated');
@@ -1418,6 +1471,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
       } finally {
         busy = false;
         button.disabled = false;
+        scheduleRefresh();
       }
     });
 
@@ -1434,6 +1488,7 @@ const char OVERDOOR_UI_HTML[] = R"html(
       if (busy) return;
       busy = true;
       try {
+        await pausePollingForAction();
         const data = new FormData(settingsForm);
         const params = new URLSearchParams();
         params.set('action', 'apply_settings');
@@ -1456,11 +1511,13 @@ const char OVERDOOR_UI_HTML[] = R"html(
         showToast(error.message || 'Unable to save settings', true);
       } finally {
         busy = false;
+        scheduleRefresh();
       }
     });
 
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden) refresh(true);
+      clearTimeout(refreshTimer);
+      if (!document.hidden && !busy) refresh(true);
     });
 
     refresh(true);
@@ -1508,19 +1565,25 @@ class TofOverdoorUi::Handler : public AsyncWebHandler {
       return;
     }
     if (request->method() == HTTP_GET && url == "/tof-overdoor-ui/state") {
-      this->handle_state_(request);
+      this->send_from_main_(request, [this]() { return this->build_state_(); });
       return;
     }
     if (request->method() == HTTP_GET && url == "/tof-overdoor-ui/compact") {
-      this->handle_compact_(request);
+      this->send_from_main_(request, [this]() {
+        return UiResponse{200, "text/plain; charset=utf-8", this->parent_->counter_->get_compact_state_text()};
+      });
       return;
     }
     if (request->method() == HTTP_GET && url == "/tof-overdoor-ui/trace") {
-      this->handle_trace_(request);
+      const uint32_t after_ms = static_cast<uint32_t>(strtoul(request->arg("after_ms").c_str(), nullptr, 10));
+      this->send_from_main_(request, [this, after_ms]() {
+        return UiResponse{200, "text/plain; charset=utf-8", this->parent_->counter_->get_trace_log_text(after_ms)};
+      });
       return;
     }
     if (request->method() == HTTP_POST && url == "/tof-overdoor-ui/action") {
-      this->handle_action_(request);
+      const auto args = copy_action_request(request);
+      this->send_from_main_(request, [this, args]() { return this->apply_action_(args); });
       return;
     }
     request->send(404, "text/plain", "Not found");
@@ -1534,13 +1597,22 @@ class TofOverdoorUi::Handler : public AsyncWebHandler {
     request->send(response);
   }
 
-  void handle_state_(AsyncWebServerRequest *request) {
+  UiResponse build_state_() {
     auto *counter = this->parent_->counter_;
-    auto json = json::build_json([this, counter](JsonObject root) {
+    JsonDocument document;
+    auto build = [this, counter](JsonObject root) {
       root["title"] = this->parent_->title_.empty() ? App.get_friendly_name() : this->parent_->title_;
       root["subtitle"] = default_subtitle(counter);
       root["label"] = this->parent_->label_.empty() ? "Front Door Counter" : this->parent_->label_;
       root["connection_text"] = "Connected to device";
+      root["firmware_revision"] = "2026-09-27-ui-thread-safe";
+      root["uptime_ms"] = millis();
+#ifdef USE_ESP32
+      constexpr uint32_t heap_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+      root["free_heap"] = heap_caps_get_free_size(heap_caps);
+      root["min_free_heap"] = heap_caps_get_minimum_free_size(heap_caps);
+      root["largest_free_block"] = heap_caps_get_largest_free_block(heap_caps);
+#endif
       root["mode"] = counter->get_mode_text();
       root["ready"] = counter->get_ready_state() > 0.5f;
       root["presence"] = counter->get_presence_state() > 0.5f;
@@ -1613,24 +1685,14 @@ class TofOverdoorUi::Handler : public AsyncWebHandler {
         sensor["drop"] = counter->get_delta_mm(index);
         sensor["active"] = counter->get_sensor_active_state(index) > 0.5f;
       }
-    });
-    request->send(200, "application/json", json.c_str());
+    };
+    build(document.to<JsonObject>());
+    return serialize_state_json(document);
   }
 
-  void handle_compact_(AsyncWebServerRequest *request) {
-    const std::string body = this->parent_->counter_->get_compact_state_text();
-    request->send(200, "text/plain; charset=utf-8", body.c_str());
-  }
-
-  void handle_trace_(AsyncWebServerRequest *request) {
-    const uint32_t after_ms = static_cast<uint32_t>(strtoul(request->arg("after_ms").c_str(), nullptr, 10));
-    const std::string body = this->parent_->counter_->get_trace_log_text(after_ms);
-    request->send(200, "text/plain; charset=utf-8", body.c_str());
-  }
-
-  void handle_action_(AsyncWebServerRequest *request) {
+  UiResponse apply_action_(const ActionRequest &args) {
     auto *counter = this->parent_->counter_;
-    const auto action = request->arg("action");
+    const auto &action = args.action;
     std::string message = "Updated";
 
     if (action == "recalibrate") {
@@ -1664,44 +1726,69 @@ class TofOverdoorUi::Handler : public AsyncWebHandler {
         root["ok"] = true;
         root["message"] = message;
       });
-      request->send(200, "application/json", response.c_str());
-      App.safe_reboot();
-      return;
+      return {200, "application/json", std::string(response.c_str(), response.size()), true};
     } else if (action == "apply_settings") {
       counter->set_trigger_delta_mm(static_cast<uint16_t>(
-          std::max(80, std::min(1200, parse_int_arg(request, "trigger_threshold", static_cast<int>(counter->get_trigger_threshold_value()))))));
+          std::max(80, std::min(1200, args.settings[0].value_or(static_cast<int>(counter->get_trigger_threshold_value()))))));
       counter->set_release_delta_mm(static_cast<uint16_t>(
-          std::max(40, std::min(900, parse_int_arg(request, "clear_threshold", static_cast<int>(counter->get_clear_threshold_value()))))));
+          std::max(40, std::min(900, args.settings[1].value_or(static_cast<int>(counter->get_clear_threshold_value()))))));
       counter->set_baseline_tolerance_mm(static_cast<uint16_t>(
-          std::max(20, std::min(300, parse_int_arg(request, "baseline_tolerance", static_cast<int>(counter->get_baseline_tolerance_value()))))));
+          std::max(20, std::min(300, args.settings[2].value_or(static_cast<int>(counter->get_baseline_tolerance_value()))))));
       counter->set_debounce_ms(static_cast<uint32_t>(
-          std::max(5, std::min(300, parse_int_arg(request, "debounce_ms", static_cast<int>(counter->get_debounce_value()))))));
+          std::max(5, std::min(300, args.settings[3].value_or(static_cast<int>(counter->get_debounce_value()))))));
       counter->set_sequence_timeout_ms(static_cast<uint32_t>(std::max(
-          300, std::min(4000, parse_int_arg(request, "detection_timeout_ms", static_cast<int>(counter->get_detection_timeout_value()))))));
+          300, std::min(4000, args.settings[4].value_or(static_cast<int>(counter->get_detection_timeout_value()))))));
       counter->set_cooldown_ms(static_cast<uint32_t>(
-          std::max(0, std::min(3000, parse_int_arg(request, "cooldown_ms", static_cast<int>(counter->get_cooldown_value()))))));
+          std::max(0, std::min(3000, args.settings[5].value_or(static_cast<int>(counter->get_cooldown_value()))))));
       counter->set_min_valid_sensors(static_cast<uint8_t>(
-          std::max(2, std::min(4, parse_int_arg(request, "min_valid_sensors", static_cast<int>(counter->get_min_valid_sensors_value()))))));
+          std::max(2, std::min(4, args.settings[6].value_or(static_cast<int>(counter->get_min_valid_sensors_value()))))));
       counter->set_min_event_sensors(static_cast<uint8_t>(
-          std::max(2, std::min(4, parse_int_arg(request, "min_event_sensors", static_cast<int>(counter->get_min_event_sensors_value()))))));
+          std::max(2, std::min(4, args.settings[7].value_or(static_cast<int>(counter->get_min_event_sensors_value()))))));
       counter->set_max_people_inside(static_cast<uint16_t>(
-          std::max(1, std::min(500, parse_int_arg(request, "max_people_inside", static_cast<int>(counter->get_max_people_inside_value()))))));
-      counter->set_invert_direction(parse_bool_arg(request, "invert_direction", counter->get_invert_direction()));
-      counter->set_auto_save_enabled(parse_bool_arg(request, "auto_save_enabled", counter->get_auto_save_enabled()));
+          std::max(1, std::min(500, args.settings[8].value_or(static_cast<int>(counter->get_max_people_inside_value()))))));
+      counter->set_invert_direction(args.invert_direction.value_or(counter->get_invert_direction()));
+      counter->set_auto_save_enabled(args.auto_save_enabled.value_or(counter->get_auto_save_enabled()));
       counter->persist_runtime_state();
       message = "Detection settings saved to the ESP.";
     } else {
-      request->send(400, "application/json", "{\"ok\":false,\"message\":\"Unsupported action\"}");
-      return;
+      return {400, "application/json", "{\"ok\":false,\"message\":\"Unsupported action\"}"};
     }
 
     auto response = json::build_json([&message](JsonObject root) {
       root["ok"] = true;
       root["message"] = message;
     });
-    request->send(200, "application/json", response.c_str());
+    return {200, "application/json", std::string(response.c_str(), response.size())};
   }
 
+  template<typename Work> void send_from_main_(AsyncWebServerRequest *request, Work work) {
+    auto job = this->bridge_.submit(
+        [this](std::function<void()> callback) { this->parent_->defer(std::move(callback)); }, std::move(work));
+    if (job == nullptr) {
+      request->send(500, "application/json", "{\"ok\":false,\"message\":\"Main loop busy; retry shortly\"}");
+      return;
+    }
+    // This wait runs only on the ESP-IDF HTTP task. The main loop never waits
+    // for HTTP or touches its stack-allocated AsyncWebServerRequest.
+    const uint32_t started = millis();
+    while (!job->done() && millis() - started < 1500U) {
+#ifdef USE_ESP32
+      vTaskDelay(std::max<TickType_t>(1, pdMS_TO_TICKS(5)));
+#else
+      delay(5);
+#endif
+    }
+    if (!job->done()) {
+      job->cancel();
+      request->send(500, "application/json", "{\"ok\":false,\"message\":\"Main loop response timed out\"}");
+      return;
+    }
+    const auto &response = job->response;
+    request->send(response.code, response.content_type, response.body.c_str());
+    if (response.restart) this->parent_->defer([]() { App.safe_reboot(); });
+  }
+
+  MainThreadBridge bridge_;
   TofOverdoorUi *parent_;
 };
 

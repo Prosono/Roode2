@@ -56,3 +56,9 @@ jobs:
         run: |
           esphome config "$PROFILE" > /dev/null
           esphome compile "$PROFILE"
+      - name: Test large UI responses against the firmware JSON library
+        if: matrix.esphome == '2026.8.1' && matrix.profile == 'peopleCounter32FourSensorOverdoor.yaml'
+        run: |
+          arduinojson_include="$(python -c 'from pathlib import Path; print(next(Path(".esphome/build").glob("*/managed_components/bblanchon__arduinojson/src")).resolve())')"
+          c++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -g -I. -I"$arduinojson_include" tests/ui_json_test.cpp -o /tmp/roode-ui-json-test
+          /tmp/roode-ui-json-test

@@ -30,7 +30,7 @@ def package(destination):
             if path.suffix in (".py", ".h", ".cpp"):
                 files[f"roode_components/{component}/{path.name}"] = path.read_bytes()
     files["LES-MEG.txt"] = (
-        "ROODE – testoppdatering for den sidemonterte telleren\n\n"
+        "ROODE – stabilitetsoppdatering 27. september 2026\n\n"
         "Kopier begge YAML-filene og hele roode_components-mappen til /config/esphome/.\n"
         "Bruk eksisterende secrets.yaml med roode_* nøklene. Arkivet inneholder ingen passord.\n"
         "Installer dorteller-oppe.yaml på 10.0.0.100 og dorteller-nede.yaml på 10.0.0.101.\n"
@@ -43,6 +43,12 @@ def package(destination):
         "Test først én enhet, deretter begge: 8 vekslende UT/IN med ca.5 sekunders mellomrom.\n"
         "Test deretter nær sensor, vanlig fart, skrå gange og å snu i døråpningen.\n"
         "Reell treffrate er ennå ikke verifisert med denne firmwareversjonen.\n"
+        "Webgrensesnittets tilgang til telledata er synkronisert, og polling/minnebruk redusert.\n"
+        "Et sammenhengende Wi-Fi-brudd på 5 minutter lagrer tellingen og starter ESP på nytt.\n"
+        "Et rent HA-utfall utløser ikke omstart. wifi_recovery_timeout: 0s deaktiverer dette.\n"
+        "Test tilgjengelighet i minst 8–12 timer med nettsiden lukket og deretter åpen.\n"
+        "Følg med på uptime: gjentatte nullstillinger betyr omstarter, ikke stabil drift.\n"
+        "Langtidsstabilitet på de fysiske enhetene må fortsatt verifiseres.\n"
     ).encode()
     files["SHA256SUMS.txt"] = "".join(
         f"{hashlib.sha256(data).hexdigest()}  {name}\n" for name, data in sorted(files.items())

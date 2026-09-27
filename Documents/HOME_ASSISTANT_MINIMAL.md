@@ -17,9 +17,10 @@ Both four-sensor profiles expose ten entities per device:
 
 The remaining entities use `internal: true`, excluding them from the native
 Home Assistant API rather than merely disabling their HA entity registry entries.
-The web server includes internal entities for local controls and diagnostics.
-The custom dashboard also reads the counter directly, so its live graph and
-event log remain available. The measurement loop is unchanged.
+The built-in web server excludes internal entities and logger streaming, avoiding
+a second stream of detailed telemetry. The custom dashboard reads the counter
+through the main loop, so its controls, live graph and event log remain available.
+Its browser polling pauses in hidden tabs and never overlaps requests.
 
 `People Inside` remains a **number** with the same name and ID. The existing
 `home_assistant_combined_people_counter.yaml` package references this domain.
@@ -50,6 +51,14 @@ checked every five seconds. Wi-Fi and uptime add only two samples per minute.
 Reducing the exposed entities is not proof that traffic caused previous outages.
 Do not treat an unavailable counter as zero occupancy or reset its totals when
 Home Assistant reconnects.
+
+The counter's `wifi_recovery_timeout: 5min` restarts the ESP after five continuous
+minutes without a station connection, saving counts before the restart. It works
+with the fallback AP configured; the AP otherwise suppresses ESPHome's built-in
+Wi-Fi reboot timer. A Home Assistant/API outage alone does not trigger this guard.
+Set the counter option to `0s` for deliberate prolonged offline/AP operation.
+This is not a detector for every kind of network failure: if the Wi-Fi stack still
+reports a station connection, this timer does not fire.
 
 ## Validation
 
